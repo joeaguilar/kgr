@@ -5,6 +5,15 @@ use std::path::PathBuf;
 use kgr_core::graph::KGraph;
 use kgr_core::types::{DepGraph, ImportKind};
 
+/// Immutable rendering context threaded through the recursive tree walk.
+struct TreeCtx<'a> {
+    kgraph: &'a KGraph,
+    cycle_edges: &'a HashSet<(PathBuf, PathBuf)>,
+    no_external: bool,
+    show_external: bool,
+    ext_map: &'a HashMap<&'a PathBuf, Vec<&'a str>>,
+}
+
 pub fn render_tree(
     graph: &DepGraph,
     kgraph: &KGraph,
@@ -44,6 +53,14 @@ pub fn render_tree(
         return Ok(());
     }
 
+    let ctx = TreeCtx {
+        kgraph,
+        cycle_edges: &cycle_edges,
+        no_external,
+        show_external,
+        ext_map: &ext_map,
+    };
+
     for root in roots {
         // Skip orphans and test entries from root display
         if graph.orphans.contains(root) || graph.test_entries.contains(root) {
@@ -53,17 +70,7 @@ pub fn render_tree(
         writeln!(writer, "{}  [entry]", root.display())?;
         let mut visited = HashSet::new();
         visited.insert(root.clone());
-        render_children(
-            kgraph,
-            root,
-            "",
-            &cycle_edges,
-            &mut visited,
-            no_external,
-            show_external,
-            &ext_map,
-            writer,
-        )?;
+        render_children(&ctx, root, "", &mut visited, writer)?;
     }
 
     if !graph.test_entries.is_empty() {
@@ -86,25 +93,21 @@ pub fn render_tree(
 }
 
 fn render_children(
-    kgraph: &KGraph,
+    ctx: &TreeCtx<'_>,
     node: &PathBuf,
     prefix: &str,
-    cycle_edges: &HashSet<(PathBuf, PathBuf)>,
     visited: &mut HashSet<PathBuf>,
-    no_external: bool,
-    show_external: bool,
-    ext_map: &HashMap<&PathBuf, Vec<&str>>,
     writer: &mut dyn Write,
 ) -> std::io::Result<()> {
-    let mut edges = kgraph.edges_from(node);
-    if no_external {
+    let mut edges = ctx.kgraph.edges_from(node);
+    if ctx.no_external {
         edges.retain(|(_, kind)| *kind != ImportKind::External);
     }
     edges.sort_by(|a, b| a.0.cmp(&b.0));
 
     // Determine if we'll append an external block after local children.
-    let ext_pkgs: &[&str] = if show_external {
-        ext_map.get(node).map(|v| v.as_slice()).unwrap_or(&[])
+    let ext_pkgs: &[&str] = if ctx.show_external {
+        ctx.ext_map.get(node).map(|v| v.as_slice()).unwrap_or(&[])
     } else {
         &[]
     };
@@ -119,7 +122,7 @@ fn render_children(
         };
         let child_prefix = if is_last { "    " } else { "\u{2502}   " };
 
-        let is_cycle = cycle_edges.contains(&(node.clone(), target.clone()));
+        let is_cycle = ctx.cycle_edges.contains(&(node.clone(), target.clone()));
 
         if is_cycle {
             writeln!(
@@ -141,17 +144,7 @@ fn render_children(
             writeln!(writer, "{}{}{}", prefix, connector, target.display())?;
             visited.insert(target.clone());
             let new_prefix = format!("{}{}", prefix, child_prefix);
-            render_children(
-                kgraph,
-                target,
-                &new_prefix,
-                cycle_edges,
-                visited,
-                no_external,
-                show_external,
-                ext_map,
-                writer,
-            )?;
+            render_children(ctx, target, &new_prefix, visited, writer)?;
         }
     }
 

@@ -238,7 +238,15 @@ fn main() {
         None => {
             // Default: run graph with tree format on current directory
             setup_tracing(0);
-            run_graph(&PathBuf::from("."), "tree", &None, false, false, false, None);
+            run_graph(
+                &PathBuf::from("."),
+                "tree",
+                &None,
+                false,
+                false,
+                false,
+                None,
+            );
         }
     }
 }
@@ -300,7 +308,15 @@ fn run_graph(
         Box::new(std::io::stdout().lock())
     };
 
-    render::render(&dep_graph, &kgraph, format, no_external, show_external, &mut writer).unwrap_or_else(|e| {
+    render::render(
+        &dep_graph,
+        &kgraph,
+        format,
+        no_external,
+        show_external,
+        &mut writer,
+    )
+    .unwrap_or_else(|e| {
         eprintln!("Error rendering output: {}", e);
         process::exit(2);
     });
@@ -655,10 +671,32 @@ fn run_upgrade() {
     eprintln!("Upgrading kgr at {}", dest.display());
     eprintln!("Source: {}", workspace_root.display());
 
-    // git pull
-    eprintln!("Running: git pull");
+    // Resolve current branch name so pull works even without upstream tracking.
+    let branch = std::process::Command::new("git")
+        .args([
+            "-C",
+            &workspace_root.to_string_lossy(),
+            "rev-parse",
+            "--abbrev-ref",
+            "HEAD",
+        ])
+        .output()
+        .unwrap_or_else(|e| {
+            eprintln!("Error: failed to run git rev-parse: {}", e);
+            process::exit(2);
+        });
+    let branch = String::from_utf8_lossy(&branch.stdout).trim().to_string();
+
+    // git pull origin <branch>
+    eprintln!("Running: git pull origin {}", branch);
     let status = std::process::Command::new("git")
-        .args(["-C", &workspace_root.to_string_lossy(), "pull"])
+        .args([
+            "-C",
+            &workspace_root.to_string_lossy(),
+            "pull",
+            "origin",
+            &branch,
+        ])
         .status()
         .unwrap_or_else(|e| {
             eprintln!("Error: failed to run git pull: {}", e);
