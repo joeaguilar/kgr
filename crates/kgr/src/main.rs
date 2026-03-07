@@ -39,7 +39,7 @@ enum Commands {
         #[arg(short, long, default_value = "tree")]
         format: String,
 
-        /// Filter by language (py, ts, js)
+        /// Filter by language: py, ts, js, rs, java, c, cpp, go
         #[arg(short, long)]
         lang: Option<Vec<String>>,
 
