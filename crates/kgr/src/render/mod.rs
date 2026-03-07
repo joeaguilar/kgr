@@ -14,13 +14,14 @@ pub fn render(
     kgraph: &KGraph,
     format: &str,
     no_external: bool,
+    show_external: bool,
     writer: &mut dyn Write,
 ) -> std::io::Result<()> {
     match format {
         "json" => json::render_json(graph, writer),
-        "tree" => tree::render_tree(graph, kgraph, no_external, writer),
+        "tree" => tree::render_tree(graph, kgraph, no_external, show_external, writer),
         "dot" => dot::render_dot(graph, kgraph, writer),
-        "table" => table::render_table(graph, kgraph, writer),
+        "table" => table::render_table(graph, kgraph, show_external, writer),
         "mermaid" => mermaid::render_mermaid(graph, kgraph, writer),
         _ => {
             writeln!(

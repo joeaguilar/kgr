@@ -6,6 +6,7 @@ use kgr_core::types::{DepGraph, ImportKind};
 pub fn render_table(
     graph: &DepGraph,
     kgraph: &KGraph,
+    show_external: bool,
     writer: &mut dyn Write,
 ) -> std::io::Result<()> {
     // Header
@@ -64,6 +65,16 @@ pub fn render_table(
             cycle_marker,
             status,
         )?;
+
+        if show_external && ext_out > 0 {
+            let pkgs: Vec<&str> = file
+                .imports
+                .iter()
+                .filter(|i| i.kind == ImportKind::External)
+                .map(|i| i.raw.as_str())
+                .collect();
+            writeln!(writer, "  \u{2514} external: {}", pkgs.join(", "))?;
+        }
     }
 
     Ok(())
