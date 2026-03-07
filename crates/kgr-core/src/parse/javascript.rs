@@ -74,10 +74,7 @@ impl super::Parser for JavaScriptParser {
             let mut matches = cursor.matches(query, tree.root_node(), source);
             while let Some(m) = matches.next() {
                 // Check if this match has a _fn capture (require pattern)
-                let fn_capture = m
-                    .captures
-                    .iter()
-                    .find(|c| c.index == fn_capture_idx);
+                let fn_capture = m.captures.iter().find(|c| c.index == fn_capture_idx);
 
                 if let Some(fc) = fn_capture {
                     // This is the require() pattern — verify function name is "require"
@@ -91,10 +88,7 @@ impl super::Parser for JavaScriptParser {
                 }
 
                 // Extract the import path
-                let path_capture = m
-                    .captures
-                    .iter()
-                    .find(|c| c.index == path_capture_idx);
+                let path_capture = m.captures.iter().find(|c| c.index == path_capture_idx);
 
                 if let Some(pc) = path_capture {
                     let node = pc.node;

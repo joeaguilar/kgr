@@ -16,11 +16,8 @@ pub fn render_table(
     )?;
     writeln!(writer, "{}", "-".repeat(105))?;
 
-    let cycle_files: std::collections::HashSet<_> = graph
-        .cycles
-        .iter()
-        .flat_map(|c| c.iter())
-        .collect();
+    let cycle_files: std::collections::HashSet<_> =
+        graph.cycles.iter().flat_map(|c| c.iter()).collect();
 
     let mut files: Vec<_> = graph.files.iter().collect();
     files.sort_by_key(|f| &f.path);

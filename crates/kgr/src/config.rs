@@ -86,14 +86,30 @@ pub fn init_config(root: &Path) -> std::io::Result<PathBuf> {
     for e in ignore::Walk::new(root).flatten() {
         if let Some(ext) = e.path().extension().and_then(|e| e.to_str()) {
             match ext {
-                "py" | "pyi" => { detected.insert("py"); }
-                "ts" | "tsx" => { detected.insert("ts"); }
-                "js" | "jsx" | "mjs" | "cjs" => { detected.insert("js"); }
-                "java" => { detected.insert("java"); }
-                "c" | "h" => { detected.insert("c"); }
-                "cpp" | "cc" | "cxx" | "hpp" => { detected.insert("cpp"); }
-                "rs" => { detected.insert("rs"); }
-                "go" => { detected.insert("go"); }
+                "py" | "pyi" => {
+                    detected.insert("py");
+                }
+                "ts" | "tsx" => {
+                    detected.insert("ts");
+                }
+                "js" | "jsx" | "mjs" | "cjs" => {
+                    detected.insert("js");
+                }
+                "java" => {
+                    detected.insert("java");
+                }
+                "c" | "h" => {
+                    detected.insert("c");
+                }
+                "cpp" | "cc" | "cxx" | "hpp" => {
+                    detected.insert("cpp");
+                }
+                "rs" => {
+                    detected.insert("rs");
+                }
+                "go" => {
+                    detected.insert("go");
+                }
                 _ => {}
             }
         }
