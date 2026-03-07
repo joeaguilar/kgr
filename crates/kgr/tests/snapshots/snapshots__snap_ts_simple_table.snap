@@ -1,0 +1,8 @@
+---
+source: crates/kgr/tests/snapshots.rs
+expression: stdout
+---
+FILE                                               LANG         LOCAL-IN LOCAL-OUT   EXT  CYCLES STATUS
+---------------------------------------------------------------------------------------------------------
+main.ts                                            typescript        0         1     0       — entry
+utils.ts                                           typescript        1         0     0       — —

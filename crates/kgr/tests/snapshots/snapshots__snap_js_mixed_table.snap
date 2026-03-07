@@ -1,0 +1,8 @@
+---
+source: crates/kgr/tests/snapshots.rs
+expression: stdout
+---
+FILE                                               LANG         LOCAL-IN LOCAL-OUT   EXT  CYCLES STATUS
+---------------------------------------------------------------------------------------------------------
+app.mjs                                            javascript        0         1     0       — entry
+helper.js                                          javascript        1         0     0       — —

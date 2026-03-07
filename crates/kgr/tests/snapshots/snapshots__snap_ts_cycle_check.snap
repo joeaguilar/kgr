@@ -1,0 +1,6 @@
+---
+source: crates/kgr/tests/snapshots.rs
+expression: stderr
+---
+error[kgr::cycle]: Circular dependency detected
+  c.ts -> b.ts -> a.ts -> c.ts (cycle)

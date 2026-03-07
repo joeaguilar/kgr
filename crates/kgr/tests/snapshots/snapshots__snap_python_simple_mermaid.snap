@@ -1,0 +1,11 @@
+---
+source: crates/kgr/tests/snapshots.rs
+expression: stdout
+---
+graph LR
+  __init___py["__init__.py" ]
+  main_py["main.py" ]
+  models_py["models.py" ]
+  utils_py["utils.py" ]
+
+  main_py --> __init___py
