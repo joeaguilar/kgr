@@ -1,3 +1,4 @@
+mod agent_docs;
 mod baseline;
 mod config;
 mod pipeline;
@@ -154,6 +155,13 @@ enum Commands {
 
     /// Rebuild kgr from source and replace the running binary
     Upgrade,
+
+    /// Print a machine-readable guide for AI agents
+    AgentInfo {
+        /// Output format: text, json
+        #[arg(short, long, default_value = "text")]
+        format: String,
+    },
 }
 
 fn main() {
@@ -234,6 +242,9 @@ fn main() {
         }
         Some(Commands::Upgrade) => {
             run_upgrade();
+        }
+        Some(Commands::AgentInfo { format }) => {
+            run_agent_info(&format);
         }
         None => {
             // Default: run graph with tree format on current directory
@@ -736,4 +747,13 @@ fn run_upgrade() {
 
     eprintln!("kgr upgraded successfully.");
     eprintln!("Version: {}", env!("CARGO_PKG_VERSION"));
+}
+
+fn run_agent_info(format: &str) {
+    if format == "json" {
+        let json = serde_json::json!({ "guide": agent_docs::AGENT_DOCS });
+        println!("{}", serde_json::to_string_pretty(&json).unwrap());
+    } else {
+        print!("{}", agent_docs::AGENT_DOCS);
+    }
 }
