@@ -1,0 +1,9 @@
+---
+source: crates/kgr/tests/snapshots.rs
+expression: stdout
+---
+graph LR
+  app_mjs["app.mjs" ]
+  helper_js["helper.js" ]
+
+  app_mjs --> helper_js

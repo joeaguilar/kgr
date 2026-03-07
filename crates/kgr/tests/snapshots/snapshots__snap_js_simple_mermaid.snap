@@ -1,0 +1,9 @@
+---
+source: crates/kgr/tests/snapshots.rs
+expression: stdout
+---
+graph LR
+  index_js["index.js" ]
+  utils_js["utils.js" ]
+
+  index_js --> utils_js

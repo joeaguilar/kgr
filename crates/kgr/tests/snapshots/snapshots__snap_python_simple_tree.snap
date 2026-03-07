@@ -1,0 +1,10 @@
+---
+source: crates/kgr/tests/snapshots.rs
+expression: stdout
+---
+main.py  [entry]
+└── __init__.py
+
+Orphaned files:
+  models.py
+  utils.py

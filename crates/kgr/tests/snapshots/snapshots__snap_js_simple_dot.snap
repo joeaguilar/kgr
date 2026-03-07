@@ -1,0 +1,14 @@
+---
+source: crates/kgr/tests/snapshots.rs
+expression: stdout
+---
+digraph kgr {
+  rankdir=LR;
+  node [shape=box fontname="monospace" fontsize=10];
+  edge [arrowsize=0.6];
+
+  "index.js" [label="index.js" color="#f7df1e"];
+  "utils.js" [label="utils.js" color="#f7df1e"];
+
+  "index.js" -> "utils.js";
+}

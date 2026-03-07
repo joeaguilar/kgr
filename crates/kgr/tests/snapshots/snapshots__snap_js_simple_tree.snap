@@ -1,0 +1,6 @@
+---
+source: crates/kgr/tests/snapshots.rs
+expression: stdout
+---
+index.js  [entry]
+└── utils.js

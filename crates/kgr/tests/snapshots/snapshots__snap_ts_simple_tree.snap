@@ -1,0 +1,6 @@
+---
+source: crates/kgr/tests/snapshots.rs
+expression: stdout
+---
+main.ts  [entry]
+└── utils.ts

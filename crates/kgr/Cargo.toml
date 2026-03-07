@@ -1,0 +1,41 @@
+[package]
+name = "kgr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "kgr — polyglot source dependency knowledge graph"
+
+[[bin]]
+name = "kgr"
+path = "src/main.rs"
+
+[dependencies]
+kgr-core = { path = "../kgr-core" }
+
+# CLI
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# File discovery
+ignore = "0.4"
+
+# Parallelism + progress
+rayon = "1.11"
+indicatif = { version = "0.18", features = ["rayon"] }
+
+# Config
+figment = { version = "0.10", features = ["toml", "env"] }
+
+# Shared
+serde.workspace = true
+serde_json.workspace = true
+miette.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+assert_cmd = "2"
+insta = { version = "1.46.3", features = ["filters"] }
+predicates = "3"
+tempfile = "3"

@@ -1,0 +1,9 @@
+---
+source: crates/kgr/tests/snapshots.rs
+expression: stdout
+---
+graph LR
+  main_ts["main.ts" ]
+  utils_ts["utils.ts" ]
+
+  main_ts --> utils_ts

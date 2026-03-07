@@ -1,0 +1,16 @@
+---
+source: crates/kgr/tests/snapshots.rs
+expression: stdout
+---
+digraph kgr {
+  rankdir=LR;
+  node [shape=box fontname="monospace" fontsize=10];
+  edge [arrowsize=0.6];
+
+  "__init__.py" [label="__init__.py" color="#3776ab"];
+  "main.py" [label="main.py" color="#3776ab"];
+  "models.py" [label="models.py" color="#3776ab"];
+  "utils.py" [label="utils.py" color="#3776ab"];
+
+  "main.py" -> "__init__.py";
+}
