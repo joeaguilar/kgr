@@ -88,7 +88,10 @@ impl super::Parser for RustParser {
                         ImportKind::Local
                     } else if capture.index == use_idx {
                         // use crate:: or use super:: are local
-                        if raw.starts_with("crate::") || raw.starts_with("super::") || raw.starts_with("self::") {
+                        if raw.starts_with("crate::")
+                            || raw.starts_with("super::")
+                            || raw.starts_with("self::")
+                        {
                             ImportKind::Local
                         } else {
                             ImportKind::External

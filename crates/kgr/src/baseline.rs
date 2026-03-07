@@ -22,14 +22,9 @@ pub struct Baseline {
 }
 
 impl Baseline {
-    pub fn new(
-        cycles: &[Vec<PathBuf>],
-        rule_violations: &[RuleViolation],
-    ) -> Self {
-        let mut canonical_cycles: Vec<Vec<String>> = cycles
-            .iter()
-            .map(|c| normalize_cycle(c))
-            .collect();
+    pub fn new(cycles: &[Vec<PathBuf>], rule_violations: &[RuleViolation]) -> Self {
+        let mut canonical_cycles: Vec<Vec<String>> =
+            cycles.iter().map(|c| normalize_cycle(c)).collect();
         canonical_cycles.sort();
         canonical_cycles.dedup();
 

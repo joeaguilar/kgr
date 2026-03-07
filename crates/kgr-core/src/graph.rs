@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
-use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::algo::tarjan_scc;
+use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::Direction;
 
 use crate::types::{DepEdge, DepGraph, FileNode, ImportKind};
@@ -74,11 +74,7 @@ impl KGraph {
         tarjan_scc(&self.inner)
             .into_iter()
             .filter(|scc| scc.len() > 1)
-            .map(|scc| {
-                scc.into_iter()
-                    .map(|idx| self.inner[idx].clone())
-                    .collect()
-            })
+            .map(|scc| scc.into_iter().map(|idx| self.inner[idx].clone()).collect())
             .collect()
     }
 
@@ -178,10 +174,7 @@ impl KGraph {
             for &node in scc {
                 for neighbor in self.inner.neighbors_directed(node, Direction::Outgoing) {
                     if scc_set.contains(&neighbor) {
-                        cycle_edges.push((
-                            self.inner[node].clone(),
-                            self.inner[neighbor].clone(),
-                        ));
+                        cycle_edges.push((self.inner[node].clone(), self.inner[neighbor].clone()));
                     }
                 }
             }

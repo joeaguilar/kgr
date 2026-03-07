@@ -61,13 +61,9 @@ impl super::Parser for TypeScriptParser {
             .unwrap_or(false);
 
         if is_tsx {
-            TSX_PARSER.with(|parser| {
-                parse_with(parser, source, path, &TSX_QUERY)
-            })
+            TSX_PARSER.with(|parser| parse_with(parser, source, path, &TSX_QUERY))
         } else {
-            TS_PARSER.with(|parser| {
-                parse_with(parser, source, path, &TS_QUERY)
-            })
+            TS_PARSER.with(|parser| parse_with(parser, source, path, &TS_QUERY))
         }
     }
 }

@@ -16,7 +16,11 @@ use kgr_core::parse::ParserRegistry;
 use kgr_core::resolve::Resolver;
 
 #[derive(Parser)]
-#[command(name = "kgr", version, about = "Polyglot source dependency knowledge graph")]
+#[command(
+    name = "kgr",
+    version,
+    about = "Polyglot source dependency knowledge graph"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -155,7 +159,14 @@ fn main() {
             verbose,
         }) => {
             setup_tracing(verbose);
-            run_graph(&path, &format, &lang, no_external, no_progress, output.as_deref());
+            run_graph(
+                &path,
+                &format,
+                &lang,
+                no_external,
+                no_progress,
+                output.as_deref(),
+            );
         }
         Some(Commands::Check {
             path,
@@ -166,7 +177,13 @@ fn main() {
             verbose,
         }) => {
             setup_tracing(verbose);
-            run_check(&path, &lang, no_progress, update_baseline, baseline.as_deref());
+            run_check(
+                &path,
+                &lang,
+                no_progress,
+                update_baseline,
+                baseline.as_deref(),
+            );
         }
         Some(Commands::Query {
             path,
@@ -203,14 +220,7 @@ fn main() {
         None => {
             // Default: run graph with tree format on current directory
             setup_tracing(0);
-            run_graph(
-                &PathBuf::from("."),
-                "tree",
-                &None,
-                false,
-                false,
-                None,
-            );
+            run_graph(&PathBuf::from("."), "tree", &None, false, false, None);
         }
     }
 }

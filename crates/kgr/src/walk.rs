@@ -10,10 +10,7 @@ pub struct DiscoveredFile {
 }
 
 pub fn discover(root: &Path, langs: &Option<Vec<String>>) -> Vec<DiscoveredFile> {
-    let walker = WalkBuilder::new(root)
-        .hidden(true)
-        .git_ignore(true)
-        .build();
+    let walker = WalkBuilder::new(root).hidden(true).git_ignore(true).build();
 
     let mut files = Vec::new();
 

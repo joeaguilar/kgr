@@ -10,14 +10,14 @@ pub fn render_dot(
     kgraph: &KGraph,
     writer: &mut dyn Write,
 ) -> std::io::Result<()> {
-    let cycle_edges: HashSet<(PathBuf, PathBuf)> = kgraph
-        .cycle_edges()
-        .into_iter()
-        .collect();
+    let cycle_edges: HashSet<(PathBuf, PathBuf)> = kgraph.cycle_edges().into_iter().collect();
 
     writeln!(writer, "digraph kgr {{")?;
     writeln!(writer, "  rankdir=LR;")?;
-    writeln!(writer, "  node [shape=box fontname=\"monospace\" fontsize=10];")?;
+    writeln!(
+        writer,
+        "  node [shape=box fontname=\"monospace\" fontsize=10];"
+    )?;
     writeln!(writer, "  edge [arrowsize=0.6];")?;
     writeln!(writer)?;
 

@@ -10,10 +10,7 @@ pub fn render_mermaid(
     kgraph: &KGraph,
     writer: &mut dyn Write,
 ) -> std::io::Result<()> {
-    let cycle_edges: HashSet<(PathBuf, PathBuf)> = kgraph
-        .cycle_edges()
-        .into_iter()
-        .collect();
+    let cycle_edges: HashSet<(PathBuf, PathBuf)> = kgraph.cycle_edges().into_iter().collect();
 
     let cycle_files: HashSet<_> = graph
         .cycles
@@ -24,11 +21,8 @@ pub fn render_mermaid(
     writeln!(writer, "graph LR")?;
 
     // Sanitize node names for mermaid (replace / and . with _)
-    let sanitize = |p: &PathBuf| -> String {
-        p.display()
-            .to_string()
-            .replace(['/', '.', '-'], "_")
-    };
+    let sanitize =
+        |p: &PathBuf| -> String { p.display().to_string().replace(['/', '.', '-'], "_") };
 
     let label = |p: &PathBuf| -> String {
         p.file_name()
