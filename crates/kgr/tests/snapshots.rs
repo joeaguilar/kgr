@@ -1,4 +1,3 @@
-use assert_cmd::Command;
 use std::path::PathBuf;
 
 fn fixtures_dir() -> PathBuf {
@@ -12,8 +11,7 @@ fn fixtures_dir() -> PathBuf {
 
 fn kgr_output(fixture: &str, format: &str) -> String {
     let fixture_path = fixtures_dir().join(fixture);
-    let output = Command::cargo_bin("kgr")
-        .unwrap()
+    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
         .args(["graph", "--format", format, "--no-progress"])
         .arg(&fixture_path)
         .assert()
@@ -26,8 +24,7 @@ fn kgr_output(fixture: &str, format: &str) -> String {
 
 fn kgr_check_stderr(fixture: &str) -> String {
     let fixture_path = fixtures_dir().join(fixture);
-    let output = Command::cargo_bin("kgr")
-        .unwrap()
+    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
         .args(["check", "--no-progress"])
         .arg(&fixture_path)
         .output()

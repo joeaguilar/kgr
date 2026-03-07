@@ -52,8 +52,7 @@ impl Baseline {
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        let content = serde_json::to_string_pretty(self)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let content = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
         std::fs::write(path, content)
     }
 
@@ -81,10 +80,6 @@ impl Baseline {
                 !self.rule_violations.contains(&brv)
             })
             .collect()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.cycles.is_empty() && self.rule_violations.is_empty()
     }
 
     pub fn total(&self) -> usize {

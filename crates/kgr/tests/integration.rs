@@ -1,4 +1,3 @@
-use assert_cmd::Command;
 use predicates::prelude::*;
 use std::path::PathBuf;
 
@@ -13,8 +12,7 @@ fn fixtures_dir() -> PathBuf {
 
 #[test]
 fn version_flag() {
-    Command::cargo_bin("kgr")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
         .arg("--version")
         .assert()
         .success()
@@ -24,8 +22,7 @@ fn version_flag() {
 #[test]
 fn python_simple_json() {
     let fixture = fixtures_dir().join("python/simple");
-    let output = Command::cargo_bin("kgr")
-        .unwrap()
+    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
         .args(["graph", "--format", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -43,8 +40,7 @@ fn python_simple_json() {
 #[test]
 fn typescript_simple_json() {
     let fixture = fixtures_dir().join("typescript/simple");
-    let output = Command::cargo_bin("kgr")
-        .unwrap()
+    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
         .args(["graph", "--format", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -60,8 +56,7 @@ fn typescript_simple_json() {
 #[test]
 fn typescript_cycle_check_exits_1() {
     let fixture = fixtures_dir().join("typescript/cycle");
-    Command::cargo_bin("kgr")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
         .args(["check", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -72,8 +67,7 @@ fn typescript_cycle_check_exits_1() {
 #[test]
 fn javascript_simple_json() {
     let fixture = fixtures_dir().join("javascript/simple");
-    let output = Command::cargo_bin("kgr")
-        .unwrap()
+    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
         .args(["graph", "--format", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -89,8 +83,7 @@ fn javascript_simple_json() {
 #[test]
 fn tree_output_format() {
     let fixture = fixtures_dir().join("typescript/simple");
-    Command::cargo_bin("kgr")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
         .args(["graph", "--format", "tree", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -101,8 +94,7 @@ fn tree_output_format() {
 #[test]
 fn dot_output_format() {
     let fixture = fixtures_dir().join("typescript/simple");
-    Command::cargo_bin("kgr")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
         .args(["graph", "--format", "dot", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -116,8 +108,7 @@ fn init_creates_config() {
     // Create a dummy .py file so init detects python
     std::fs::write(tmp.path().join("test.py"), "import os\n").unwrap();
 
-    Command::cargo_bin("kgr")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
         .args(["init"])
         .arg(tmp.path())
         .assert()
@@ -164,8 +155,7 @@ severity = "error"
     )
     .unwrap();
 
-    Command::cargo_bin("kgr")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
         .args(["check", "--no-progress"])
         .arg(tmp.path())
         .assert()
@@ -190,8 +180,7 @@ severity = "warn"
     )
     .unwrap();
 
-    Command::cargo_bin("kgr")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
         .args(["check", "--no-progress"])
         .arg(tmp.path())
         .assert()
@@ -217,8 +206,7 @@ severity = "error"
     )
     .unwrap();
 
-    Command::cargo_bin("kgr")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
         .args(["check", "--no-progress"])
         .arg(tmp.path())
         .assert()
@@ -239,8 +227,7 @@ fn baseline_update_exits_0_and_writes_file() {
     .unwrap();
 
     // Running with a violation normally exits 1, but --update-baseline should exit 0
-    Command::cargo_bin("kgr")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
         .args(["check", "--no-progress", "--update-baseline"])
         .arg(tmp.path())
         .assert()
@@ -261,16 +248,14 @@ fn baseline_suppresses_known_violation() {
     .unwrap();
 
     // Record the violation
-    Command::cargo_bin("kgr")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
         .args(["check", "--no-progress", "--update-baseline"])
         .arg(tmp.path())
         .assert()
         .success();
 
     // Now check — should pass because all violations are in baseline
-    Command::cargo_bin("kgr")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
         .args(["check", "--no-progress"])
         .arg(tmp.path())
         .assert()
@@ -289,8 +274,7 @@ fn baseline_fails_on_new_violation() {
         "[[rules]]\nname=\"no-api\"\nfrom=\"api/**\"\nto=\"db/**\"\nseverity=\"error\"\n",
     )
     .unwrap();
-    Command::cargo_bin("kgr")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
         .args(["check", "--no-progress", "--update-baseline"])
         .arg(tmp.path())
         .assert()
@@ -302,8 +286,7 @@ fn baseline_fails_on_new_violation() {
         "[[rules]]\nname=\"no-legacy\"\nfrom=\"legacy/**\"\nto=\"core/**\"\nseverity=\"error\"\n",
     )
     .unwrap();
-    Command::cargo_bin("kgr")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
         .args(["check", "--no-progress"])
         .arg(tmp.path())
         .assert()
@@ -318,8 +301,7 @@ fn check_json_ok_no_violations() {
     let tmp = tempfile::tempdir().unwrap();
     make_ts_fixture(&tmp);
 
-    let output = Command::cargo_bin("kgr")
-        .unwrap()
+    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
         .args(["check", "--format", "json", "--no-progress"])
         .arg(tmp.path())
         .assert()
@@ -345,8 +327,7 @@ fn check_json_rule_violation_exits_1() {
     )
     .unwrap();
 
-    let output = Command::cargo_bin("kgr")
-        .unwrap()
+    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
         .args(["check", "--format", "json", "--no-progress"])
         .arg(tmp.path())
         .assert()
@@ -367,8 +348,7 @@ fn check_json_rule_violation_exits_1() {
 fn check_json_orphans_reported() {
     let fixture = fixtures_dir().join("python/simple");
 
-    let output = Command::cargo_bin("kgr")
-        .unwrap()
+    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
         .args(["check", "--format", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
