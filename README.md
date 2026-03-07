@@ -10,12 +10,12 @@ Zero-config, polyglot CLI that reads source files and emits a queryable knowledg
 
 ```sh
 # Clone and install in one step
-git clone https://github.com/josefaguilar/kgr
+git clone https://github.com/joeaguilar/kgr
 cd kgr
 ./install.sh          # builds release binary → ~/.cargo/bin/kgr
 ```
 
-Or with cargo directly:
+Or with cargo directly (after cloning):
 
 ```sh
 cargo install --path crates/kgr
@@ -131,6 +131,7 @@ Use `kgr check --update-baseline` to suppress known violations during a migratio
   "cycles": [[...]],
   "roots": [...],
   "orphans": [...],
+  "test_entries": [...],
   "external_deps": { "main.ts": ["express", "lodash"] }
 }
 ```
