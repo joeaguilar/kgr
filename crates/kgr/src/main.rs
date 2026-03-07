@@ -1,3 +1,4 @@
+mod baseline;
 mod config;
 mod pipeline;
 mod render;
@@ -54,7 +55,7 @@ enum Commands {
         verbose: u8,
     },
 
-    /// Check for dependency issues (cycles, orphans)
+    /// Check for dependency issues (cycles, orphans, rule violations)
     Check {
         /// Root directory to scan
         #[arg(default_value = ".")]
@@ -67,6 +68,14 @@ enum Commands {
         /// Disable progress bar
         #[arg(long)]
         no_progress: bool,
+
+        /// Record current violations as the new baseline (exits 0)
+        #[arg(long)]
+        update_baseline: bool,
+
+        /// Path to baseline file [default: <root>/.kgr-baseline.json]
+        #[arg(long)]
+        baseline: Option<PathBuf>,
 
         /// Increase verbosity
         #[arg(short, long, action = clap::ArgAction::Count)]
@@ -152,10 +161,12 @@ fn main() {
             path,
             lang,
             no_progress,
+            update_baseline,
+            baseline,
             verbose,
         }) => {
             setup_tracing(verbose);
-            run_check(&path, &lang, no_progress);
+            run_check(&path, &lang, no_progress, update_baseline, baseline.as_deref());
         }
         Some(Commands::Query {
             path,
@@ -266,7 +277,13 @@ fn run_graph(
     });
 }
 
-fn run_check(path: &PathBuf, lang: &Option<Vec<String>>, no_progress: bool) {
+fn run_check(
+    path: &PathBuf,
+    lang: &Option<Vec<String>>,
+    no_progress: bool,
+    update_baseline: bool,
+    baseline_path: Option<&Path>,
+) {
     let root = std::fs::canonicalize(path).unwrap_or_else(|e| {
         eprintln!("Error: cannot access '{}': {}", path.display(), e);
         process::exit(2);
@@ -286,28 +303,62 @@ fn run_check(path: &PathBuf, lang: &Option<Vec<String>>, no_progress: bool) {
     resolver.resolve_all(&mut file_nodes);
 
     let kgraph = KGraph::from_files(&file_nodes);
-    let dep_graph = kgraph.to_dep_graph(root, file_nodes);
+    let dep_graph = kgraph.to_dep_graph(root.clone(), file_nodes);
+
+    let all_rule_violations = rules::check_rules(&dep_graph, &cfg.rules);
+    let resolved_baseline_path = baseline_path
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join(".kgr-baseline.json"));
+
+    // --update-baseline: record current state and exit 0
+    if update_baseline {
+        let bl = baseline::Baseline::new(&dep_graph.cycles, &all_rule_violations);
+        bl.save(&resolved_baseline_path).unwrap_or_else(|e| {
+            eprintln!("Error writing baseline: {}", e);
+            process::exit(2);
+        });
+        eprintln!(
+            "Baseline updated: {} cycle(s), {} rule violation(s) recorded in {}",
+            bl.cycles.len(),
+            bl.rule_violations.len(),
+            resolved_baseline_path.display()
+        );
+        return;
+    }
+
+    // Load baseline if it exists
+    let bl = baseline::Baseline::load(&resolved_baseline_path);
+    let suppressed = bl.as_ref().map(|b| b.total()).unwrap_or(0);
+
+    let active_cycles: Vec<&Vec<std::path::PathBuf>> = match &bl {
+        Some(b) => b.new_cycles(&dep_graph.cycles),
+        None => dep_graph.cycles.iter().collect(),
+    };
+    let active_rule_violations: Vec<&rules::RuleViolation> = match &bl {
+        Some(b) => b.new_rule_violations(&all_rule_violations),
+        None => all_rule_violations.iter().collect(),
+    };
 
     let mut has_errors = false;
 
-    // Check for cycles
-    if !dep_graph.cycles.is_empty() {
+    // Report cycles
+    if !active_cycles.is_empty() {
         has_errors = true;
         eprintln!("error[kgr::cycle]: Circular dependency detected");
-        for cycle in &dep_graph.cycles {
+        for cycle in &active_cycles {
             eprint!("  ");
-            for (i, path) in cycle.iter().enumerate() {
+            for (i, p) in cycle.iter().enumerate() {
                 if i > 0 {
                     eprint!(" -> ");
                 }
-                eprint!("{}", path.display());
+                eprint!("{}", p.display());
             }
             eprintln!(" -> {} (cycle)", cycle[0].display());
         }
         eprintln!();
     }
 
-    // Check for orphans
+    // Report orphans (always warn, never baselined)
     if !dep_graph.orphans.is_empty() {
         eprintln!("warning[kgr::orphan]: Orphaned files (no imports, not imported):");
         for orphan in &dep_graph.orphans {
@@ -316,33 +367,34 @@ fn run_check(path: &PathBuf, lang: &Option<Vec<String>>, no_progress: bool) {
         eprintln!();
     }
 
-    // Check rules from .kgr.toml
-    if !cfg.rules.is_empty() {
-        let violations = rules::check_rules(&dep_graph, &cfg.rules);
-        for v in &violations {
-            match v.severity {
-                config::Severity::Error => {
-                    has_errors = true;
-                    eprintln!(
-                        "error[kgr::rule]: rule '{}' violated: {} -> {}",
-                        v.rule_name,
-                        v.from.display(),
-                        v.to.display()
-                    );
-                }
-                config::Severity::Warn => {
-                    eprintln!(
-                        "warning[kgr::rule]: rule '{}' violated: {} -> {}",
-                        v.rule_name,
-                        v.from.display(),
-                        v.to.display()
-                    );
-                }
+    // Report rule violations
+    for v in &active_rule_violations {
+        match v.severity {
+            config::Severity::Error => {
+                has_errors = true;
+                eprintln!(
+                    "error[kgr::rule]: rule '{}' violated: {} -> {}",
+                    v.rule_name,
+                    v.from.display(),
+                    v.to.display()
+                );
+            }
+            config::Severity::Warn => {
+                eprintln!(
+                    "warning[kgr::rule]: rule '{}' violated: {} -> {}",
+                    v.rule_name,
+                    v.from.display(),
+                    v.to.display()
+                );
             }
         }
-        if !violations.is_empty() {
-            eprintln!();
-        }
+    }
+    if !active_rule_violations.is_empty() {
+        eprintln!();
+    }
+
+    if suppressed > 0 {
+        eprintln!("note: {} violation(s) suppressed by baseline", suppressed);
     }
 
     if has_errors {

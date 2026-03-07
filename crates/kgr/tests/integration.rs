@@ -225,3 +225,88 @@ severity = "error"
         .success()
         .stderr(predicate::str::contains("All checks passed."));
 }
+
+// ── Baseline enforcement ──────────────────────────────────────────────────────
+
+#[test]
+fn baseline_update_exits_0_and_writes_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    make_ts_fixture(&tmp);
+    std::fs::write(
+        tmp.path().join(".kgr.toml"),
+        "[[rules]]\nname=\"no-legacy\"\nfrom=\"legacy/**\"\nto=\"core/**\"\nseverity=\"error\"\n",
+    )
+    .unwrap();
+
+    // Running with a violation normally exits 1, but --update-baseline should exit 0
+    Command::cargo_bin("kgr")
+        .unwrap()
+        .args(["check", "--no-progress", "--update-baseline"])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Baseline updated"));
+
+    assert!(tmp.path().join(".kgr-baseline.json").exists());
+}
+
+#[test]
+fn baseline_suppresses_known_violation() {
+    let tmp = tempfile::tempdir().unwrap();
+    make_ts_fixture(&tmp);
+    std::fs::write(
+        tmp.path().join(".kgr.toml"),
+        "[[rules]]\nname=\"no-legacy\"\nfrom=\"legacy/**\"\nto=\"core/**\"\nseverity=\"error\"\n",
+    )
+    .unwrap();
+
+    // Record the violation
+    Command::cargo_bin("kgr")
+        .unwrap()
+        .args(["check", "--no-progress", "--update-baseline"])
+        .arg(tmp.path())
+        .assert()
+        .success();
+
+    // Now check — should pass because all violations are in baseline
+    Command::cargo_bin("kgr")
+        .unwrap()
+        .args(["check", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("suppressed by baseline"));
+}
+
+#[test]
+fn baseline_fails_on_new_violation() {
+    let tmp = tempfile::tempdir().unwrap();
+    make_ts_fixture(&tmp);
+
+    // Baseline with a rule that matches nothing (empty baseline effectively)
+    std::fs::write(
+        tmp.path().join(".kgr.toml"),
+        "[[rules]]\nname=\"no-api\"\nfrom=\"api/**\"\nto=\"db/**\"\nseverity=\"error\"\n",
+    )
+    .unwrap();
+    Command::cargo_bin("kgr")
+        .unwrap()
+        .args(["check", "--no-progress", "--update-baseline"])
+        .arg(tmp.path())
+        .assert()
+        .success();
+
+    // Swap in a rule that DOES match — new violation not in baseline
+    std::fs::write(
+        tmp.path().join(".kgr.toml"),
+        "[[rules]]\nname=\"no-legacy\"\nfrom=\"legacy/**\"\nto=\"core/**\"\nseverity=\"error\"\n",
+    )
+    .unwrap();
+    Command::cargo_bin("kgr")
+        .unwrap()
+        .args(["check", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no-legacy"));
+}
