@@ -513,6 +513,7 @@ dependencies = [
  "assert_cmd",
  "clap",
  "figment",
+ "globset",
  "ignore",
  "indicatif",
  "insta",

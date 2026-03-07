@@ -127,4 +127,101 @@ fn init_creates_config() {
     assert!(tmp.path().join(".kgr.toml").exists());
     let content = std::fs::read_to_string(tmp.path().join(".kgr.toml")).unwrap();
     assert!(content.contains("py"));
+    assert!(content.contains("[[rules]]"));
+}
+
+// ── Rule system ──────────────────────────────────────────────────────────────
+
+fn make_ts_fixture(tmp: &tempfile::TempDir) {
+    // core/db.ts  (no imports)
+    std::fs::create_dir_all(tmp.path().join("core")).unwrap();
+    std::fs::write(tmp.path().join("core/db.ts"), "export const db = {};\n").unwrap();
+
+    // legacy/repo.ts  imports core/db.ts
+    std::fs::create_dir_all(tmp.path().join("legacy")).unwrap();
+    std::fs::write(
+        tmp.path().join("legacy/repo.ts"),
+        "import { db } from '../core/db';\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn rule_violation_exits_1() {
+    let tmp = tempfile::tempdir().unwrap();
+    make_ts_fixture(&tmp);
+
+    // Forbid legacy -> core
+    std::fs::write(
+        tmp.path().join(".kgr.toml"),
+        r#"
+[[rules]]
+name = "no-legacy-to-core"
+from = "legacy/**"
+to   = "core/**"
+severity = "error"
+"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("kgr")
+        .unwrap()
+        .args(["check", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no-legacy-to-core"));
+}
+
+#[test]
+fn rule_warn_severity_exits_0() {
+    let tmp = tempfile::tempdir().unwrap();
+    make_ts_fixture(&tmp);
+
+    std::fs::write(
+        tmp.path().join(".kgr.toml"),
+        r#"
+[[rules]]
+name = "warn-legacy-to-core"
+from = "legacy/**"
+to   = "core/**"
+severity = "warn"
+"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("kgr")
+        .unwrap()
+        .args(["check", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("warn-legacy-to-core"));
+}
+
+#[test]
+fn rule_no_match_exits_0() {
+    let tmp = tempfile::tempdir().unwrap();
+    make_ts_fixture(&tmp);
+
+    // Rule that doesn't match the actual edges
+    std::fs::write(
+        tmp.path().join(".kgr.toml"),
+        r#"
+[[rules]]
+name = "no-api-to-db"
+from = "api/**"
+to   = "db/**"
+severity = "error"
+"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("kgr")
+        .unwrap()
+        .args(["check", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("All checks passed."));
 }

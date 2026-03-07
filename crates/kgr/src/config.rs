@@ -4,6 +4,25 @@ use figment::providers::{Env, Format, Serialized, Toml};
 use figment::Figment;
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Severity {
+    #[default]
+    Error,
+    Warn,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Rule {
+    pub name: String,
+    /// Glob pattern for the importing file
+    pub from: String,
+    /// Glob pattern for the imported file
+    pub to: String,
+    #[serde(default)]
+    pub severity: Severity,
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -23,6 +42,8 @@ pub struct Config {
     pub depth: Option<usize>,
     #[serde(default)]
     pub entry: Option<PathBuf>,
+    #[serde(default)]
+    pub rules: Vec<Rule>,
 }
 
 fn default_format() -> String {
@@ -40,6 +61,7 @@ impl Default for Config {
             no_progress: false,
             depth: None,
             entry: None,
+            rules: Vec::new(),
         }
     }
 }
@@ -95,6 +117,16 @@ orphans = "warn"
 [output]
 format = "tree"
 no_external = false
+
+# Enforce architectural boundaries. Each rule checks that no import
+# edge runs from a 'from' file to a 'to' file matching the globs.
+# severity: "error" (default, fails kgr check) or "warn" (informational).
+#
+# [[rules]]
+# name = "no-legacy-to-core"
+# from = "src/legacy/**"
+# to   = "src/core/**"
+# severity = "error"
 "#,
         langs.join(", ")
     );
