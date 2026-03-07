@@ -24,8 +24,8 @@ pub fn render_tree(
     }
 
     for root in roots {
-        // Skip orphans from root display
-        if graph.orphans.contains(root) {
+        // Skip orphans and test entries from root display
+        if graph.orphans.contains(root) || graph.test_entries.contains(root) {
             continue;
         }
 
@@ -33,6 +33,14 @@ pub fn render_tree(
         let mut visited = HashSet::new();
         visited.insert(root.clone());
         render_children(kgraph, root, "", &cycle_edges, &mut visited, no_external, writer)?;
+    }
+
+    if !graph.test_entries.is_empty() {
+        writeln!(writer)?;
+        writeln!(writer, "Test entry points:")?;
+        for entry in &graph.test_entries {
+            writeln!(writer, "  {}", entry.display())?;
+        }
     }
 
     if !graph.orphans.is_empty() {

@@ -77,4 +77,5 @@ pub struct DepGraph {
     pub cycles: Vec<Vec<PathBuf>>,
     pub roots: Vec<PathBuf>,
     pub orphans: Vec<PathBuf>,
+    pub test_entries: Vec<PathBuf>,
 }

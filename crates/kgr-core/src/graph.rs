@@ -7,6 +7,34 @@ use petgraph::Direction;
 
 use crate::types::{DepEdge, DepGraph, FileNode, ImportKind};
 
+fn is_test_entry(path: &Path) -> bool {
+    const TEST_DIRS: &[&str] = &["tests", "test", "spec", "specs", "__tests__", "__mocks__"];
+
+    for component in path.components() {
+        if let std::path::Component::Normal(s) = component {
+            if let Some(s) = s.to_str() {
+                if TEST_DIRS.contains(&s) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+        if stem.ends_with("_test") || stem.ends_with("_spec") {
+            return true;
+        }
+        if stem.starts_with("test_") || stem.starts_with("spec_") {
+            return true;
+        }
+        if stem.contains(".test") || stem.contains(".spec") {
+            return true;
+        }
+    }
+
+    false
+}
+
 pub struct KGraph {
     inner: DiGraph<PathBuf, ImportKind>,
     node_index: HashMap<PathBuf, NodeIndex>,
@@ -70,7 +98,7 @@ impl KGraph {
     pub fn orphans(&self) -> Vec<PathBuf> {
         self.node_index
             .iter()
-            .filter(|(_, &idx)| {
+            .filter(|(path, &idx)| {
                 let no_in = self
                     .inner
                     .neighbors_directed(idx, Direction::Incoming)
@@ -81,7 +109,27 @@ impl KGraph {
                     .neighbors_directed(idx, Direction::Outgoing)
                     .next()
                     .is_none();
-                no_in && no_out
+                no_in && no_out && !is_test_entry(path)
+            })
+            .map(|(path, _)| path.clone())
+            .collect()
+    }
+
+    pub fn test_entries(&self) -> Vec<PathBuf> {
+        self.node_index
+            .iter()
+            .filter(|(path, &idx)| {
+                let no_in = self
+                    .inner
+                    .neighbors_directed(idx, Direction::Incoming)
+                    .next()
+                    .is_none();
+                let no_out = self
+                    .inner
+                    .neighbors_directed(idx, Direction::Outgoing)
+                    .next()
+                    .is_none();
+                no_in && no_out && is_test_entry(path)
             })
             .map(|(path, _)| path.clone())
             .collect()
@@ -104,6 +152,8 @@ impl KGraph {
         roots.sort();
         let mut orphans = self.orphans();
         orphans.sort();
+        let mut test_entries = self.test_entries();
+        test_entries.sort();
 
         DepGraph {
             root,
@@ -112,6 +162,7 @@ impl KGraph {
             cycles,
             roots,
             orphans,
+            test_entries,
         }
     }
 
