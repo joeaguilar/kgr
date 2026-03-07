@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -9,9 +9,33 @@ pub fn render_tree(
     graph: &DepGraph,
     kgraph: &KGraph,
     no_external: bool,
+    show_external: bool,
     writer: &mut dyn Write,
 ) -> std::io::Result<()> {
     let cycle_edges: HashSet<(PathBuf, PathBuf)> = kgraph.cycle_edges().into_iter().collect();
+
+    // Build a map of file -> external dep names for --show-external.
+    let ext_map: HashMap<&PathBuf, Vec<&str>> = if show_external {
+        graph
+            .files
+            .iter()
+            .filter_map(|f| {
+                let pkgs: Vec<&str> = f
+                    .imports
+                    .iter()
+                    .filter(|i| i.kind == ImportKind::External)
+                    .map(|i| i.raw.as_str())
+                    .collect();
+                if pkgs.is_empty() {
+                    None
+                } else {
+                    Some((&f.path, pkgs))
+                }
+            })
+            .collect()
+    } else {
+        HashMap::new()
+    };
 
     let roots = &graph.roots;
 
@@ -36,6 +60,8 @@ pub fn render_tree(
             &cycle_edges,
             &mut visited,
             no_external,
+            show_external,
+            &ext_map,
             writer,
         )?;
     }
@@ -66,6 +92,8 @@ fn render_children(
     cycle_edges: &HashSet<(PathBuf, PathBuf)>,
     visited: &mut HashSet<PathBuf>,
     no_external: bool,
+    show_external: bool,
+    ext_map: &HashMap<&PathBuf, Vec<&str>>,
     writer: &mut dyn Write,
 ) -> std::io::Result<()> {
     let mut edges = kgraph.edges_from(node);
@@ -74,9 +102,16 @@ fn render_children(
     }
     edges.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let count = edges.len();
+    // Determine if we'll append an external block after local children.
+    let ext_pkgs: &[&str] = if show_external {
+        ext_map.get(node).map(|v| v.as_slice()).unwrap_or(&[])
+    } else {
+        &[]
+    };
+
+    let total = edges.len() + ext_pkgs.len();
     for (i, (target, _kind)) in edges.iter().enumerate() {
-        let is_last = i == count - 1;
+        let is_last = i == total - 1;
         let connector = if is_last {
             "\u{2514}\u{2500}\u{2500} "
         } else {
@@ -113,9 +148,23 @@ fn render_children(
                 cycle_edges,
                 visited,
                 no_external,
+                show_external,
+                ext_map,
                 writer,
             )?;
         }
+    }
+
+    // Append external deps as leaf nodes after local children.
+    for (i, pkg) in ext_pkgs.iter().enumerate() {
+        let edge_offset = edges.len();
+        let is_last = (edge_offset + i) == total - 1;
+        let connector = if is_last {
+            "\u{2514}\u{2500}\u{2500} "
+        } else {
+            "\u{251c}\u{2500}\u{2500} "
+        };
+        writeln!(writer, "{}{}{} [ext]", prefix, connector, pkg)?;
     }
 
     Ok(())

@@ -310,3 +310,75 @@ fn baseline_fails_on_new_violation() {
         .failure()
         .stderr(predicate::str::contains("no-legacy"));
 }
+
+// ── JSON format for check ─────────────────────────────────────────────────────
+
+#[test]
+fn check_json_ok_no_violations() {
+    let tmp = tempfile::tempdir().unwrap();
+    make_ts_fixture(&tmp);
+
+    let output = Command::cargo_bin("kgr")
+        .unwrap()
+        .args(["check", "--format", "json", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["ok"], true);
+    assert!(json["cycles"].as_array().unwrap().is_empty());
+    assert!(json["rule_violations"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn check_json_rule_violation_exits_1() {
+    let tmp = tempfile::tempdir().unwrap();
+    make_ts_fixture(&tmp);
+
+    std::fs::write(
+        tmp.path().join(".kgr.toml"),
+        "[[rules]]\nname=\"no-legacy-to-core\"\nfrom=\"legacy/**\"\nto=\"core/**\"\nseverity=\"error\"\n",
+    )
+    .unwrap();
+
+    let output = Command::cargo_bin("kgr")
+        .unwrap()
+        .args(["check", "--format", "json", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["ok"], false);
+    let violations = json["rule_violations"].as_array().unwrap();
+    assert_eq!(violations.len(), 1);
+    assert_eq!(violations[0]["rule"], "no-legacy-to-core");
+    assert_eq!(violations[0]["severity"], "error");
+}
+
+#[test]
+fn check_json_orphans_reported() {
+    let fixture = fixtures_dir().join("python/simple");
+
+    let output = Command::cargo_bin("kgr")
+        .unwrap()
+        .args(["check", "--format", "json", "--no-progress"])
+        .arg(&fixture)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["ok"], true);
+    let orphans = json["orphans"].as_array().unwrap();
+    assert!(!orphans.is_empty());
+}

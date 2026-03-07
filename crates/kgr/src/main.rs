@@ -46,6 +46,10 @@ enum Commands {
         #[arg(long)]
         no_external: bool,
 
+        /// Show external package names in tree/table output
+        #[arg(long)]
+        show_external: bool,
+
         /// Disable progress bar
         #[arg(long)]
         no_progress: bool,
@@ -64,6 +68,10 @@ enum Commands {
         /// Root directory to scan
         #[arg(default_value = ".")]
         path: PathBuf,
+
+        /// Output format: text, json
+        #[arg(short, long, default_value = "text")]
+        format: String,
 
         /// Filter by language
         #[arg(short, long)]
@@ -143,6 +151,9 @@ enum Commands {
         #[arg(default_value = ".")]
         path: PathBuf,
     },
+
+    /// Rebuild kgr from source and replace the running binary
+    Upgrade,
 }
 
 fn main() {
@@ -154,6 +165,7 @@ fn main() {
             format,
             lang,
             no_external,
+            show_external,
             no_progress,
             output,
             verbose,
@@ -164,12 +176,14 @@ fn main() {
                 &format,
                 &lang,
                 no_external,
+                show_external,
                 no_progress,
                 output.as_deref(),
             );
         }
         Some(Commands::Check {
             path,
+            format,
             lang,
             no_progress,
             update_baseline,
@@ -179,6 +193,7 @@ fn main() {
             setup_tracing(verbose);
             run_check(
                 &path,
+                &format,
                 &lang,
                 no_progress,
                 update_baseline,
@@ -217,10 +232,13 @@ fn main() {
         Some(Commands::Init { path }) => {
             run_init(&path);
         }
+        Some(Commands::Upgrade) => {
+            run_upgrade();
+        }
         None => {
             // Default: run graph with tree format on current directory
             setup_tracing(0);
-            run_graph(&PathBuf::from("."), "tree", &None, false, false, None);
+            run_graph(&PathBuf::from("."), "tree", &None, false, false, false, None);
         }
     }
 }
@@ -247,6 +265,7 @@ fn run_graph(
     format: &str,
     lang: &Option<Vec<String>>,
     no_external: bool,
+    show_external: bool,
     no_progress: bool,
     output: Option<&std::path::Path>,
 ) {
@@ -281,7 +300,7 @@ fn run_graph(
         Box::new(std::io::stdout().lock())
     };
 
-    render::render(&dep_graph, &kgraph, format, no_external, &mut writer).unwrap_or_else(|e| {
+    render::render(&dep_graph, &kgraph, format, no_external, show_external, &mut writer).unwrap_or_else(|e| {
         eprintln!("Error rendering output: {}", e);
         process::exit(2);
     });
@@ -289,6 +308,7 @@ fn run_graph(
 
 fn run_check(
     path: &PathBuf,
+    format: &str,
     lang: &Option<Vec<String>>,
     no_progress: bool,
     update_baseline: bool,
@@ -349,68 +369,94 @@ fn run_check(
         None => all_rule_violations.iter().collect(),
     };
 
-    let mut has_errors = false;
+    let has_errors = !active_cycles.is_empty()
+        || active_rule_violations
+            .iter()
+            .any(|v| matches!(v.severity, config::Severity::Error));
 
-    // Report cycles
-    if !active_cycles.is_empty() {
-        has_errors = true;
-        eprintln!("error[kgr::cycle]: Circular dependency detected");
-        for cycle in &active_cycles {
-            eprint!("  ");
-            for (i, p) in cycle.iter().enumerate() {
-                if i > 0 {
-                    eprint!(" -> ");
+    if format == "json" {
+        let json = serde_json::json!({
+            "ok": !has_errors,
+            "cycles": active_cycles.iter().map(|cycle| {
+                cycle.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>()
+            }).collect::<Vec<_>>(),
+            "orphans": dep_graph.orphans.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
+            "rule_violations": active_rule_violations.iter().map(|v| serde_json::json!({
+                "rule": v.rule_name,
+                "from": v.from.to_string_lossy(),
+                "to": v.to.to_string_lossy(),
+                "severity": match v.severity {
+                    config::Severity::Error => "error",
+                    config::Severity::Warn => "warn",
+                },
+            })).collect::<Vec<_>>(),
+            "suppressed": suppressed,
+        });
+        println!("{}", serde_json::to_string_pretty(&json).unwrap());
+    } else {
+        // Report cycles
+        if !active_cycles.is_empty() {
+            eprintln!("error[kgr::cycle]: Circular dependency detected");
+            for cycle in &active_cycles {
+                eprint!("  ");
+                for (i, p) in cycle.iter().enumerate() {
+                    if i > 0 {
+                        eprint!(" -> ");
+                    }
+                    eprint!("{}", p.display());
                 }
-                eprint!("{}", p.display());
+                eprintln!(" -> {} (cycle)", cycle[0].display());
             }
-            eprintln!(" -> {} (cycle)", cycle[0].display());
+            eprintln!();
         }
-        eprintln!();
-    }
 
-    // Report orphans (always warn, never baselined)
-    if !dep_graph.orphans.is_empty() {
-        eprintln!("warning[kgr::orphan]: Orphaned files (no imports, not imported):");
-        for orphan in &dep_graph.orphans {
-            eprintln!("  {}", orphan.display());
-        }
-        eprintln!();
-    }
-
-    // Report rule violations
-    for v in &active_rule_violations {
-        match v.severity {
-            config::Severity::Error => {
-                has_errors = true;
-                eprintln!(
-                    "error[kgr::rule]: rule '{}' violated: {} -> {}",
-                    v.rule_name,
-                    v.from.display(),
-                    v.to.display()
-                );
+        // Report orphans (always warn, never baselined)
+        if !dep_graph.orphans.is_empty() {
+            eprintln!("warning[kgr::orphan]: Orphaned files (no imports, not imported):");
+            for orphan in &dep_graph.orphans {
+                eprintln!("  {}", orphan.display());
             }
-            config::Severity::Warn => {
-                eprintln!(
-                    "warning[kgr::rule]: rule '{}' violated: {} -> {}",
-                    v.rule_name,
-                    v.from.display(),
-                    v.to.display()
-                );
+            eprintln!();
+        }
+
+        // Report rule violations
+        for v in &active_rule_violations {
+            match v.severity {
+                config::Severity::Error => {
+                    eprintln!(
+                        "error[kgr::rule]: rule '{}' violated: {} -> {}",
+                        v.rule_name,
+                        v.from.display(),
+                        v.to.display()
+                    );
+                }
+                config::Severity::Warn => {
+                    eprintln!(
+                        "warning[kgr::rule]: rule '{}' violated: {} -> {}",
+                        v.rule_name,
+                        v.from.display(),
+                        v.to.display()
+                    );
+                }
             }
         }
-    }
-    if !active_rule_violations.is_empty() {
-        eprintln!();
-    }
+        if !active_rule_violations.is_empty() {
+            eprintln!();
+        }
 
-    if suppressed > 0 {
-        eprintln!("note: {} violation(s) suppressed by baseline", suppressed);
+        if suppressed > 0 {
+            eprintln!("note: {} violation(s) suppressed by baseline", suppressed);
+        }
+
+        if has_errors {
+            // error messages already printed above
+        } else {
+            eprintln!("All checks passed.");
+        }
     }
 
     if has_errors {
         process::exit(1);
-    } else {
-        eprintln!("All checks passed.");
     }
 }
 
@@ -589,4 +635,67 @@ fn run_init(path: &Path) {
             process::exit(2);
         }
     }
+}
+
+fn run_upgrade() {
+    // The source directory is baked in at compile time by build.rs.
+    // It points to the crates/kgr manifest dir, so the workspace root is two levels up.
+    let source_dir = std::path::Path::new(env!("KGR_SOURCE_DIR"));
+    let workspace_root = source_dir
+        .parent()
+        .and_then(|p| p.parent())
+        .unwrap_or(source_dir);
+
+    // Where the running binary lives — this is where we'll overwrite.
+    let dest = std::env::current_exe().unwrap_or_else(|e| {
+        eprintln!("Error: cannot determine current executable path: {}", e);
+        process::exit(2);
+    });
+
+    eprintln!("Upgrading kgr at {}", dest.display());
+    eprintln!("Source: {}", workspace_root.display());
+
+    // git pull
+    eprintln!("Running: git pull");
+    let status = std::process::Command::new("git")
+        .args(["-C", &workspace_root.to_string_lossy(), "pull"])
+        .status()
+        .unwrap_or_else(|e| {
+            eprintln!("Error: failed to run git pull: {}", e);
+            process::exit(2);
+        });
+    if !status.success() {
+        eprintln!("Error: git pull failed");
+        process::exit(1);
+    }
+
+    // cargo build --release -p kgr
+    eprintln!("Running: cargo build --release -p kgr");
+    let status = std::process::Command::new("cargo")
+        .args(["build", "--release", "-p", "kgr"])
+        .current_dir(workspace_root)
+        .status()
+        .unwrap_or_else(|e| {
+            eprintln!("Error: failed to run cargo build: {}", e);
+            process::exit(2);
+        });
+    if !status.success() {
+        eprintln!("Error: cargo build failed");
+        process::exit(1);
+    }
+
+    // Copy the newly built binary over the current exe.
+    let new_bin = workspace_root.join("target/release/kgr");
+    std::fs::copy(&new_bin, &dest).unwrap_or_else(|e| {
+        eprintln!(
+            "Error: failed to copy {} to {}: {}",
+            new_bin.display(),
+            dest.display(),
+            e
+        );
+        process::exit(2);
+    });
+
+    eprintln!("kgr upgraded successfully.");
+    eprintln!("Version: {}", env!("CARGO_PKG_VERSION"));
 }
