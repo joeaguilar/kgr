@@ -1,6 +1,7 @@
 mod config;
 mod pipeline;
 mod render;
+mod rules;
 mod walk;
 
 use std::io::Write;
@@ -271,6 +272,7 @@ fn run_check(path: &PathBuf, lang: &Option<Vec<String>>, no_progress: bool) {
         process::exit(2);
     });
 
+    let cfg = config::load_config(&root);
     let registry = ParserRegistry::new();
     let files = walk::discover(&root, lang);
 
@@ -312,6 +314,35 @@ fn run_check(path: &PathBuf, lang: &Option<Vec<String>>, no_progress: bool) {
             eprintln!("  {}", orphan.display());
         }
         eprintln!();
+    }
+
+    // Check rules from .kgr.toml
+    if !cfg.rules.is_empty() {
+        let violations = rules::check_rules(&dep_graph, &cfg.rules);
+        for v in &violations {
+            match v.severity {
+                config::Severity::Error => {
+                    has_errors = true;
+                    eprintln!(
+                        "error[kgr::rule]: rule '{}' violated: {} -> {}",
+                        v.rule_name,
+                        v.from.display(),
+                        v.to.display()
+                    );
+                }
+                config::Severity::Warn => {
+                    eprintln!(
+                        "warning[kgr::rule]: rule '{}' violated: {} -> {}",
+                        v.rule_name,
+                        v.from.display(),
+                        v.to.display()
+                    );
+                }
+            }
+        }
+        if !violations.is_empty() {
+            eprintln!();
+        }
     }
 
     if has_errors {
