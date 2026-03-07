@@ -362,3 +362,30 @@ fn check_json_orphans_reported() {
     let orphans = json["orphans"].as_array().unwrap();
     assert!(!orphans.is_empty());
 }
+
+// ── agent-info subcommand ─────────────────────────────────────────────────────
+
+#[test]
+fn agent_info_text() {
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .arg("agent-info")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("SUBCOMMANDS"))
+        .stdout(predicate::str::contains("kgr check"))
+        .stdout(predicate::str::contains("RECOMMENDED AGENT WORKFLOW"));
+}
+
+#[test]
+fn agent_info_json() {
+    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args(["agent-info", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert!(json["guide"].as_str().unwrap().contains("SUBCOMMANDS"));
+}
