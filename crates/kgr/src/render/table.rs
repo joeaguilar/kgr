@@ -40,13 +40,16 @@ pub fn render_table(
 
         let in_cycle = cycle_files.contains(&file.path);
         let is_orphan = graph.orphans.contains(&file.path);
-        let is_entry = graph.roots.contains(&file.path) && !is_orphan;
+        let is_test_entry = graph.test_entries.contains(&file.path);
+        let is_entry = graph.roots.contains(&file.path) && !is_orphan && !is_test_entry;
 
         let cycle_marker = if in_cycle { "\u{27f3}" } else { "\u{2014}" };
         let status = if in_cycle {
             "cycle"
         } else if is_orphan {
             "orphan"
+        } else if is_test_entry {
+            "test-entry"
         } else if is_entry {
             "entry"
         } else {
