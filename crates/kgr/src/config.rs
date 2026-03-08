@@ -28,8 +28,16 @@ pub struct Rule {
 pub struct Config {
     #[serde(default)]
     pub languages: Option<Vec<String>>,
+    /// Glob patterns (relative to root) to exclude from scanning.
+    /// Matched paths are skipped entirely — directories are not walked into.
+    /// Example: `["vendor/**", "third_party/**", "generated/**"]`
     #[serde(default)]
     pub exclude: Vec<String>,
+    /// Skip files larger than this many kilobytes. Useful for ignoring
+    /// generated or vendored megabyte-scale files that slow down parsing.
+    /// Example: `max_file_size_kb = 500`
+    #[serde(default)]
+    pub max_file_size_kb: Option<u64>,
     #[serde(default = "default_format")]
     pub format: String,
     #[serde(default)]
@@ -46,6 +54,13 @@ pub struct Config {
     pub rules: Vec<Rule>,
 }
 
+impl Config {
+    /// `max_file_size_kb` converted to bytes, or `None` if not set.
+    pub fn max_file_size_bytes(&self) -> Option<u64> {
+        self.max_file_size_kb.map(|kb| kb * 1024)
+    }
+}
+
 fn default_format() -> String {
     "tree".to_string()
 }
@@ -55,6 +70,7 @@ impl Default for Config {
         Self {
             languages: None,
             exclude: Vec::new(),
+            max_file_size_kb: None,
             format: default_format(),
             no_external: false,
             no_color: false,
@@ -122,17 +138,17 @@ pub fn init_config(root: &Path) -> std::io::Result<PathBuf> {
     let content = format!(
         r#"# .kgr.toml — project configuration for kgr
 
-[project]
-languages = [{}]
-exclude = ["dist", "build", "node_modules", "__pycache__", ".venv"]
+# Glob patterns (relative to project root) to skip entirely.
+# Matched directories are not walked into, so this is fast.
+# exclude = ["vendor/**", "third_party/**", "generated/**"]
+exclude = []
 
-[check]
-cycles = "error"
-orphans = "warn"
+# Skip files larger than this many kilobytes (speeds up cold-cache scans
+# of projects with large vendored or generated files).
+# max_file_size_kb = 500
 
-[output]
-format = "tree"
-no_external = false
+# Detected languages (used by kgr graph/check/query as the default --lang filter).
+# languages = [{}]
 
 # Enforce architectural boundaries. Each rule checks that no import
 # edge runs from a 'from' file to a 'to' file matching the globs.

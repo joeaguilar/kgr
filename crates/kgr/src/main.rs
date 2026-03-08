@@ -1,5 +1,6 @@
 mod agent_docs;
 mod baseline;
+mod cache;
 mod config;
 mod pipeline;
 mod render;
@@ -293,8 +294,9 @@ fn run_graph(
         process::exit(2);
     });
 
+    let cfg = config::load_config(&root);
     let registry = ParserRegistry::new();
-    let files = walk::discover(&root, lang);
+    let files = walk::discover(&root, lang, &cfg.exclude, cfg.max_file_size_bytes());
 
     if files.is_empty() {
         eprintln!("No supported source files found in {}", root.display());
@@ -303,7 +305,12 @@ fn run_graph(
 
     tracing::info!("Discovered {} files", files.len());
 
-    let mut file_nodes = pipeline::parse_all(&root, files, &registry, !no_progress);
+    let cache_path = root.join(".kgr-cache.json");
+    let mut parse_cache = cache::ParseCache::load(&cache_path);
+    let mut file_nodes =
+        pipeline::parse_all(&root, files, &registry, &mut parse_cache, !no_progress);
+    parse_cache.save(&cache_path);
+
     let resolver = Resolver::new(PathBuf::new(), &file_nodes);
     resolver.resolve_all(&mut file_nodes);
 
@@ -348,14 +355,19 @@ fn run_check(
 
     let cfg = config::load_config(&root);
     let registry = ParserRegistry::new();
-    let files = walk::discover(&root, lang);
+    let files = walk::discover(&root, lang, &cfg.exclude, cfg.max_file_size_bytes());
 
     if files.is_empty() {
         eprintln!("No supported source files found in {}", root.display());
         return;
     }
 
-    let mut file_nodes = pipeline::parse_all(&root, files, &registry, !no_progress);
+    let cache_path = root.join(".kgr-cache.json");
+    let mut parse_cache = cache::ParseCache::load(&cache_path);
+    let mut file_nodes =
+        pipeline::parse_all(&root, files, &registry, &mut parse_cache, !no_progress);
+    parse_cache.save(&cache_path);
+
     let resolver = Resolver::new(PathBuf::new(), &file_nodes);
     resolver.resolve_all(&mut file_nodes);
 
@@ -506,15 +518,21 @@ fn run_query(
         process::exit(2);
     });
 
+    let cfg = config::load_config(&root);
     let registry = ParserRegistry::new();
-    let files = walk::discover(&root, lang);
+    let files = walk::discover(&root, lang, &cfg.exclude, cfg.max_file_size_bytes());
 
     if files.is_empty() {
         eprintln!("No supported source files found in {}", root.display());
         return;
     }
 
-    let mut file_nodes = pipeline::parse_all(&root, files, &registry, !no_progress);
+    let cache_path = root.join(".kgr-cache.json");
+    let mut parse_cache = cache::ParseCache::load(&cache_path);
+    let mut file_nodes =
+        pipeline::parse_all(&root, files, &registry, &mut parse_cache, !no_progress);
+    parse_cache.save(&cache_path);
+
     let resolver = Resolver::new(PathBuf::new(), &file_nodes);
     resolver.resolve_all(&mut file_nodes);
 
