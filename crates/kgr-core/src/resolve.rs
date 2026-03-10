@@ -43,7 +43,18 @@ impl Resolver {
             Lang::C | Lang::Cpp => self.resolve_c(raw, from),
             Lang::Rust => self.resolve_rust(raw, from),
             Lang::Go => self.resolve_go(raw, from),
-            Lang::Unknown => None,
+            Lang::Zig
+            | Lang::CSharp
+            | Lang::ObjectiveC
+            | Lang::Swift
+            | Lang::Ruby
+            | Lang::Php
+            | Lang::Scala
+            | Lang::Lua
+            | Lang::Elixir
+            | Lang::Haskell
+            | Lang::Bash
+            | Lang::Unknown => None,
         }
     }
 
