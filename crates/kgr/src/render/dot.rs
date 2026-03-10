@@ -86,6 +86,17 @@ fn lang_color(lang: Lang) -> &'static str {
         Lang::Cpp => "#f34b7d",
         Lang::Rust => "#dea584",
         Lang::Go => "#00add8",
+        Lang::Zig => "#f7a41d",
+        Lang::CSharp => "#178600",
+        Lang::ObjectiveC => "#438eff",
+        Lang::Swift => "#f05138",
+        Lang::Ruby => "#cc342d",
+        Lang::Php => "#4f5d95",
+        Lang::Scala => "#c22d40",
+        Lang::Lua => "#000080",
+        Lang::Elixir => "#6e4a7e",
+        Lang::Haskell => "#5e5086",
+        Lang::Bash => "#89e051",
         Lang::Unknown => "#999999",
     }
 }

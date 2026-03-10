@@ -1,11 +1,22 @@
+pub mod bash;
 pub mod c;
 pub mod cpp;
+pub mod csharp;
+pub mod elixir;
 pub mod go;
+pub mod haskell;
 pub mod java;
 pub mod javascript;
+pub mod lua;
+pub mod objc;
+pub mod php;
 pub mod python;
+pub mod ruby;
 pub mod rust_lang;
+pub mod scala;
+pub mod swift;
 pub mod typescript;
+pub mod zig;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -42,6 +53,17 @@ impl ParserRegistry {
         parsers.insert(Lang::Cpp, Box::new(cpp::CppParser));
         parsers.insert(Lang::Rust, Box::new(rust_lang::RustParser));
         parsers.insert(Lang::Go, Box::new(go::GoParser));
+        parsers.insert(Lang::Zig, Box::new(zig::ZigParser));
+        parsers.insert(Lang::Swift, Box::new(swift::SwiftParser));
+        parsers.insert(Lang::Ruby, Box::new(ruby::RubyParser));
+        parsers.insert(Lang::Haskell, Box::new(haskell::HaskellParser));
+        parsers.insert(Lang::ObjectiveC, Box::new(objc::ObjCParser));
+        parsers.insert(Lang::Bash, Box::new(bash::BashParser));
+        parsers.insert(Lang::Elixir, Box::new(elixir::ElixirParser));
+        parsers.insert(Lang::Lua, Box::new(lua::LuaParser));
+        parsers.insert(Lang::Scala, Box::new(scala::ScalaParser));
+        parsers.insert(Lang::Php, Box::new(php::PhpParser));
+        parsers.insert(Lang::CSharp, Box::new(csharp::CSharpParser));
         Self { parsers }
     }
 

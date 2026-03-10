@@ -78,6 +78,17 @@ pub fn discover(
                 Lang::Cpp => "cpp",
                 Lang::Rust => "rs",
                 Lang::Go => "go",
+                Lang::Zig => "zig",
+                Lang::CSharp => "cs",
+                Lang::ObjectiveC => "objc",
+                Lang::Swift => "swift",
+                Lang::Ruby => "rb",
+                Lang::Php => "php",
+                Lang::Scala => "scala",
+                Lang::Lua => "lua",
+                Lang::Elixir => "ex",
+                Lang::Haskell => "hs",
+                Lang::Bash => "sh",
                 Lang::Unknown => continue,
             };
             if !lang_filter.iter().any(|l| l == &lang_str || l == short) {
