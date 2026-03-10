@@ -10,11 +10,21 @@ pub mod typescript;
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::types::{Import, Lang};
+use crate::types::{CallRef, Import, Lang, Symbol};
 
 pub trait Parser: Send + Sync {
     fn lang(&self) -> Lang;
     fn parse(&self, source: &[u8], path: &Path) -> Vec<Import>;
+
+    fn extract_symbols(&self, source: &[u8], path: &Path) -> Vec<Symbol> {
+        let _ = (source, path);
+        Vec::new()
+    }
+
+    fn extract_calls(&self, source: &[u8], path: &Path) -> Vec<CallRef> {
+        let _ = (source, path);
+        Vec::new()
+    }
 }
 
 pub struct ParserRegistry {

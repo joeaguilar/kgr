@@ -55,11 +55,45 @@ pub struct Import {
     pub span: Option<Span>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SymbolKind {
+    Function,
+    Method,
+    Class,
+}
+
+impl std::fmt::Display for SymbolKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SymbolKind::Function => write!(f, "function"),
+            SymbolKind::Method => write!(f, "method"),
+            SymbolKind::Class => write!(f, "class"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Symbol {
+    pub name: String,
+    pub kind: SymbolKind,
+    pub span: Span,
+    pub exported: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CallRef {
+    pub callee_raw: String,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileNode {
     pub path: PathBuf,
     pub lang: Lang,
     pub imports: Vec<Import>,
+    pub symbols: Vec<Symbol>,
+    pub calls: Vec<CallRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

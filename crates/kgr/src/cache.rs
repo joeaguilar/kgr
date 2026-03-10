@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use kgr_core::types::Import;
+use kgr_core::types::{CallRef, Import, Symbol};
 
 const CACHE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -13,6 +13,17 @@ struct Entry {
     mtime_secs: u64,
     size: u64,
     imports: Vec<Import>,
+    #[serde(default)]
+    symbols: Vec<Symbol>,
+    #[serde(default)]
+    calls: Vec<CallRef>,
+}
+
+/// Data returned from a cache hit.
+pub struct CachedParse {
+    pub imports: Vec<Import>,
+    pub symbols: Vec<Symbol>,
+    pub calls: Vec<CallRef>,
 }
 
 /// Persistent per-file parse cache. Keyed on (path_string, mtime_secs, size).
@@ -46,12 +57,16 @@ impl ParseCache {
         }
     }
 
-    /// Returns cached imports if `path` has matching `mtime` and `size`.
-    pub fn get(&self, path: &Path, mtime: Option<SystemTime>, size: u64) -> Option<&Vec<Import>> {
+    /// Returns cached parse data if `path` has matching `mtime` and `size`.
+    pub fn get(&self, path: &Path, mtime: Option<SystemTime>, size: u64) -> Option<CachedParse> {
         let mtime_secs = mtime?.duration_since(UNIX_EPOCH).ok()?.as_secs();
         let key = path.to_string_lossy();
         let e = self.entries.get(key.as_ref())?;
-        (e.mtime_secs == mtime_secs && e.size == size).then_some(&e.imports)
+        (e.mtime_secs == mtime_secs && e.size == size).then(|| CachedParse {
+            imports: e.imports.clone(),
+            symbols: e.symbols.clone(),
+            calls: e.calls.clone(),
+        })
     }
 
     /// Insert or update a cache entry. No-ops if `mtime` is unavailable.
@@ -61,6 +76,8 @@ impl ParseCache {
         mtime: Option<SystemTime>,
         size: u64,
         imports: Vec<Import>,
+        symbols: Vec<Symbol>,
+        calls: Vec<CallRef>,
     ) {
         let Some(mtime_secs) = mtime
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
@@ -74,6 +91,8 @@ impl ParseCache {
                 mtime_secs,
                 size,
                 imports,
+                symbols,
+                calls,
             },
         );
     }
