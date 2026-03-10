@@ -21,11 +21,13 @@ pub fn parse_all(
     let mut misses: Vec<(usize, &DiscoveredFile)> = Vec::new();
 
     for (i, f) in files.iter().enumerate() {
-        if let Some(imports) = cache.get(&f.path, f.mtime, f.size) {
+        if let Some(cached) = cache.get(&f.path, f.mtime, f.size) {
             ordered[i] = Some(FileNode {
                 path: f.path.clone(),
                 lang: f.lang,
-                imports: imports.clone(),
+                imports: cached.imports,
+                symbols: cached.symbols,
+                calls: cached.calls,
             });
         } else {
             misses.push((i, f));
@@ -57,6 +59,8 @@ pub fn parse_all(
             let full_path = root.join(&f.path);
             let source = std::fs::read(&full_path).ok()?;
             let imports = parser.parse(&source, &f.path);
+            let symbols = parser.extract_symbols(&source, &f.path);
+            let calls = parser.extract_calls(&source, &f.path);
             if let Some(ref pb) = progress {
                 pb.inc(1);
             }
@@ -66,6 +70,8 @@ pub fn parse_all(
                     path: f.path.clone(),
                     lang: f.lang,
                     imports,
+                    symbols,
+                    calls,
                 },
             ))
         })
@@ -78,7 +84,14 @@ pub fn parse_all(
     // ── Phase 3: update cache (serial) and merge results ────────────────────
     for (i, node) in parsed {
         let f = &files[i];
-        cache.insert(f.path.clone(), f.mtime, f.size, node.imports.clone());
+        cache.insert(
+            f.path.clone(),
+            f.mtime,
+            f.size,
+            node.imports.clone(),
+            node.symbols.clone(),
+            node.calls.clone(),
+        );
         ordered[i] = Some(node);
     }
 

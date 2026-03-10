@@ -60,6 +60,10 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
 
+        /// Include symbol definitions in JSON output
+        #[arg(long)]
+        symbols: bool,
+
         /// Increase verbosity
         #[arg(short, long, action = clap::ArgAction::Count)]
         verbose: u8,
@@ -147,6 +151,81 @@ enum Commands {
         verbose: u8,
     },
 
+    /// List all symbol definitions (functions, classes, methods)
+    Symbols {
+        /// Root directory to scan
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Output format: table, json
+        #[arg(short, long, default_value = "table")]
+        format: String,
+
+        /// Filter by language
+        #[arg(short, long)]
+        lang: Option<Vec<String>>,
+
+        /// Disable progress bar
+        #[arg(long)]
+        no_progress: bool,
+
+        /// Increase verbosity
+        #[arg(short, long, action = clap::ArgAction::Count)]
+        verbose: u8,
+    },
+
+    /// Find all references to a symbol (definitions + call sites)
+    Refs {
+        /// Symbol name to search for
+        name: String,
+
+        /// Root directory to scan
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Output format: table, json
+        #[arg(short, long, default_value = "table")]
+        format: String,
+
+        /// Filter by language
+        #[arg(short, long)]
+        lang: Option<Vec<String>>,
+
+        /// Disable progress bar
+        #[arg(long)]
+        no_progress: bool,
+
+        /// Increase verbosity
+        #[arg(short, long, action = clap::ArgAction::Count)]
+        verbose: u8,
+    },
+
+    /// Check if a symbol is safe to remove (no references found = dead)
+    Dead {
+        /// Symbol name to check
+        name: String,
+
+        /// Root directory to scan
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Output format: table, json
+        #[arg(short, long, default_value = "table")]
+        format: String,
+
+        /// Filter by language
+        #[arg(short, long)]
+        lang: Option<Vec<String>>,
+
+        /// Disable progress bar
+        #[arg(long)]
+        no_progress: bool,
+
+        /// Increase verbosity
+        #[arg(short, long, action = clap::ArgAction::Count)]
+        verbose: u8,
+    },
+
     /// Generate a .kgr.toml configuration file
     Init {
         /// Directory to initialize
@@ -176,6 +255,7 @@ fn main() {
             no_external,
             show_external,
             no_progress,
+            symbols,
             output,
             verbose,
         }) => {
@@ -187,6 +267,7 @@ fn main() {
                 no_external,
                 show_external,
                 no_progress,
+                symbols,
                 output.as_deref(),
             );
         }
@@ -238,6 +319,38 @@ fn main() {
                 no_progress,
             );
         }
+        Some(Commands::Symbols {
+            path,
+            format,
+            lang,
+            no_progress,
+            verbose,
+        }) => {
+            setup_tracing(verbose);
+            run_symbols(&path, &format, &lang, no_progress);
+        }
+        Some(Commands::Refs {
+            name,
+            path,
+            format,
+            lang,
+            no_progress,
+            verbose,
+        }) => {
+            setup_tracing(verbose);
+            run_refs(&name, &path, &format, &lang, no_progress);
+        }
+        Some(Commands::Dead {
+            name,
+            path,
+            format,
+            lang,
+            no_progress,
+            verbose,
+        }) => {
+            setup_tracing(verbose);
+            run_dead(&name, &path, &format, &lang, no_progress);
+        }
         Some(Commands::Init { path }) => {
             run_init(&path);
         }
@@ -254,6 +367,7 @@ fn main() {
                 &PathBuf::from("."),
                 "tree",
                 &None,
+                false,
                 false,
                 false,
                 false,
@@ -280,6 +394,7 @@ fn setup_tracing(verbosity: u8) {
         .init();
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_graph(
     path: &PathBuf,
     format: &str,
@@ -287,6 +402,7 @@ fn run_graph(
     no_external: bool,
     show_external: bool,
     no_progress: bool,
+    include_symbols: bool,
     output: Option<&std::path::Path>,
 ) {
     let root = std::fs::canonicalize(path).unwrap_or_else(|e| {
@@ -314,6 +430,18 @@ fn run_graph(
     let resolver = Resolver::new(PathBuf::new(), &file_nodes);
     resolver.resolve_all(&mut file_nodes);
 
+    // Keep a copy of file_nodes for --symbols enrichment
+    let symbols_data: Option<Vec<_>> = if include_symbols {
+        Some(
+            file_nodes
+                .iter()
+                .map(|f| (f.path.clone(), f.symbols.clone()))
+                .collect(),
+        )
+    } else {
+        None
+    };
+
     let kgraph = KGraph::from_files(&file_nodes);
     let dep_graph = kgraph.to_dep_graph(root, file_nodes);
 
@@ -325,6 +453,35 @@ fn run_graph(
     } else {
         Box::new(std::io::stdout().lock())
     };
+
+    // When --symbols is passed with JSON format, inject symbols into the output
+    if include_symbols && format == "json" {
+        let symbols_map: std::collections::HashMap<_, _> =
+            symbols_data.unwrap().into_iter().collect();
+        let mut json: serde_json::Value = serde_json::to_value(&dep_graph).unwrap();
+        if let Some(files) = json.get_mut("files").and_then(|f| f.as_array_mut()) {
+            for file in files {
+                let path_str = file["path"].as_str().unwrap_or_default();
+                let path = std::path::PathBuf::from(path_str);
+                if let Some(syms) = symbols_map.get(&path) {
+                    file["symbols"] = serde_json::json!(syms
+                        .iter()
+                        .map(|s| serde_json::json!({
+                            "name": s.name,
+                            "kind": s.kind.to_string(),
+                            "line": s.span.start_line,
+                            "exported": s.exported,
+                        }))
+                        .collect::<Vec<_>>());
+                } else {
+                    file["symbols"] = serde_json::json!([]);
+                }
+            }
+        }
+        serde_json::to_writer_pretty(&mut writer, &json).ok();
+        writeln!(writer).ok();
+        return;
+    }
 
     render::render(
         &dep_graph,
@@ -765,6 +922,317 @@ fn run_upgrade() {
 
     eprintln!("kgr upgraded successfully.");
     eprintln!("Version: {}", env!("CARGO_PKG_VERSION"));
+}
+
+fn build_file_nodes(
+    path: &PathBuf,
+    lang: &Option<Vec<String>>,
+    no_progress: bool,
+) -> (PathBuf, Vec<kgr_core::types::FileNode>) {
+    let root = std::fs::canonicalize(path).unwrap_or_else(|e| {
+        eprintln!("Error: cannot access '{}': {}", path.display(), e);
+        process::exit(2);
+    });
+
+    let cfg = config::load_config(&root);
+    let registry = ParserRegistry::new();
+    let files = walk::discover(&root, lang, &cfg.exclude, cfg.max_file_size_bytes());
+
+    if files.is_empty() {
+        eprintln!("No supported source files found in {}", root.display());
+        return (root, Vec::new());
+    }
+
+    tracing::info!("Discovered {} files", files.len());
+
+    let cache_path = root.join(".kgr-cache.json");
+    let mut parse_cache = cache::ParseCache::load(&cache_path);
+    let file_nodes = pipeline::parse_all(&root, files, &registry, &mut parse_cache, !no_progress);
+    parse_cache.save(&cache_path);
+
+    (root, file_nodes)
+}
+
+fn run_symbols(path: &PathBuf, format: &str, lang: &Option<Vec<String>>, no_progress: bool) {
+    let (root, file_nodes) = build_file_nodes(path, lang, no_progress);
+    if file_nodes.is_empty() {
+        return;
+    }
+
+    let mut stdout = std::io::stdout().lock();
+
+    if format == "json" {
+        let entries: Vec<serde_json::Value> = file_nodes
+            .iter()
+            .filter(|f| !f.symbols.is_empty())
+            .map(|f| {
+                serde_json::json!({
+                    "file": f.path.to_string_lossy(),
+                    "symbols": f.symbols.iter().map(|s| {
+                        serde_json::json!({
+                            "name": s.name,
+                            "kind": s.kind.to_string(),
+                            "line": s.span.start_line,
+                            "exported": s.exported,
+                        })
+                    }).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        serde_json::to_writer_pretty(&mut stdout, &entries).ok();
+        writeln!(stdout).ok();
+    } else {
+        writeln!(
+            stdout,
+            "{:<50} {:<20} {:<10} {:>5}  EXPORTED",
+            "FILE", "SYMBOL", "KIND", "LINE"
+        )
+        .ok();
+        writeln!(stdout, "{}", "-".repeat(95)).ok();
+        for f in &file_nodes {
+            let rel = f.path.strip_prefix(&root).unwrap_or(&f.path);
+            for s in &f.symbols {
+                writeln!(
+                    stdout,
+                    "{:<50} {:<20} {:<10} {:>5}  {}",
+                    rel.display(),
+                    s.name,
+                    s.kind,
+                    s.span.start_line,
+                    if s.exported { "yes" } else { "no" }
+                )
+                .ok();
+            }
+        }
+    }
+}
+
+fn run_refs(
+    name: &str,
+    path: &PathBuf,
+    format: &str,
+    lang: &Option<Vec<String>>,
+    no_progress: bool,
+) {
+    let (root, file_nodes) = build_file_nodes(path, lang, no_progress);
+
+    // Find definitions: symbols matching the name
+    let mut definitions = Vec::new();
+    for f in &file_nodes {
+        for s in &f.symbols {
+            if s.name == name {
+                definitions.push(serde_json::json!({
+                    "file": f.path.to_string_lossy(),
+                    "line": s.span.start_line,
+                    "kind": s.kind.to_string(),
+                }));
+            }
+        }
+    }
+
+    // Find call references: calls where callee matches name
+    let mut references = Vec::new();
+    // Cache file reads for context extraction
+    let mut file_cache: std::collections::HashMap<PathBuf, String> =
+        std::collections::HashMap::new();
+    for f in &file_nodes {
+        for c in &f.calls {
+            let matches = c.callee_raw == name || c.callee_raw.ends_with(&format!(".{name}"));
+            if matches {
+                // Read source for context line
+                let context = if !file_cache.contains_key(&f.path) {
+                    let full_path = root.join(&f.path);
+                    if let Ok(content) = std::fs::read_to_string(&full_path) {
+                        file_cache.insert(f.path.clone(), content);
+                    }
+                    file_cache
+                        .get(&f.path)
+                        .and_then(|content| {
+                            content
+                                .lines()
+                                .nth(c.span.start_line - 1)
+                                .map(|l| l.trim().to_string())
+                        })
+                        .unwrap_or_default()
+                } else {
+                    file_cache
+                        .get(&f.path)
+                        .and_then(|content| {
+                            content
+                                .lines()
+                                .nth(c.span.start_line - 1)
+                                .map(|l| l.trim().to_string())
+                        })
+                        .unwrap_or_default()
+                };
+
+                references.push(serde_json::json!({
+                    "file": f.path.to_string_lossy(),
+                    "line": c.span.start_line,
+                    "kind": "call",
+                    "context": context,
+                }));
+            }
+        }
+    }
+
+    let mut stdout = std::io::stdout().lock();
+
+    if format == "json" {
+        let result = serde_json::json!({
+            "symbol": name,
+            "definitions": definitions,
+            "references": references,
+        });
+        serde_json::to_writer_pretty(&mut stdout, &result).ok();
+        writeln!(stdout).ok();
+    } else {
+        if definitions.is_empty() && references.is_empty() {
+            eprintln!("No references found for '{name}'");
+            return;
+        }
+        if !definitions.is_empty() {
+            writeln!(stdout, "Definitions of '{name}':").ok();
+            for d in &definitions {
+                writeln!(
+                    stdout,
+                    "  {} ({}:{})",
+                    d["file"].as_str().unwrap(),
+                    d["kind"].as_str().unwrap(),
+                    d["line"]
+                )
+                .ok();
+            }
+        }
+        if !references.is_empty() {
+            writeln!(stdout, "References to '{name}':").ok();
+            for r in &references {
+                writeln!(
+                    stdout,
+                    "  {}:{} {}",
+                    r["file"].as_str().unwrap(),
+                    r["line"],
+                    r["context"].as_str().unwrap_or("")
+                )
+                .ok();
+            }
+        }
+    }
+}
+
+fn run_dead(
+    name: &str,
+    path: &PathBuf,
+    format: &str,
+    lang: &Option<Vec<String>>,
+    no_progress: bool,
+) {
+    let (root, file_nodes) = build_file_nodes(path, lang, no_progress);
+
+    // Find definition
+    let mut definition = None;
+    for f in &file_nodes {
+        for s in &f.symbols {
+            if s.name == name {
+                definition = Some(serde_json::json!({
+                    "file": f.path.to_string_lossy(),
+                    "line": s.span.start_line,
+                    "kind": s.kind.to_string(),
+                }));
+                break;
+            }
+        }
+        if definition.is_some() {
+            break;
+        }
+    }
+
+    // Find call references
+    let mut references = Vec::new();
+    let mut file_cache: std::collections::HashMap<PathBuf, String> =
+        std::collections::HashMap::new();
+    for f in &file_nodes {
+        for c in &f.calls {
+            let matches = c.callee_raw == name || c.callee_raw.ends_with(&format!(".{name}"));
+            if matches {
+                if !file_cache.contains_key(&f.path) {
+                    let full_path = root.join(&f.path);
+                    if let Ok(content) = std::fs::read_to_string(&full_path) {
+                        file_cache.insert(f.path.clone(), content);
+                    }
+                }
+                let context = file_cache
+                    .get(&f.path)
+                    .and_then(|content| {
+                        content
+                            .lines()
+                            .nth(c.span.start_line - 1)
+                            .map(|l| l.trim().to_string())
+                    })
+                    .unwrap_or_default();
+
+                references.push(serde_json::json!({
+                    "file": f.path.to_string_lossy(),
+                    "line": c.span.start_line,
+                    "kind": "call",
+                    "context": context,
+                }));
+            }
+        }
+    }
+
+    let dead = references.is_empty();
+    let mut stdout = std::io::stdout().lock();
+
+    if format == "json" {
+        let result = if let Some(def) = &definition {
+            serde_json::json!({
+                "symbol": name,
+                "dead": dead,
+                "definition": def,
+                "references": references,
+            })
+        } else {
+            serde_json::json!({
+                "symbol": name,
+                "dead": true,
+                "definition": null,
+                "references": [],
+            })
+        };
+        serde_json::to_writer_pretty(&mut stdout, &result).ok();
+        writeln!(stdout).ok();
+    } else if definition.is_none() {
+        writeln!(stdout, "Symbol '{name}' not found in project.").ok();
+    } else if dead {
+        let def = definition.unwrap();
+        writeln!(stdout, "Dead — no references found.").ok();
+        writeln!(
+            stdout,
+            "  Defined at: {}:{} ({})",
+            def["file"].as_str().unwrap(),
+            def["line"],
+            def["kind"].as_str().unwrap()
+        )
+        .ok();
+    } else {
+        writeln!(
+            stdout,
+            "Not dead — {} reference(s) found:",
+            references.len()
+        )
+        .ok();
+        for r in &references {
+            writeln!(
+                stdout,
+                "  {}:{} {}",
+                r["file"].as_str().unwrap(),
+                r["line"],
+                r["context"].as_str().unwrap_or("")
+            )
+            .ok();
+        }
+    }
 }
 
 fn run_agent_info(format: &str) {
