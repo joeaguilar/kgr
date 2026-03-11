@@ -20,7 +20,7 @@ use kgr_core::resolve::Resolver;
 #[derive(Parser)]
 #[command(
     name = "kgr",
-    version,
+    version = env!("KGR_VERSION"),
     about = "Polyglot source dependency knowledge graph"
 )]
 struct Cli {
@@ -1134,7 +1134,7 @@ fn run_upgrade() {
     });
 
     eprintln!("kgr upgraded successfully.");
-    eprintln!("Version: {}", env!("CARGO_PKG_VERSION"));
+    eprintln!("Version: {}", env!("KGR_VERSION"));
 }
 
 fn build_file_nodes(
