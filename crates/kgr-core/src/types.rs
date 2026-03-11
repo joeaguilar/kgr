@@ -125,6 +125,12 @@ pub struct DepEdge {
     pub kind: ImportKind,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParseError {
+    pub message: String,
+    pub span: Span,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DepGraph {
     pub root: PathBuf,

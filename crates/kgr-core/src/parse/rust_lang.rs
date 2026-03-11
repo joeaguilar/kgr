@@ -78,6 +78,12 @@ const RUST_CALL_QUERY_SRC: &str = r#"
 ;; Macro invocation: println!()
 (macro_invocation
   macro: (identifier) @call.macro)
+
+;; Type identifier in any position (annotations, fields, etc.)
+(type_identifier) @type.ref
+
+;; Trait bounds: impl MyTrait for Foo — trait name captured via type_identifier above
+;; Generic type args: Vec<MyType> — inner type captured via type_identifier above
 "#;
 
 static RUST_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -193,6 +199,7 @@ impl super::Parser for RustParser {
         let name_idx = query.capture_index_for_name("call.name").unwrap();
         let method_idx = query.capture_index_for_name("call.method").unwrap();
         let macro_idx = query.capture_index_for_name("call.macro").unwrap();
+        let type_ref_idx = query.capture_index_for_name("type.ref").unwrap();
 
         let mut cursor = QueryCursor::new();
         let mut calls = Vec::new();
@@ -209,6 +216,12 @@ impl super::Parser for RustParser {
                 } else if capture.index == method_idx {
                     let field_node = node.parent().unwrap();
                     match field_node.utf8_text(source) {
+                        Ok(s) => s.to_string(),
+                        Err(_) => continue,
+                    }
+                } else if capture.index == type_ref_idx {
+                    // Type reference
+                    match node.utf8_text(source) {
                         Ok(s) => s.to_string(),
                         Err(_) => continue,
                     }
@@ -455,5 +468,21 @@ extern crate log;
         let c = calls("fn main() { println!(\"hello\"); vec![1,2,3]; }\n");
         assert!(c.iter().any(|c| c.callee_raw == "println"));
         assert!(c.iter().any(|c| c.callee_raw == "vec"));
+    }
+
+    #[test]
+    fn calls_type_annotations() {
+        let c = calls("fn foo(x: MyType) -> ReturnType { todo!() }\n");
+        let names: Vec<&str> = c.iter().map(|c| c.callee_raw.as_str()).collect();
+        assert!(names.contains(&"MyType"));
+        assert!(names.contains(&"ReturnType"));
+    }
+
+    #[test]
+    fn calls_trait_bounds() {
+        let c = calls("impl MyTrait for MyStruct {}\n");
+        let names: Vec<&str> = c.iter().map(|c| c.callee_raw.as_str()).collect();
+        assert!(names.contains(&"MyTrait"));
+        assert!(names.contains(&"MyStruct"));
     }
 }

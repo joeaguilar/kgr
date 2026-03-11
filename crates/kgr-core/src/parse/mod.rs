@@ -21,7 +21,7 @@ pub mod zig;
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::types::{CallRef, Import, Lang, Symbol};
+use crate::types::{CallRef, Import, Lang, ParseError, Span, Symbol};
 
 pub trait Parser: Send + Sync {
     fn lang(&self) -> Lang;
@@ -35,6 +35,64 @@ pub trait Parser: Send + Sync {
     fn extract_calls(&self, source: &[u8], path: &Path) -> Vec<CallRef> {
         let _ = (source, path);
         Vec::new()
+    }
+
+    /// Return the tree-sitter Language for this parser, if available.
+    /// Override this to enable generic syntax error detection via `collect_parse_errors`.
+    fn ts_language(&self) -> Option<tree_sitter::Language> {
+        None
+    }
+
+    /// Detect syntax errors (ERROR/MISSING nodes) in a source file.
+    /// The default implementation uses `ts_language()` to create a parser and
+    /// delegates to `collect_parse_errors`. Parsers that override `ts_language()`
+    /// get syntax checking for free.
+    fn parse_errors(&self, source: &[u8], _path: &Path) -> Vec<ParseError> {
+        let lang = match self.ts_language() {
+            Some(l) => l,
+            None => return Vec::new(),
+        };
+        let mut parser = tree_sitter::Parser::new();
+        if parser.set_language(&lang).is_err() {
+            return Vec::new();
+        }
+        match parser.parse(source, None) {
+            Some(tree) => collect_parse_errors(&tree),
+            None => Vec::new(),
+        }
+    }
+}
+
+/// Walk a tree-sitter parse tree and collect ERROR/MISSING nodes.
+pub fn collect_parse_errors(tree: &tree_sitter::Tree) -> Vec<ParseError> {
+    let mut errors = Vec::new();
+    let mut cursor = tree.walk();
+    loop {
+        let node = cursor.node();
+        if node.kind() == "ERROR" || node.is_missing() {
+            errors.push(ParseError {
+                message: if node.is_missing() {
+                    format!("MISSING {}", node.kind())
+                } else {
+                    "ERROR".to_string()
+                },
+                span: Span {
+                    start_line: node.start_position().row + 1,
+                    start_col: node.start_position().column,
+                    end_line: node.end_position().row + 1,
+                    end_col: node.end_position().column,
+                },
+            });
+        }
+        // Depth-first traversal
+        if cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                return errors;
+            }
+        }
     }
 }
 

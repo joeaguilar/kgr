@@ -95,6 +95,10 @@ enum Commands {
         #[arg(long)]
         baseline: Option<PathBuf>,
 
+        /// Also report tree-sitter parse errors (ERROR/MISSING nodes)
+        #[arg(long)]
+        syntax: bool,
+
         /// Increase verbosity
         #[arg(short, long, action = clap::ArgAction::Count)]
         verbose: u8,
@@ -226,6 +230,109 @@ enum Commands {
         verbose: u8,
     },
 
+    /// Emit a token-minimal skeleton of each file (signatures only, bodies replaced with ...)
+    Skeleton {
+        /// Root directory or file to scan
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Output format: text, json, table
+        #[arg(short, long, default_value = "text")]
+        format: String,
+
+        /// Filter by language
+        #[arg(short, long)]
+        lang: Option<Vec<String>>,
+
+        /// Disable progress bar
+        #[arg(long)]
+        no_progress: bool,
+
+        /// Increase verbosity
+        #[arg(short, long, action = clap::ArgAction::Count)]
+        verbose: u8,
+    },
+
+    /// One-shot codebase overview: file counts, languages, entry points, heaviest files
+    Orient {
+        /// Root directory to scan
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Output format: text, json
+        #[arg(short, long, default_value = "text")]
+        format: String,
+
+        /// Filter by language
+        #[arg(short, long)]
+        lang: Option<Vec<String>>,
+
+        /// Disable progress bar
+        #[arg(long)]
+        no_progress: bool,
+
+        /// Increase verbosity
+        #[arg(short, long, action = clap::ArgAction::Count)]
+        verbose: u8,
+    },
+
+    /// Show the transitive blast radius of a symbol change
+    Impact {
+        /// Symbol name to analyze
+        name: String,
+
+        /// Root directory to scan
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Output format: text, json
+        #[arg(short, long, default_value = "text")]
+        format: String,
+
+        /// Filter by language
+        #[arg(short, long)]
+        lang: Option<Vec<String>>,
+
+        /// Maximum depth to traverse (default: unlimited)
+        #[arg(short, long)]
+        depth: Option<usize>,
+
+        /// Disable progress bar
+        #[arg(long)]
+        no_progress: bool,
+
+        /// Increase verbosity
+        #[arg(short, long, action = clap::ArgAction::Count)]
+        verbose: u8,
+    },
+
+    /// Rank files by complexity (function count, average length)
+    Hotspots {
+        /// Root directory to scan
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Output format: text, json, table
+        #[arg(short, long, default_value = "table")]
+        format: String,
+
+        /// Filter by language
+        #[arg(short, long)]
+        lang: Option<Vec<String>>,
+
+        /// Show top N files (default: 20)
+        #[arg(short, long)]
+        top: Option<usize>,
+
+        /// Disable progress bar
+        #[arg(long)]
+        no_progress: bool,
+
+        /// Increase verbosity
+        #[arg(short, long, action = clap::ArgAction::Count)]
+        verbose: u8,
+    },
+
     /// Generate a .kgr.toml configuration file
     Init {
         /// Directory to initialize
@@ -278,6 +385,7 @@ fn main() {
             no_progress,
             update_baseline,
             baseline,
+            syntax,
             verbose,
         }) => {
             setup_tracing(verbose);
@@ -288,6 +396,7 @@ fn main() {
                 no_progress,
                 update_baseline,
                 baseline.as_deref(),
+                syntax,
             );
         }
         Some(Commands::Query {
@@ -350,6 +459,49 @@ fn main() {
         }) => {
             setup_tracing(verbose);
             run_dead(&name, &path, &format, &lang, no_progress);
+        }
+        Some(Commands::Skeleton {
+            path,
+            format,
+            lang,
+            no_progress,
+            verbose,
+        }) => {
+            setup_tracing(verbose);
+            run_skeleton(&path, &format, &lang, no_progress);
+        }
+        Some(Commands::Orient {
+            path,
+            format,
+            lang,
+            no_progress,
+            verbose,
+        }) => {
+            setup_tracing(verbose);
+            run_orient(&path, &format, &lang, no_progress);
+        }
+        Some(Commands::Impact {
+            name,
+            path,
+            format,
+            lang,
+            depth,
+            no_progress,
+            verbose,
+        }) => {
+            setup_tracing(verbose);
+            run_impact(&name, &path, &format, &lang, depth, no_progress);
+        }
+        Some(Commands::Hotspots {
+            path,
+            format,
+            lang,
+            top,
+            no_progress,
+            verbose,
+        }) => {
+            setup_tracing(verbose);
+            run_hotspots(&path, &format, &lang, top, no_progress);
         }
         Some(Commands::Init { path }) => {
             run_init(&path);
@@ -497,6 +649,7 @@ fn run_graph(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_check(
     path: &PathBuf,
     format: &str,
@@ -504,6 +657,7 @@ fn run_check(
     no_progress: bool,
     update_baseline: bool,
     baseline_path: Option<&Path>,
+    syntax: bool,
 ) {
     let root = std::fs::canonicalize(path).unwrap_or_else(|e| {
         eprintln!("Error: cannot access '{}': {}", path.display(), e);
@@ -570,8 +724,29 @@ fn run_check(
             .iter()
             .any(|v| matches!(v.severity, config::Severity::Error));
 
+    // Collect syntax errors when --syntax is enabled
+    let syntax_errors: Vec<(std::path::PathBuf, Vec<kgr_core::types::ParseError>)> = if syntax {
+        let mut errs = Vec::new();
+        for f in &dep_graph.files {
+            let full_path = root.join(&f.path);
+            let source = match std::fs::read(&full_path) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            if let Some(parser) = registry.get(f.lang) {
+                let file_errors = parser.parse_errors(&source, &f.path);
+                if !file_errors.is_empty() {
+                    errs.push((f.path.clone(), file_errors));
+                }
+            }
+        }
+        errs
+    } else {
+        Vec::new()
+    };
+
     if format == "json" {
-        let json = serde_json::json!({
+        let mut json = serde_json::json!({
             "ok": !has_errors,
             "cycles": active_cycles.iter().map(|cycle| {
                 cycle.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>()
@@ -588,6 +763,24 @@ fn run_check(
             })).collect::<Vec<_>>(),
             "suppressed": suppressed,
         });
+        if syntax {
+            json.as_object_mut().unwrap().insert(
+                "syntax_errors".to_string(),
+                serde_json::json!(syntax_errors
+                    .iter()
+                    .flat_map(|(path, errors)| {
+                        errors.iter().map(move |e| {
+                            serde_json::json!({
+                                "file": path.to_string_lossy(),
+                                "message": e.message,
+                                "line": e.span.start_line,
+                                "column": e.span.start_col,
+                            })
+                        })
+                    })
+                    .collect::<Vec<_>>()),
+            );
+        }
         println!("{}", serde_json::to_string_pretty(&json).unwrap());
     } else {
         // Report cycles
@@ -638,6 +831,26 @@ fn run_check(
         }
         if !active_rule_violations.is_empty() {
             eprintln!();
+        }
+
+        // Report syntax errors as warnings
+        if syntax {
+            for (path, errors) in &syntax_errors {
+                for err in errors {
+                    eprintln!(
+                        "warning[kgr::syntax]: {} at {}:{}:{}",
+                        err.message,
+                        path.display(),
+                        err.span.start_line,
+                        err.span.start_col
+                    );
+                }
+            }
+            let total: usize = syntax_errors.iter().map(|(_, e)| e.len()).sum();
+            if total > 0 {
+                eprintln!("{} syntax error(s) found", total);
+                eprintln!();
+            }
         }
 
         if suppressed > 0 {
@@ -1241,5 +1454,524 @@ fn run_agent_info(format: &str) {
         println!("{}", serde_json::to_string_pretty(&json).unwrap());
     } else {
         print!("{}", agent_docs::AGENT_DOCS);
+    }
+}
+
+fn run_skeleton(path: &PathBuf, format: &str, lang: &Option<Vec<String>>, no_progress: bool) {
+    let (root, file_nodes) = build_file_nodes(path, lang, no_progress);
+    if file_nodes.is_empty() {
+        return;
+    }
+
+    let mut stdout = std::io::stdout().lock();
+
+    // Helper: extract signature from a source line
+    fn extract_signature(line: &str) -> String {
+        let trimmed = line.trim();
+        if let Some(pos) = trimmed.find('{') {
+            let before = trimmed[..pos].trim_end();
+            format!("{} {{ ... }}", before)
+        } else {
+            trimmed.to_string()
+        }
+    }
+
+    if format == "json" {
+        let entries: Vec<serde_json::Value> = file_nodes
+            .iter()
+            .filter(|f| !f.symbols.is_empty())
+            .map(|f| {
+                let rel = f.path.strip_prefix(&root).unwrap_or(&f.path);
+                let source = std::fs::read_to_string(root.join(&f.path)).unwrap_or_default();
+                let lines: Vec<&str> = source.lines().collect();
+
+                let skeleton: Vec<serde_json::Value> = f
+                    .symbols
+                    .iter()
+                    .filter_map(|s| {
+                        let line_idx = s.span.start_line.checked_sub(1)?;
+                        let src_line = lines.get(line_idx)?;
+                        let sig = extract_signature(src_line);
+                        Some(serde_json::json!({
+                            "name": s.name,
+                            "kind": s.kind.to_string(),
+                            "line": s.span.start_line,
+                            "exported": s.exported,
+                            "signature": sig,
+                        }))
+                    })
+                    .collect();
+
+                serde_json::json!({
+                    "file": rel.to_string_lossy(),
+                    "skeleton": skeleton,
+                })
+            })
+            .collect();
+        serde_json::to_writer_pretty(&mut stdout, &entries).ok();
+        writeln!(stdout).ok();
+    } else if format == "table" {
+        writeln!(
+            stdout,
+            "{:<50} {:<20} {:<10} {:>5}  SIGNATURE",
+            "FILE", "SYMBOL", "KIND", "LINE"
+        )
+        .ok();
+        writeln!(stdout, "{}", "-".repeat(120)).ok();
+        for f in &file_nodes {
+            let rel = f.path.strip_prefix(&root).unwrap_or(&f.path);
+            let source = std::fs::read_to_string(root.join(&f.path)).unwrap_or_default();
+            let lines: Vec<&str> = source.lines().collect();
+            for s in &f.symbols {
+                let sig = s
+                    .span
+                    .start_line
+                    .checked_sub(1)
+                    .and_then(|idx| lines.get(idx))
+                    .map(|l| extract_signature(l))
+                    .unwrap_or_default();
+                writeln!(
+                    stdout,
+                    "{:<50} {:<20} {:<10} {:>5}  {}",
+                    rel.display(),
+                    s.name,
+                    s.kind,
+                    s.span.start_line,
+                    sig
+                )
+                .ok();
+            }
+        }
+    } else {
+        // text format (default): emit source-like stubs
+        for f in &file_nodes {
+            if f.symbols.is_empty() {
+                continue;
+            }
+            let rel = f.path.strip_prefix(&root).unwrap_or(&f.path);
+            let source = std::fs::read_to_string(root.join(&f.path)).unwrap_or_default();
+            let lines: Vec<&str> = source.lines().collect();
+
+            writeln!(stdout, "// {}", rel.display()).ok();
+            for s in &f.symbols {
+                if let Some(line_idx) = s.span.start_line.checked_sub(1) {
+                    if let Some(src_line) = lines.get(line_idx) {
+                        let trimmed = src_line.trim();
+                        // For functions/methods, ensure we have { ... }
+                        match s.kind {
+                            kgr_core::types::SymbolKind::Function
+                            | kgr_core::types::SymbolKind::Method => {
+                                if let Some(pos) = trimmed.find('{') {
+                                    let before = trimmed[..pos].trim_end();
+                                    writeln!(stdout, "{} {{ ... }}", before).ok();
+                                } else if trimmed.ends_with(':') {
+                                    // Python-style: def foo():
+                                    writeln!(stdout, "{} ...", trimmed).ok();
+                                } else {
+                                    writeln!(stdout, "{} {{ ... }}", trimmed).ok();
+                                }
+                            }
+                            kgr_core::types::SymbolKind::Class => {
+                                if let Some(pos) = trimmed.find('{') {
+                                    let before = trimmed[..pos].trim_end();
+                                    writeln!(stdout, "{} {{ ... }}", before).ok();
+                                } else if trimmed.ends_with(':') {
+                                    writeln!(stdout, "{} ...", trimmed).ok();
+                                } else {
+                                    writeln!(stdout, "{} {{ ... }}", trimmed).ok();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            writeln!(stdout).ok();
+        }
+    }
+}
+
+fn run_orient(path: &PathBuf, format: &str, lang: &Option<Vec<String>>, no_progress: bool) {
+    use kgr_core::types::ImportKind;
+    use std::collections::{HashMap, HashSet};
+
+    let (root, mut file_nodes) = build_file_nodes(path, lang, no_progress);
+    if file_nodes.is_empty() {
+        return;
+    }
+
+    let resolver = Resolver::new(PathBuf::new(), &file_nodes);
+    resolver.resolve_all(&mut file_nodes);
+    let kgraph = KGraph::from_files(&file_nodes);
+    let dep_graph = kgraph.to_dep_graph(root.clone(), file_nodes);
+
+    // Language breakdown
+    let mut lang_counts: HashMap<String, usize> = HashMap::new();
+    for f in &dep_graph.files {
+        *lang_counts.entry(f.lang.to_string()).or_insert(0) += 1;
+    }
+
+    // External packages
+    let external_packages: HashSet<&str> = dep_graph
+        .files
+        .iter()
+        .flat_map(|f| {
+            f.imports
+                .iter()
+                .filter(|i| i.kind == ImportKind::External)
+                .map(|i| i.raw.as_str())
+        })
+        .collect();
+
+    // Entry points (roots) — relative paths
+    let entry_points: Vec<String> = dep_graph
+        .roots
+        .iter()
+        .map(|p| {
+            p.strip_prefix(&root)
+                .unwrap_or(p)
+                .to_string_lossy()
+                .to_string()
+        })
+        .collect();
+
+    // Heaviest files
+    let heaviest = kgraph.heaviest();
+    let heaviest_display: Vec<(String, usize)> = heaviest
+        .iter()
+        .take(3)
+        .map(|(p, count)| {
+            let rel = p
+                .strip_prefix(&root)
+                .unwrap_or(p)
+                .to_string_lossy()
+                .to_string();
+            (rel, *count)
+        })
+        .collect();
+
+    // Largest cycle size
+    let largest_cycle_size = dep_graph.cycles.iter().map(|c| c.len()).max().unwrap_or(0);
+
+    let mut stdout = std::io::stdout().lock();
+
+    if format == "json" {
+        // Sort languages for deterministic output
+        let mut sorted_langs: Vec<_> = lang_counts.iter().collect();
+        sorted_langs.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        let languages: serde_json::Map<String, serde_json::Value> = sorted_langs
+            .into_iter()
+            .map(|(k, v)| (k.clone(), serde_json::Value::from(*v)))
+            .collect();
+
+        let mut ext_sorted: Vec<&str> = external_packages.into_iter().collect();
+        ext_sorted.sort();
+
+        let heaviest_json: Vec<serde_json::Value> = heaviest_display
+            .iter()
+            .map(|(f, d)| serde_json::json!({"file": f, "dependents": d}))
+            .collect();
+
+        let json = serde_json::json!({
+            "files": dep_graph.files.len(),
+            "languages": languages,
+            "edges": dep_graph.edges.len(),
+            "entry_points": entry_points,
+            "cycles": dep_graph.cycles.len(),
+            "largest_cycle_size": largest_cycle_size,
+            "orphans": dep_graph.orphans.len(),
+            "external_packages": ext_sorted,
+            "heaviest": heaviest_json,
+        });
+
+        writeln!(stdout, "{}", serde_json::to_string_pretty(&json).unwrap()).ok();
+    } else {
+        // Text output — compact one-glance summary
+
+        // Line 1: files (lang breakdown) | edges | cycles
+        let mut lang_parts: Vec<_> = lang_counts.iter().collect();
+        lang_parts.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        let lang_str: Vec<String> = lang_parts
+            .iter()
+            .map(|(k, v)| format!("{}: {}", k, v))
+            .collect();
+        writeln!(
+            stdout,
+            "{} files ({}) | {} edges | {} cycles",
+            dep_graph.files.len(),
+            lang_str.join(", "),
+            dep_graph.edges.len(),
+            dep_graph.cycles.len(),
+        )
+        .ok();
+
+        // Line 2: entry points
+        if !entry_points.is_empty() {
+            writeln!(stdout, "Entry points: {}", entry_points.join(", ")).ok();
+        }
+
+        // Line 3: heaviest
+        if !heaviest_display.is_empty() {
+            let parts: Vec<String> = heaviest_display
+                .iter()
+                .map(|(f, d)| format!("{} ({} deps)", f, d))
+                .collect();
+            writeln!(stdout, "Heaviest: {}", parts.join(", ")).ok();
+        }
+
+        // Line 4: external + orphans
+        let mut ext_sorted: Vec<&str> = external_packages.into_iter().collect();
+        ext_sorted.sort();
+        let ext_str = if ext_sorted.is_empty() {
+            "External: 0 packages".to_string()
+        } else {
+            format!(
+                "External: {} packages ({})",
+                ext_sorted.len(),
+                ext_sorted.join(", ")
+            )
+        };
+        writeln!(stdout, "{} | Orphans: {}", ext_str, dep_graph.orphans.len()).ok();
+    }
+}
+
+fn run_impact(
+    name: &str,
+    path: &PathBuf,
+    format: &str,
+    lang: &Option<Vec<String>>,
+    depth: Option<usize>,
+    no_progress: bool,
+) {
+    let (_root, mut file_nodes) = build_file_nodes(path, lang, no_progress);
+
+    let resolver = Resolver::new(PathBuf::new(), &file_nodes);
+    resolver.resolve_all(&mut file_nodes);
+
+    let kgraph = KGraph::from_files(&file_nodes);
+
+    // Find which file(s) define the named symbol
+    let mut defining_file = None;
+    let mut defining_symbol = None;
+    for f in &file_nodes {
+        for s in &f.symbols {
+            if s.name == name {
+                defining_file = Some(f.path.clone());
+                defining_symbol = Some(s.clone());
+                break;
+            }
+        }
+        if defining_file.is_some() {
+            break;
+        }
+    }
+
+    let (defining_file, defining_symbol) = match (defining_file, defining_symbol) {
+        (Some(f), Some(s)) => (f, s),
+        _ => {
+            if format == "json" {
+                let result = serde_json::json!({
+                    "symbol": name,
+                    "error": format!("Symbol '{name}' not found"),
+                });
+                let mut stdout = std::io::stdout().lock();
+                serde_json::to_writer_pretty(&mut stdout, &result).ok();
+                writeln!(stdout).ok();
+            } else {
+                eprintln!("Symbol '{name}' not found");
+            }
+            return;
+        }
+    };
+
+    // Get transitive dependents with depth
+    let dependents = kgraph.transitive_dependents_with_depth(&defining_file, depth);
+
+    // Cross-reference: for each dependent, check if it calls the symbol
+    let calls_symbol: std::collections::HashMap<PathBuf, bool> = dependents
+        .iter()
+        .map(|(dep_path, _)| {
+            let has_call = file_nodes.iter().any(|f| {
+                f.path == *dep_path
+                    && f.calls.iter().any(|c| {
+                        c.callee_raw == name || c.callee_raw.ends_with(&format!(".{name}"))
+                    })
+            });
+            (dep_path.clone(), has_call)
+        })
+        .collect();
+
+    let mut stdout = std::io::stdout().lock();
+
+    if format == "json" {
+        let impact: Vec<serde_json::Value> = dependents
+            .iter()
+            .map(|(p, d)| {
+                serde_json::json!({
+                    "file": p.to_string_lossy(),
+                    "depth": d,
+                    "calls_symbol": calls_symbol.get(p).copied().unwrap_or(false),
+                })
+            })
+            .collect();
+
+        let result = serde_json::json!({
+            "symbol": name,
+            "defined_in": {
+                "file": defining_file.to_string_lossy(),
+                "line": defining_symbol.span.start_line,
+                "kind": defining_symbol.kind.to_string(),
+            },
+            "impact": impact,
+        });
+        serde_json::to_writer_pretty(&mut stdout, &result).ok();
+        writeln!(stdout).ok();
+    } else {
+        writeln!(
+            stdout,
+            "Symbol: {name}\nDefined in: {}:{} ({})",
+            defining_file.display(),
+            defining_symbol.span.start_line,
+            defining_symbol.kind,
+        )
+        .ok();
+        writeln!(stdout).ok();
+
+        if dependents.is_empty() {
+            writeln!(stdout, "Impact: 0 files affected").ok();
+        } else {
+            writeln!(stdout, "Impact: {} files affected", dependents.len()).ok();
+
+            // Group by depth
+            let mut by_depth: std::collections::BTreeMap<usize, Vec<&PathBuf>> =
+                std::collections::BTreeMap::new();
+            for (p, d) in &dependents {
+                by_depth.entry(*d).or_default().push(p);
+            }
+
+            for (d, files) in &by_depth {
+                let label = if *d == 1 {
+                    format!("  depth {d} (direct):")
+                } else {
+                    format!("  depth {d}:")
+                };
+                writeln!(stdout, "{label}").ok();
+                for f in files {
+                    let tag = if calls_symbol.get(*f).copied().unwrap_or(false) {
+                        "  [calls symbol]"
+                    } else {
+                        ""
+                    };
+                    writeln!(stdout, "    {}{tag}", f.display()).ok();
+                }
+            }
+        }
+    }
+}
+
+fn run_hotspots(
+    path: &PathBuf,
+    format: &str,
+    lang: &Option<Vec<String>>,
+    top: Option<usize>,
+    no_progress: bool,
+) {
+    use kgr_core::types::SymbolKind;
+
+    let (root, file_nodes) = build_file_nodes(path, lang, no_progress);
+    let limit = top.unwrap_or(20);
+
+    #[derive(serde::Serialize)]
+    struct HotspotEntry {
+        file: String,
+        functions: usize,
+        avg_length: usize,
+        max_length: usize,
+        score: usize,
+    }
+
+    let mut entries: Vec<HotspotEntry> = file_nodes
+        .iter()
+        .filter_map(|node| {
+            let fn_symbols: Vec<_> = node
+                .symbols
+                .iter()
+                .filter(|s| matches!(s.kind, SymbolKind::Function | SymbolKind::Method))
+                .collect();
+
+            let function_count = fn_symbols.len();
+            if function_count == 0 {
+                return None;
+            }
+
+            let lengths: Vec<usize> = fn_symbols
+                .iter()
+                .map(|s| s.span.end_line - s.span.start_line + 1)
+                .collect();
+
+            let total_length: usize = lengths.iter().sum();
+            let avg_length = total_length / function_count;
+            let max_length = *lengths.iter().max().unwrap();
+            let score = function_count * avg_length;
+
+            let rel_path = node
+                .path
+                .strip_prefix(&root)
+                .unwrap_or(&node.path)
+                .to_string_lossy()
+                .to_string();
+
+            Some(HotspotEntry {
+                file: rel_path,
+                functions: function_count,
+                avg_length,
+                max_length,
+                score,
+            })
+        })
+        .collect();
+
+    entries.sort_by(|a, b| b.score.cmp(&a.score));
+    entries.truncate(limit);
+
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+
+    match format {
+        "json" => {
+            serde_json::to_writer_pretty(&mut out, &entries).unwrap();
+            writeln!(out).unwrap();
+        }
+        "text" => {
+            for (i, entry) in entries.iter().enumerate() {
+                writeln!(
+                    out,
+                    "{}. {} ({} functions, avg {} lines, score {})",
+                    i + 1,
+                    entry.file,
+                    entry.functions,
+                    entry.avg_length,
+                    entry.score,
+                )
+                .unwrap();
+            }
+        }
+        _ => {
+            // table (default)
+            writeln!(
+                out,
+                "{:<55} {:>9}  {:>7}  {:>7}  {:>5}",
+                "FILE", "FUNCTIONS", "AVG_LEN", "MAX_LEN", "SCORE"
+            )
+            .unwrap();
+            writeln!(out, "{}", "-".repeat(89)).unwrap();
+            for entry in &entries {
+                writeln!(
+                    out,
+                    "{:<55} {:>9}  {:>7}  {:>7}  {:>5}",
+                    entry.file, entry.functions, entry.avg_length, entry.max_length, entry.score,
+                )
+                .unwrap();
+            }
+        }
     }
 }

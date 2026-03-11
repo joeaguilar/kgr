@@ -73,6 +73,18 @@ const TS_CALL_QUERY_SRC: &str = r#"
 ;; new expression: new Foo()
 (new_expression
   constructor: (identifier) @call.new)
+
+;; Type annotation: x: MyType
+(type_annotation (type_identifier) @type.ref)
+
+;; Generic type: Array<MyType>
+(generic_type (type_identifier) @type.generic)
+
+;; Extends clause: class Foo extends Bar
+(extends_clause (identifier) @type.extends)
+
+;; Implements clause: class Foo implements Bar
+(implements_clause (type_identifier) @type.implements)
 "#;
 
 static TS_CALL_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -219,6 +231,10 @@ impl super::Parser for TypeScriptParser {
         let name_idx = query.capture_index_for_name("call.name").unwrap();
         let method_idx = query.capture_index_for_name("call.method").unwrap();
         let new_idx = query.capture_index_for_name("call.new").unwrap();
+        let type_ref_idx = query.capture_index_for_name("type.ref").unwrap();
+        let type_generic_idx = query.capture_index_for_name("type.generic").unwrap();
+        let type_extends_idx = query.capture_index_for_name("type.extends").unwrap();
+        let type_implements_idx = query.capture_index_for_name("type.implements").unwrap();
 
         let mut cursor = QueryCursor::new();
         let mut calls = Vec::new();
@@ -235,6 +251,16 @@ impl super::Parser for TypeScriptParser {
                 } else if capture.index == method_idx {
                     let member_node = node.parent().unwrap();
                     match member_node.utf8_text(source) {
+                        Ok(s) => s.to_string(),
+                        Err(_) => continue,
+                    }
+                } else if capture.index == type_ref_idx
+                    || capture.index == type_generic_idx
+                    || capture.index == type_extends_idx
+                    || capture.index == type_implements_idx
+                {
+                    // Type reference
+                    match node.utf8_text(source) {
                         Ok(s) => s.to_string(),
                         Err(_) => continue,
                     }
@@ -390,5 +416,26 @@ export * from './c';
 "#,
         );
         assert_eq!(imports.len(), 4);
+    }
+
+    // ── Call / type-ref extraction tests ──────────────────────────────────
+
+    fn calls(src: &str) -> Vec<CallRef> {
+        TypeScriptParser.extract_calls(src.as_bytes(), Path::new("test.ts"))
+    }
+
+    #[test]
+    fn calls_type_annotations() {
+        let c = calls("function foo(x: MyType): ReturnType { return x; }");
+        let names: Vec<&str> = c.iter().map(|c| c.callee_raw.as_str()).collect();
+        assert!(names.contains(&"MyType"));
+        assert!(names.contains(&"ReturnType"));
+    }
+
+    #[test]
+    fn calls_extends_class() {
+        let c = calls("class Child extends Parent { }");
+        let names: Vec<&str> = c.iter().map(|c| c.callee_raw.as_str()).collect();
+        assert!(names.contains(&"Parent"));
     }
 }
