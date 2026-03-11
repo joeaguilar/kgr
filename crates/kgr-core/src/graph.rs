@@ -315,6 +315,43 @@ impl KGraph {
             .unwrap_or(0)
     }
 
+    /// All transitive dependents with BFS depth (reverse graph BFS)
+    /// depth=1 means direct dependent, depth=2 means two hops away, etc.
+    pub fn transitive_dependents_with_depth(
+        &self,
+        target: &Path,
+        max_depth: Option<usize>,
+    ) -> Vec<(PathBuf, usize)> {
+        let Some(&start) = self.node_index.get(target) else {
+            return Vec::new();
+        };
+
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        queue.push_back((start, 0usize));
+        visited.insert(start);
+
+        let mut result = Vec::new();
+
+        while let Some((node, depth)) = queue.pop_front() {
+            if let Some(max) = max_depth {
+                if depth >= max {
+                    continue;
+                }
+            }
+            for neighbor in self.inner.neighbors_directed(node, Direction::Incoming) {
+                if visited.insert(neighbor) {
+                    let new_depth = depth + 1;
+                    result.push((self.inner[neighbor].clone(), new_depth));
+                    queue.push_back((neighbor, new_depth));
+                }
+            }
+        }
+
+        result.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        result
+    }
+
     pub fn edges_from(&self, path: &PathBuf) -> Vec<(PathBuf, ImportKind)> {
         if let Some(&idx) = self.node_index.get(path) {
             self.inner

@@ -67,6 +67,13 @@ const PYTHON_CALL_QUERY_SRC: &str = r#"
 (call
   function: (attribute
     attribute: (identifier) @call.attr))
+
+;; Type annotation: x: MyType
+(type (identifier) @type.ref)
+
+;; Base class: class Foo(Base)
+(class_definition
+  superclasses: (argument_list (identifier) @type.base))
 "#;
 
 thread_local! {
@@ -158,6 +165,8 @@ impl super::Parser for PythonParser {
         let query = &*PYTHON_CALL_QUERY;
         let name_idx = query.capture_index_for_name("call.name").unwrap();
         let attr_idx = query.capture_index_for_name("call.attr").unwrap();
+        let type_ref_idx = query.capture_index_for_name("type.ref").unwrap();
+        let type_base_idx = query.capture_index_for_name("type.base").unwrap();
 
         let mut cursor = QueryCursor::new();
         let mut calls = Vec::new();
@@ -176,6 +185,12 @@ impl super::Parser for PythonParser {
                     // Attribute call: get the full `a.b` text from the parent attribute node
                     let attr_node = node.parent().unwrap();
                     match attr_node.utf8_text(source) {
+                        Ok(s) => s.to_string(),
+                        Err(_) => continue,
+                    }
+                } else if capture.index == type_ref_idx || capture.index == type_base_idx {
+                    // Type reference or base class
+                    match node.utf8_text(source) {
                         Ok(s) => s.to_string(),
                         Err(_) => continue,
                     }
@@ -389,5 +404,20 @@ from . import utils
         let c = calls("svc = UserService()\n");
         assert_eq!(c.len(), 1);
         assert_eq!(c[0].callee_raw, "UserService");
+    }
+
+    #[test]
+    fn calls_type_annotations() {
+        let c = calls("def foo(x: MyType) -> ReturnType:\n    pass\n");
+        let names: Vec<&str> = c.iter().map(|c| c.callee_raw.as_str()).collect();
+        assert!(names.contains(&"MyType"));
+        assert!(names.contains(&"ReturnType"));
+    }
+
+    #[test]
+    fn calls_base_classes() {
+        let c = calls("class Child(Parent):\n    pass\n");
+        let names: Vec<&str> = c.iter().map(|c| c.callee_raw.as_str()).collect();
+        assert!(names.contains(&"Parent"));
     }
 }

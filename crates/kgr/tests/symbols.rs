@@ -528,3 +528,315 @@ fn graph_json_with_symbols_flag_enriches_file_nodes() {
         "db.py should have at least 3 symbols"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// kgr skeleton — "Show me just the signatures"
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn skeleton_text_output() {
+    let fixture = fixtures_dir().join("python/calls");
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args(["skeleton", "--no-progress"])
+        .arg(&fixture)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("main"))
+        .stdout(predicate::str::contains("fetch_users"));
+}
+
+#[test]
+fn skeleton_json_output() {
+    let fixture = fixtures_dir().join("python/calls");
+    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args(["skeleton", "--format", "json", "--no-progress"])
+        .arg(&fixture)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    let entries = json.as_array().expect("top-level should be array");
+
+    // Every entry should have file + skeleton
+    for entry in entries {
+        assert!(entry["file"].is_string(), "entry missing 'file'");
+        let skeleton = entry["skeleton"]
+            .as_array()
+            .expect("entry missing 'skeleton' array");
+        for item in skeleton {
+            assert!(item["name"].is_string(), "skeleton item missing 'name'");
+            assert!(item["kind"].is_string(), "skeleton item missing 'kind'");
+            assert!(item["line"].is_number(), "skeleton item missing 'line'");
+            assert!(
+                item["signature"].is_string(),
+                "skeleton item missing 'signature'"
+            );
+        }
+    }
+}
+
+#[test]
+fn skeleton_table_output() {
+    let fixture = fixtures_dir().join("python/calls");
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args(["skeleton", "--format", "table", "--no-progress"])
+        .arg(&fixture)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FILE"))
+        .stdout(predicate::str::contains("SIGNATURE"))
+        .stdout(predicate::str::contains("main"));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// kgr orient — "One-shot codebase overview"
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn orient_text_output() {
+    let fixture = fixtures_dir().join("python/simple");
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args(["orient", "--no-progress"])
+        .arg(&fixture)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("files"));
+}
+
+#[test]
+fn orient_json_output() {
+    let fixture = fixtures_dir().join("python/simple");
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args(["orient", "--format", "json", "--no-progress"])
+        .arg(&fixture)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("languages"));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// kgr impact — "What's the blast radius of changing this symbol?"
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn impact_text_output() {
+    let fixture = fixtures_dir().join("typescript/calls");
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args(["impact", "query", "--no-progress"])
+        .arg(&fixture)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("query"))
+        .stdout(predicate::str::contains("Defined in"))
+        .stdout(predicate::str::contains("Impact"));
+}
+
+#[test]
+fn impact_json_output() {
+    let fixture = fixtures_dir().join("typescript/calls");
+    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args(["impact", "query", "-f", "json", "--no-progress"])
+        .arg(&fixture)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["symbol"], "query");
+    assert!(json["defined_in"].is_object(), "should have defined_in");
+    assert!(
+        json["defined_in"]["file"]
+            .as_str()
+            .unwrap()
+            .contains("db.ts"),
+        "should be defined in db.ts"
+    );
+    assert_eq!(json["defined_in"]["kind"], "function");
+    assert!(json["impact"].is_array(), "should have impact array");
+
+    // db.ts -> service.ts -> app.ts, so impact should have 2 entries
+    let impact = json["impact"].as_array().unwrap();
+    assert_eq!(impact.len(), 2, "should have 2 affected files");
+}
+
+#[test]
+fn impact_json_shows_calls_symbol() {
+    let fixture = fixtures_dir().join("typescript/calls");
+    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args(["impact", "query", "-f", "json", "--no-progress"])
+        .arg(&fixture)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    let impact = json["impact"].as_array().unwrap();
+
+    // service.ts calls query directly (depth 1), so calls_symbol should be true
+    let service_entry = impact
+        .iter()
+        .find(|e| e["file"].as_str().unwrap().contains("service.ts"));
+    assert!(
+        service_entry.is_some(),
+        "service.ts should be in the impact list"
+    );
+    assert_eq!(
+        service_entry.unwrap()["calls_symbol"],
+        true,
+        "service.ts should call query"
+    );
+    assert_eq!(
+        service_entry.unwrap()["depth"],
+        1,
+        "service.ts should be at depth 1"
+    );
+
+    // app.ts is at depth 2 and does not call query directly
+    let app_entry = impact
+        .iter()
+        .find(|e| e["file"].as_str().unwrap().contains("app.ts"));
+    assert!(app_entry.is_some(), "app.ts should be in the impact list");
+    assert_eq!(
+        app_entry.unwrap()["calls_symbol"],
+        false,
+        "app.ts should not call query directly"
+    );
+    assert_eq!(
+        app_entry.unwrap()["depth"],
+        2,
+        "app.ts should be at depth 2"
+    );
+}
+
+#[test]
+fn impact_not_found_text() {
+    let fixture = fixtures_dir().join("python/calls");
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args(["impact", "nonexistent_symbol", "--no-progress"])
+        .arg(&fixture)
+        .assert()
+        .success();
+}
+
+#[test]
+fn impact_not_found_json() {
+    let fixture = fixtures_dir().join("python/calls");
+    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args([
+            "impact",
+            "nonexistent_symbol",
+            "-f",
+            "json",
+            "--no-progress",
+        ])
+        .arg(&fixture)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["symbol"], "nonexistent_symbol");
+    assert!(json["error"].is_string(), "should have error field");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// kgr hotspots — "Where are the complex files?"
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn hotspots_table_output() {
+    let fixture = fixtures_dir().join("python/simple");
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args(["hotspots", "--no-progress"])
+        .arg(&fixture)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FUNCTIONS"));
+}
+
+#[test]
+fn hotspots_json_output() {
+    let fixture = fixtures_dir().join("python/simple");
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args(["hotspots", "-f", "json", "--no-progress"])
+        .arg(&fixture)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("score"));
+}
+
+#[test]
+fn hotspots_text_output() {
+    let fixture = fixtures_dir().join("python/calls");
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args(["hotspots", "-f", "text", "--no-progress"])
+        .arg(&fixture)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("functions"))
+        .stdout(predicate::str::contains("score"));
+}
+
+#[test]
+fn hotspots_json_shape() {
+    let fixture = fixtures_dir().join("python/calls");
+    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args(["hotspots", "-f", "json", "--no-progress"])
+        .arg(&fixture)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    let entries = json.as_array().expect("top-level should be an array");
+
+    for entry in entries {
+        assert!(entry["file"].is_string(), "entry missing 'file'");
+        assert!(entry["functions"].is_number(), "entry missing 'functions'");
+        assert!(
+            entry["avg_length"].is_number(),
+            "entry missing 'avg_length'"
+        );
+        assert!(
+            entry["max_length"].is_number(),
+            "entry missing 'max_length'"
+        );
+        assert!(entry["score"].is_number(), "entry missing 'score'");
+    }
+}
+
+#[test]
+fn hotspots_sorted_descending() {
+    let fixture = fixtures_dir().join("python/calls");
+    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args(["hotspots", "-f", "json", "--no-progress"])
+        .arg(&fixture)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    let entries = json.as_array().unwrap();
+
+    let scores: Vec<u64> = entries
+        .iter()
+        .map(|e| e["score"].as_u64().unwrap())
+        .collect();
+
+    for w in scores.windows(2) {
+        assert!(w[0] >= w[1], "scores should be in descending order");
+    }
+}
