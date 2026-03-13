@@ -126,8 +126,7 @@ pub struct TypeScriptParser;
 fn is_tsx(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
-        .map(|e| e == "tsx")
-        .unwrap_or(false)
+        .is_some_and(|e| e == "tsx")
 }
 
 fn parse_tree(source: &[u8], path: &Path) -> Option<tree_sitter::Tree> {

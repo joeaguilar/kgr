@@ -5,7 +5,7 @@ use crate::types::{FileNode, ImportKind, Lang};
 
 pub struct Resolver {
     known_files: HashSet<PathBuf>,
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "root stored for future relative resolution")]
     root: PathBuf,
     tsconfig_paths: Vec<(String, String)>,
 }

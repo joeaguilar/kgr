@@ -121,11 +121,7 @@ impl super::Parser for GoParser {
                     continue;
                 };
 
-                let exported = name
-                    .chars()
-                    .next()
-                    .map(|c| c.is_uppercase())
-                    .unwrap_or(false);
+                let exported = name.chars().next().is_some_and(|c| c.is_uppercase());
 
                 let start = node.start_position();
                 let end = node.end_position();
