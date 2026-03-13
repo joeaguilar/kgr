@@ -23,7 +23,6 @@ pub struct Rule {
     pub severity: Severity,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
@@ -82,7 +81,6 @@ impl Default for Config {
     }
 }
 
-#[allow(dead_code)]
 pub fn load_config(root: &Path) -> Config {
     let config_path = root.join(".kgr.toml");
 

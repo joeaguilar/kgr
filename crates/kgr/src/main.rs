@@ -546,7 +546,10 @@ fn setup_tracing(verbosity: u8) {
         .init();
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "CLI dispatch passes through all flags"
+)]
 fn run_graph(
     path: &PathBuf,
     format: &str,
@@ -608,8 +611,8 @@ fn run_graph(
 
     // When --symbols is passed with JSON format, inject symbols into the output
     if include_symbols && format == "json" {
-        let symbols_map: std::collections::HashMap<_, _> =
-            symbols_data.unwrap().into_iter().collect();
+        let Some(data) = symbols_data else { return };
+        let symbols_map: std::collections::HashMap<_, _> = data.into_iter().collect();
         let mut json: serde_json::Value = serde_json::to_value(&dep_graph).unwrap();
         if let Some(files) = json.get_mut("files").and_then(|f| f.as_array_mut()) {
             for file in files {
@@ -649,7 +652,6 @@ fn run_graph(
     });
 }
 
-#[allow(clippy::too_many_arguments)]
 fn run_check(
     path: &PathBuf,
     format: &str,
@@ -869,7 +871,10 @@ fn run_check(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "CLI dispatch passes through all flags"
+)]
 fn run_query(
     path: &PathBuf,
     who_imports: Option<&Path>,
@@ -1310,8 +1315,8 @@ fn run_refs(
                 writeln!(
                     stdout,
                     "  {} ({}:{})",
-                    d["file"].as_str().unwrap(),
-                    d["kind"].as_str().unwrap(),
+                    d["file"].as_str().unwrap_or_default(),
+                    d["kind"].as_str().unwrap_or_default(),
                     d["line"]
                 )
                 .ok();
@@ -1323,9 +1328,9 @@ fn run_refs(
                 writeln!(
                     stdout,
                     "  {}:{} {}",
-                    r["file"].as_str().unwrap(),
+                    r["file"].as_str().unwrap_or_default(),
                     r["line"],
-                    r["context"].as_str().unwrap_or("")
+                    r["context"].as_str().unwrap_or_default()
                 )
                 .ok();
             }
@@ -1423,9 +1428,9 @@ fn run_dead(
         writeln!(
             stdout,
             "  Defined at: {}:{} ({})",
-            def["file"].as_str().unwrap(),
+            def["file"].as_str().unwrap_or_default(),
             def["line"],
-            def["kind"].as_str().unwrap()
+            def["kind"].as_str().unwrap_or_default()
         )
         .ok();
     } else {
@@ -1439,9 +1444,9 @@ fn run_dead(
             writeln!(
                 stdout,
                 "  {}:{} {}",
-                r["file"].as_str().unwrap(),
+                r["file"].as_str().unwrap_or_default(),
                 r["line"],
-                r["context"].as_str().unwrap_or("")
+                r["context"].as_str().unwrap_or_default()
             )
             .ok();
         }
@@ -1938,8 +1943,8 @@ fn run_hotspots(
 
     match format {
         "json" => {
-            serde_json::to_writer_pretty(&mut out, &entries).unwrap();
-            writeln!(out).unwrap();
+            let _ = serde_json::to_writer_pretty(&mut out, &entries);
+            let _ = writeln!(out);
         }
         "text" => {
             for (i, entry) in entries.iter().enumerate() {
@@ -1952,25 +1957,23 @@ fn run_hotspots(
                     entry.avg_length,
                     entry.score,
                 )
-                .unwrap();
+                .ok();
             }
         }
         _ => {
             // table (default)
-            writeln!(
+            let _ = writeln!(
                 out,
                 "{:<55} {:>9}  {:>7}  {:>7}  {:>5}",
                 "FILE", "FUNCTIONS", "AVG_LEN", "MAX_LEN", "SCORE"
-            )
-            .unwrap();
-            writeln!(out, "{}", "-".repeat(89)).unwrap();
+            );
+            let _ = writeln!(out, "{}", "-".repeat(89));
             for entry in &entries {
-                writeln!(
+                let _ = writeln!(
                     out,
                     "{:<55} {:>9}  {:>7}  {:>7}  {:>5}",
                     entry.file, entry.functions, entry.avg_length, entry.max_length, entry.score,
-                )
-                .unwrap();
+                );
             }
         }
     }

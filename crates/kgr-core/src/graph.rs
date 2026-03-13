@@ -43,7 +43,7 @@ pub struct KGraph {
 impl KGraph {
     pub fn from_files(files: &[FileNode]) -> Self {
         let mut graph = DiGraph::new();
-        let mut node_index = HashMap::new();
+        let mut node_index = HashMap::with_capacity(files.len());
 
         // Add all files as nodes
         for file in files {
@@ -57,7 +57,7 @@ impl KGraph {
                 for import in &file.imports {
                     if let Some(ref resolved) = import.resolved {
                         if let Some(&to_idx) = node_index.get(resolved) {
-                            graph.add_edge(from_idx, to_idx, import.kind.clone());
+                            graph.add_edge(from_idx, to_idx, import.kind);
                         }
                     }
                 }
@@ -135,7 +135,7 @@ impl KGraph {
         let mut edges = Vec::new();
         for edge in self.inner.edge_indices() {
             let (from_idx, to_idx) = self.inner.edge_endpoints(edge).unwrap();
-            let kind = self.inner[edge].clone();
+            let kind = self.inner[edge];
             edges.push(DepEdge {
                 from: self.inner[from_idx].clone(),
                 to: self.inner[to_idx].clone(),
@@ -293,26 +293,20 @@ impl KGraph {
 
     /// In-degree count for a specific node
     pub fn in_degree(&self, path: &Path) -> usize {
-        self.node_index
-            .get(path)
-            .map(|&idx| {
-                self.inner
-                    .neighbors_directed(idx, Direction::Incoming)
-                    .count()
-            })
-            .unwrap_or(0)
+        self.node_index.get(path).map_or(0, |&idx| {
+            self.inner
+                .neighbors_directed(idx, Direction::Incoming)
+                .count()
+        })
     }
 
     /// Out-degree count for a specific node
     pub fn out_degree(&self, path: &Path) -> usize {
-        self.node_index
-            .get(path)
-            .map(|&idx| {
-                self.inner
-                    .neighbors_directed(idx, Direction::Outgoing)
-                    .count()
-            })
-            .unwrap_or(0)
+        self.node_index.get(path).map_or(0, |&idx| {
+            self.inner
+                .neighbors_directed(idx, Direction::Outgoing)
+                .count()
+        })
     }
 
     /// All transitive dependents with BFS depth (reverse graph BFS)
@@ -352,13 +346,13 @@ impl KGraph {
         result
     }
 
-    pub fn edges_from(&self, path: &PathBuf) -> Vec<(PathBuf, ImportKind)> {
+    pub fn edges_from(&self, path: &Path) -> Vec<(PathBuf, ImportKind)> {
         if let Some(&idx) = self.node_index.get(path) {
             self.inner
                 .neighbors_directed(idx, Direction::Outgoing)
                 .map(|neighbor| {
                     let edge = self.inner.find_edge(idx, neighbor).unwrap();
-                    (self.inner[neighbor].clone(), self.inner[edge].clone())
+                    (self.inner[neighbor].clone(), self.inner[edge])
                 })
                 .collect()
         } else {
