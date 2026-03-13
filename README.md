@@ -1,5 +1,7 @@
 # kgr
 
+[![CI](https://github.com/joeaguilar/kgr/actions/workflows/ci.yml/badge.svg)](https://github.com/joeaguilar/kgr/actions/workflows/ci.yml)
+
 Zero-config, polyglot CLI that reads source files and emits a queryable knowledge graph of import relationships.
 
 **Supported languages:** Python, TypeScript, JavaScript, Java, Rust, Go, C, C++
