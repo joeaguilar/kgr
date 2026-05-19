@@ -10,20 +10,55 @@ Zero-config, polyglot CLI that reads source files and emits a queryable knowledg
 
 ## Installation
 
-```sh
-# Clone and install in one step
-git clone https://github.com/joeaguilar/kgr
-cd kgr
-./install.sh          # builds release binary → ~/.cargo/bin/kgr
-```
+No Rust toolchain required: prebuilt binaries are published on every release for macOS (Intel + Apple Silicon), Linux (x86_64 glibc/musl, aarch64), and Windows (x86_64 + arm64).
 
-Or with cargo directly (after cloning):
+On x86_64 Linux, the installer downloads the fully static musl build by default so it runs on any distro regardless of glibc version. The glibc artifact is still published if you'd rather grab it manually from the [Releases page](https://github.com/joeaguilar/kgr/releases/latest).
+
+### macOS / Linux
 
 ```sh
-cargo install --path crates/kgr
+curl -fsSL https://raw.githubusercontent.com/joeaguilar/kgr/main/install.sh | bash
 ```
 
-Once installed, keep it up to date with:
+The script auto-detects your platform, downloads the matching tarball from the latest GitHub Release, verifies its SHA256 checksum, and installs to an existing `kgr` location on `PATH`, `~/.cargo/bin` if it is already on `PATH`, or `~/.local/bin`.
+
+To update an existing install, rerun the installer:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/joeaguilar/kgr/main/install.sh | bash -s -- --update
+```
+
+Environment overrides:
+
+| Variable | Effect |
+|---|---|
+| `KGR_VERSION` | Pin a specific tag (e.g. `v0.2.0`). Defaults to latest. |
+| `KGR_INSTALL_DIR` | Install directory. Defaults to the active `kgr` on `PATH`, `~/.cargo/bin`, or `~/.local/bin`. |
+| `KGR_FROM_SOURCE=1` | Skip download and build with cargo. Must be run from a cloned repo. |
+
+### Windows
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/joeaguilar/kgr/main/install.ps1 | iex
+```
+
+Installs `kgr.exe` into `%LOCALAPPDATA%\Programs\kgr` and adds that directory to your user PATH. Use `-Version`, `-InstallDir`, or `-Repo` parameters to override defaults.
+
+### Manual Download
+
+Grab a release archive for your platform from [GitHub Releases](https://github.com/joeaguilar/kgr/releases/latest), verify the bundled `.sha256`, extract it, and drop `kgr` (or `kgr.exe`) anywhere on your `PATH`.
+
+### From Source
+
+If you'd rather build locally, or no prebuilt binary exists for your target, install Rust 1.81+ and run:
+
+```sh
+cargo install --git https://github.com/joeaguilar/kgr --bin kgr
+# or
+git clone https://github.com/joeaguilar/kgr && cd kgr && cargo install --path crates/kgr
+```
+
+For source installs, keep it up to date with:
 
 ```sh
 kgr upgrade           # git pull + cargo build --release + in-place replace
