@@ -1,0 +1,37 @@
+---
+source: crates/kgr/tests/snapshots.rs
+expression: stdout
+---
+{
+  "cycles": 0,
+  "edges": 3,
+  "entry_points": [
+    "src/main.rs"
+  ],
+  "external_packages": [
+    "serde::Serialize",
+    "std::collections::HashMap",
+    "std::collections::HashSet",
+    "std::fmt"
+  ],
+  "files": 3,
+  "heaviest": [
+    {
+      "dependents": 2,
+      "file": "src/util.rs"
+    },
+    {
+      "dependents": 1,
+      "file": "src/cli.rs"
+    },
+    {
+      "dependents": 0,
+      "file": "src/main.rs"
+    }
+  ],
+  "languages": {
+    "rust": 3
+  },
+  "largest_cycle_size": 0,
+  "orphans": 0
+}

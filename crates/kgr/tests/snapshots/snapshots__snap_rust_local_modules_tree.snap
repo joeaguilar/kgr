@@ -1,0 +1,8 @@
+---
+source: crates/kgr/tests/snapshots.rs
+expression: stdout
+---
+src/main.rs  [entry]
+├── src/cli.rs
+│   └── src/util.rs
+└── src/util.rs (already shown)

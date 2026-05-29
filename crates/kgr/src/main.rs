@@ -1935,7 +1935,7 @@ fn run_hotspots(
         })
         .collect();
 
-    entries.sort_by(|a, b| b.score.cmp(&a.score));
+    entries.sort_by_key(|b| std::cmp::Reverse(b.score));
     entries.truncate(limit);
 
     let stdout = std::io::stdout();

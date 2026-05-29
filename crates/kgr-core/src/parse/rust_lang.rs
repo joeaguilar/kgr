@@ -271,55 +271,156 @@ impl super::Parser for RustParser {
                     Err(_) => continue,
                 };
 
-                if !seen.insert(raw.clone()) {
+                let start = node.start_position();
+                let end = node.end_position();
+                let span = Span {
+                    start_line: start.row + 1,
+                    start_col: start.column,
+                    end_line: end.row + 1,
+                    end_col: end.column,
+                };
+
+                // A single `use` may pull in several paths via brace groups:
+                // `use a::b::{c, d};` -> a::b::c, a::b::d. Expand so each path
+                // resolves independently and external_deps lists clean,
+                // brace-free package names.
+                if capture.index == use_idx {
+                    for path in expand_use_paths(&raw) {
+                        if !seen.insert(path.clone()) {
+                            continue;
+                        }
+                        let kind = if path.starts_with("crate::")
+                            || path.starts_with("super::")
+                            || path.starts_with("self::")
+                        {
+                            ImportKind::Local
+                        } else {
+                            ImportKind::External
+                        };
+                        imports.push(Import {
+                            raw: path,
+                            kind,
+                            resolved: None,
+                            span: Some(span),
+                        });
+                    }
                     continue;
                 }
 
                 // mod declarations with a body (mod foo { ... }) are inline, skip them
                 if capture.index == mod_idx {
                     if let Some(parent) = node.parent() {
-                        // If the mod_item has a body (declaration_list), it's inline
                         if parent.child_by_field_name("body").is_some() {
                             continue;
                         }
                     }
+                    if !seen.insert(raw.clone()) {
+                        continue;
+                    }
+                    imports.push(Import {
+                        raw,
+                        kind: ImportKind::Local,
+                        resolved: None,
+                        span: Some(span),
+                    });
+                    continue;
                 }
 
-                let kind = if capture.index == mod_idx {
-                    ImportKind::Local
-                } else if capture.index == use_idx {
-                    // use crate:: or use super:: are local
-                    if raw.starts_with("crate::")
-                        || raw.starts_with("super::")
-                        || raw.starts_with("self::")
-                    {
-                        ImportKind::Local
-                    } else {
-                        ImportKind::External
-                    }
-                } else {
-                    ImportKind::External
-                };
-
-                let start = node.start_position();
-                let end = node.end_position();
-
+                // extern crate
+                if !seen.insert(raw.clone()) {
+                    continue;
+                }
                 imports.push(Import {
                     raw,
-                    kind,
+                    kind: ImportKind::External,
                     resolved: None,
-                    span: Some(Span {
-                        start_line: start.row + 1,
-                        start_col: start.column,
-                        end_line: end.row + 1,
-                        end_col: end.column,
-                    }),
+                    span: Some(span),
                 });
             }
         }
 
         imports
     }
+}
+
+/// Expand a Rust `use` argument into individual import paths, distributing the
+/// shared prefix across brace groups: `a::b::{c, d}` -> `["a::b::c", "a::b::d"]`.
+/// Aliases (`as x`) are stripped and globs (`*`) are kept as a trailing segment.
+fn expand_use_paths(arg: &str) -> Vec<String> {
+    let arg = arg.trim();
+    let Some(open) = arg.find('{') else {
+        return vec![strip_alias(arg)];
+    };
+    let prefix = &arg[..open];
+    let Some(close) = matching_brace(&arg[open..]) else {
+        return vec![strip_alias(arg)];
+    };
+    let inner = &arg[open + 1..open + close];
+
+    let mut out = Vec::new();
+    for member in split_top_level(inner) {
+        let member = member.trim();
+        if member.is_empty() {
+            continue;
+        }
+        if member == "self" {
+            // `a::b::{self, ...}` re-exports the module `a::b` itself.
+            out.push(prefix.trim_end_matches("::").to_string());
+        } else if member.contains('{') {
+            out.extend(expand_use_paths(&format!("{prefix}{member}")));
+        } else {
+            out.push(strip_alias(&format!("{prefix}{member}")));
+        }
+    }
+    if out.is_empty() {
+        out.push(prefix.trim_end_matches("::").to_string());
+    }
+    out
+}
+
+fn strip_alias(path: &str) -> String {
+    match path.trim().split_once(" as ") {
+        Some((head, _)) => head.trim().to_string(),
+        None => path.trim().to_string(),
+    }
+}
+
+/// Byte index (relative to the leading `{`) of its matching `}`.
+fn matching_brace(s: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, c) in s.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Split on top-level commas, ignoring commas nested inside brace groups.
+fn split_top_level(s: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for (i, c) in s.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&s[start..]);
+    parts
 }
 
 #[cfg(test)]
@@ -379,6 +480,54 @@ extern crate log;
 "#,
         );
         assert_eq!(imports.len(), 4);
+    }
+
+    #[test]
+    fn grouped_use_expands_to_individual_paths() {
+        let imports = parse("use std::collections::{HashMap, HashSet};");
+        let raws: Vec<&str> = imports.iter().map(|i| i.raw.as_str()).collect();
+        assert_eq!(
+            raws,
+            ["std::collections::HashMap", "std::collections::HashSet"]
+        );
+        assert!(imports.iter().all(|i| i.kind == ImportKind::External));
+        // No brace groups leak into external_deps strings.
+        assert!(imports.iter().all(|i| !i.raw.contains('{')));
+    }
+
+    #[test]
+    fn grouped_crate_local_each_classified_local() {
+        let imports = parse("use crate::{config, rules};");
+        let raws: Vec<&str> = imports.iter().map(|i| i.raw.as_str()).collect();
+        assert_eq!(raws, ["crate::config", "crate::rules"]);
+        assert!(imports.iter().all(|i| i.kind == ImportKind::Local));
+    }
+
+    #[test]
+    fn bare_module_import_is_external_until_resolved() {
+        // 2018-edition `use <local_mod>::Item;` (the ../itr smell). At parse
+        // time it's External; the resolver upgrades it to Local once the local
+        // module file is found.
+        let imports = parse("use cli::{Command, Flag};");
+        assert_eq!(
+            imports.iter().map(|i| i.raw.as_str()).collect::<Vec<_>>(),
+            ["cli::Command", "cli::Flag"]
+        );
+        assert!(imports.iter().all(|i| i.kind == ImportKind::External));
+    }
+
+    #[test]
+    fn use_alias_is_stripped() {
+        let imports = parse("use foo::Bar as Baz;");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].raw, "foo::Bar");
+    }
+
+    #[test]
+    fn group_self_member_keeps_module_path() {
+        let imports = parse("use crate::config::{self, Settings};");
+        let raws: Vec<&str> = imports.iter().map(|i| i.raw.as_str()).collect();
+        assert_eq!(raws, ["crate::config", "crate::config::Settings"]);
     }
 
     // ── Symbol extraction tests ──────────────────────────────────────────

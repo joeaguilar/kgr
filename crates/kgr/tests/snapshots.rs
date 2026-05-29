@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -11,9 +11,25 @@ fn fixtures_dir() -> PathBuf {
 
 fn kgr_output(fixture: &str, format: &str) -> String {
     let fixture_path = fixtures_dir().join(fixture);
+    kgr_output_path(&fixture_path, format)
+}
+
+fn kgr_output_path(path: &Path, format: &str) -> String {
     let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
         .args(["graph", "--format", format, "--no-progress"])
-        .arg(&fixture_path)
+        .arg(path)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    String::from_utf8(output).unwrap()
+}
+
+fn kgr_orient_json_path(path: &Path) -> String {
+    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args(["orient", "--format", "json", "--no-progress"])
+        .arg(path)
         .assert()
         .success()
         .get_output()
@@ -95,4 +111,21 @@ fn snap_ts_cycle_check() {
     }, {
         insta::assert_snapshot!(stderr);
     });
+}
+
+// Rust local-module resolution: pins the regression where a crate's own
+// modules (used via `mod foo; use foo::Bar;` or `use crate::foo::Bar;`) were
+// misclassified as external packages. external_deps must list ONLY real crates
+// (serde, std::*), and local modules must produce graph edges. Deterministic,
+// in-repo — no external dependency.
+#[test]
+fn snap_rust_local_modules_tree() {
+    let stdout = kgr_output("rust/local_modules", "tree");
+    insta::assert_snapshot!(stdout);
+}
+
+#[test]
+fn snap_rust_local_modules_orient_json() {
+    let stdout = kgr_orient_json_path(&fixtures_dir().join("rust/local_modules"));
+    insta::assert_snapshot!(stdout);
 }

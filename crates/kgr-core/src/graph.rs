@@ -51,13 +51,19 @@ impl KGraph {
             node_index.insert(file.path.clone(), idx);
         }
 
-        // Add edges for resolved imports
+        // Add edges for resolved imports. Several imports can resolve to the
+        // same file (e.g. `mod foo;` plus `use foo::Bar;`, or a grouped
+        // `use foo::{A, B};`); collapse them to a single edge so dependent
+        // counts and renderings aren't inflated by parallel edges.
+        let mut seen_edges = HashSet::new();
         for file in files {
             if let Some(&from_idx) = node_index.get(&file.path) {
                 for import in &file.imports {
                     if let Some(ref resolved) = import.resolved {
                         if let Some(&to_idx) = node_index.get(resolved) {
-                            graph.add_edge(from_idx, to_idx, import.kind);
+                            if seen_edges.insert((from_idx, to_idx)) {
+                                graph.add_edge(from_idx, to_idx, import.kind);
+                            }
                         }
                     }
                 }
@@ -287,7 +293,7 @@ impl KGraph {
                 (path.clone(), count)
             })
             .collect();
-        counts.sort_by(|a, b| b.1.cmp(&a.1));
+        counts.sort_by_key(|b| std::cmp::Reverse(b.1));
         counts
     }
 
