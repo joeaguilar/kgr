@@ -246,10 +246,11 @@ impl Resolver {
             (crate_src_base(from), raw)
         };
 
-        let segments: Vec<&str> = rest
-            .split("::")
-            .filter(|s| !s.is_empty() && *s != "*")
-            .collect();
+        if rest.split("::").any(|s| s == "*") {
+            return None;
+        }
+
+        let segments: Vec<&str> = rest.split("::").filter(|s| !s.is_empty()).collect();
         self.try_module(&base, &segments)
     }
 
@@ -283,16 +284,15 @@ impl Resolver {
         let target = from_dir.join(raw);
         let target = normalize_path(&target);
 
-        // Go: try the directory as a package — look for any .go file in it
-        for known in &self.known_files {
-            if known.starts_with(&target)
-                && known.extension().and_then(|e| e.to_str()) == Some("go")
-            {
-                return Some(known.clone());
-            }
-        }
-
-        None
+        // Go: try the directory as a package and choose a stable member file.
+        self.known_files
+            .iter()
+            .filter(|known| {
+                known.starts_with(&target)
+                    && known.extension().and_then(|e| e.to_str()) == Some("go")
+            })
+            .min()
+            .cloned()
     }
 }
 
@@ -407,6 +407,10 @@ mod tests {
         resolver(files).resolve_rust(raw, Path::new(from))
     }
 
+    fn resolve_go(files: &[&str], raw: &str, from: &str) -> Option<PathBuf> {
+        resolver(files).resolve_go(raw, Path::new(from))
+    }
+
     #[test]
     fn crate_import_resolves_in_workspace_layout() {
         // The headline bug: `crate::` must anchor at the owning crate's src/,
@@ -471,6 +475,37 @@ mod tests {
             "src/a/b.rs",
         );
         assert_eq!(got, Some(PathBuf::from("src/a/c.rs")));
+    }
+
+    #[test]
+    fn rust_glob_imports_intentionally_resolve_to_none() {
+        let super_glob = resolve_rust(
+            &["src/a/mod.rs", "src/a/b.rs", "src/a/c.rs"],
+            "super::*",
+            "src/a/b.rs",
+        );
+        assert_eq!(super_glob, None);
+
+        let crate_glob = resolve_rust(
+            &["src/lib.rs", "src/foo.rs", "src/foo/bar.rs"],
+            "crate::foo::*",
+            "src/lib.rs",
+        );
+        assert_eq!(crate_glob, None);
+    }
+
+    #[test]
+    fn go_package_resolution_picks_lexicographically_first_member() {
+        let got = resolve_go(
+            &[
+                "pkg/service/zeta.go",
+                "pkg/service/alpha.go",
+                "pkg/service/internal/helper.go",
+            ],
+            "./service",
+            "pkg/main.go",
+        );
+        assert_eq!(got, Some(PathBuf::from("pkg/service/alpha.go")));
     }
 
     #[test]

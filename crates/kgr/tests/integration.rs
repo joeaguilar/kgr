@@ -103,6 +103,69 @@ fn dot_output_format() {
 }
 
 #[test]
+fn graph_help_lists_all_formats() {
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args(["graph", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Output format: tree, json, table, dot, mermaid",
+        ));
+}
+
+#[test]
+fn graph_unknown_format_exits_nonzero_on_stderr() {
+    let fixture = fixtures_dir().join("typescript/simple");
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args(["graph", "--format", "bogus", "--no-progress"])
+        .arg(&fixture)
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Unknown format: bogus"));
+}
+
+#[test]
+fn graph_json_with_symbols_includes_external_deps() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("app.py"),
+        "import requests\n\n\ndef main():\n    return requests.get('https://example.com')\n",
+    )
+    .unwrap();
+
+    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args(["graph", "--format", "json", "--symbols", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    let external_deps = json["external_deps"]
+        .as_object()
+        .expect("external_deps should be present");
+    assert!(
+        external_deps.values().any(|deps| {
+            deps.as_array()
+                .unwrap()
+                .iter()
+                .any(|dep| dep.as_str() == Some("requests"))
+        }),
+        "external_deps should include requests"
+    );
+    let files = json["files"].as_array().unwrap();
+    assert!(
+        files.iter().any(|file| file["symbols"]
+            .as_array()
+            .is_some_and(|symbols| !symbols.is_empty())),
+        "files should still include symbol arrays"
+    );
+}
+
+#[test]
 fn init_creates_config() {
     let tmp = tempfile::tempdir().unwrap();
     // Create a dummy .py file so init detects python
@@ -374,6 +437,22 @@ fn agent_info_text() {
         .stdout(predicate::str::contains("SUBCOMMANDS"))
         .stdout(predicate::str::contains("kgr check"))
         .stdout(predicate::str::contains("RECOMMENDED AGENT WORKFLOW"));
+}
+
+#[test]
+fn agent_info_documents_current_cli_surface() {
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .arg("agent-info")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("kgr orient"))
+        .stdout(predicate::str::contains("kgr impact <NAME>"))
+        .stdout(predicate::str::contains("kgr hotspots"))
+        .stdout(predicate::str::contains("kgr skeleton"))
+        .stdout(predicate::str::contains("zig, cs, objc, swift"))
+        .stdout(predicate::str::contains("--syntax"))
+        .stdout(predicate::str::contains("syntax_errors"))
+        .stdout(predicate::str::contains("-l, --lang <lang>"));
 }
 
 #[test]

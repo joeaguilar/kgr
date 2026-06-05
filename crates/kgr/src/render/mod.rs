@@ -23,12 +23,9 @@ pub fn render(
         "dot" => dot::render_dot(graph, kgraph, writer),
         "table" => table::render_table(graph, kgraph, show_external, writer),
         "mermaid" => mermaid::render_mermaid(graph, kgraph, writer),
-        _ => {
-            writeln!(
-                writer,
-                "Unknown format: {}. Use json, tree, dot, table, or mermaid.",
-                format
-            )
-        }
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("Unknown format: {format}. Use json, tree, dot, table, or mermaid."),
+        )),
     }
 }

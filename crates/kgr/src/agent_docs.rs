@@ -10,7 +10,8 @@ kgr [graph] [PATH] [FLAGS]
   Scan PATH (default: .) and emit the full dependency graph.
   Flags:
     -f, --format <fmt>     Output format: tree (default), json, table, dot, mermaid
-    -l, --lang <lang>      Filter by language: py, ts, js, rs, java, c, cpp, go
+    -l, --lang <lang>      Filter by language: py, ts, js, rs, java, c, cpp, go,
+                           zig, cs, objc, swift, rb, php, scala, lua, ex, hs, sh
         --no-external      Hide external (third-party) dependencies
         --show-external    Show external package names as leaf nodes (tree/table)
         --symbols          Include symbol definitions in each file node (JSON only)
@@ -22,9 +23,11 @@ kgr check [PATH] [FLAGS]
   Exit 0 = clean; exit 1 = errors found.
   Flags:
     -f, --format <fmt>     Output format: text (default), json
+    -l, --lang <lang>      Filter by language
         --no-progress      Disable progress bar
         --update-baseline  Record current violations as baseline (exits 0)
         --baseline <file>  Path to baseline file (default: .kgr-baseline.json)
+        --syntax           Include tree-sitter ERROR/MISSING parse diagnostics
   JSON output shape:
     {
       "ok": bool,
@@ -33,6 +36,8 @@ kgr check [PATH] [FLAGS]
       "rule_violations": [{"rule": "...", "from": "...", "to": "...", "severity": "error|warn"}],
       "suppressed": <int>
     }
+    With --syntax, JSON also includes:
+      "syntax_errors": [{"file": "bad.py", "message": "...", "line": 3, "column": 8}]
 
 kgr query [PATH] [FLAGS]
   Query the graph without printing the full structure.
@@ -45,6 +50,8 @@ kgr query [PATH] [FLAGS]
     --heaviest             List files ranked by number of dependents
     --largest-cycle        Show the largest cycle
     -f, --format <fmt>     Output format: table (default), json
+    -l, --lang <lang>      Filter by language
+        --no-progress      Disable progress bar
 
 kgr symbols [PATH] [FLAGS]
   List all symbol definitions (functions, classes, methods) in the scanned files.
@@ -87,6 +94,70 @@ kgr dead <NAME> [PATH] [FLAGS]
       "definition": {"file": "utils.py", "line": 42, "kind": "function"},
       "references": []
     }
+
+kgr skeleton [PATH] [FLAGS]
+  Emit a token-minimal skeleton of each file: signatures only, bodies elided.
+  Flags:
+    -f, --format <fmt>     Output format: text (default), json, table
+    -l, --lang <lang>      Filter by language
+        --no-progress      Disable progress bar
+  JSON output shape:
+    [{
+      "file": "src/service.py",
+      "skeleton": [
+        {"name": "fetch_users", "kind": "function", "line": 8, "exported": true, "signature": "def fetch_users(): ..."}
+      ]
+    }, ...]
+
+kgr orient [PATH] [FLAGS]
+  Print a one-shot codebase overview: file counts, languages, entry points,
+  heaviest files, cycles, orphans, and external packages.
+  Flags:
+    -f, --format <fmt>     Output format: text (default), json
+    -l, --lang <lang>      Filter by language
+        --no-progress      Disable progress bar
+  JSON output shape:
+    {
+      "files": 12,
+      "languages": {"rust": 8, "python": 4},
+      "edges": 18,
+      "entry_points": ["src/main.rs"],
+      "cycles": 0,
+      "largest_cycle_size": 0,
+      "orphans": 1,
+      "external_packages": ["serde"],
+      "heaviest": [{"file": "src/lib.rs", "dependents": 4}]
+    }
+
+kgr impact <NAME> [PATH] [FLAGS]
+  Show the transitive blast radius of a symbol change.
+  Flags:
+    -f, --format <fmt>     Output format: text (default), json
+    -l, --lang <lang>      Filter by language
+    -d, --depth <n>        Maximum dependent depth to traverse
+        --no-progress      Disable progress bar
+  JSON output shape:
+    {
+      "symbol": "query",
+      "defined_in": {"file": "db.ts", "line": 3, "kind": "function"},
+      "impact": [{"file": "service.ts", "depth": 1, "calls_symbol": true}]
+    }
+
+kgr hotspots [PATH] [FLAGS]
+  Rank files by function count and average function length.
+  Flags:
+    -f, --format <fmt>     Output format: table (default), json, text
+    -l, --lang <lang>      Filter by language
+    -t, --top <n>          Number of files to show (default: 20)
+        --no-progress      Disable progress bar
+  JSON output shape:
+    [{
+      "file": "src/service.py",
+      "functions": 5,
+      "avg_length": 12,
+      "max_length": 31,
+      "score": 60
+    }, ...]
 
 kgr init [PATH]
   Generate a .kgr.toml config skeleton in PATH (default: .).

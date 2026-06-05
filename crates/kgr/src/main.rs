@@ -36,7 +36,7 @@ enum Commands {
         #[arg(default_value = ".")]
         path: PathBuf,
 
-        /// Output format: json, tree, dot
+        /// Output format: tree, json, table, dot, mermaid
         #[arg(short, long, default_value = "tree")]
         format: String,
 
@@ -613,7 +613,10 @@ fn run_graph(
     if include_symbols && format == "json" {
         let Some(data) = symbols_data else { return };
         let symbols_map: std::collections::HashMap<_, _> = data.into_iter().collect();
-        let mut json: serde_json::Value = serde_json::to_value(&dep_graph).unwrap();
+        let mut json = render::json::graph_value(&dep_graph).unwrap_or_else(|e| {
+            eprintln!("Error rendering output: {}", e);
+            process::exit(2);
+        });
         if let Some(files) = json.get_mut("files").and_then(|f| f.as_array_mut()) {
             for file in files {
                 let path_str = file["path"].as_str().unwrap_or_default();
@@ -633,8 +636,14 @@ fn run_graph(
                 }
             }
         }
-        serde_json::to_writer_pretty(&mut writer, &json).ok();
-        writeln!(writer).ok();
+        serde_json::to_writer_pretty(&mut writer, &json).unwrap_or_else(|e| {
+            eprintln!("Error rendering output: {}", e);
+            process::exit(2);
+        });
+        writeln!(writer).unwrap_or_else(|e| {
+            eprintln!("Error rendering output: {}", e);
+            process::exit(2);
+        });
         return;
     }
 

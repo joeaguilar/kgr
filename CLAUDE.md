@@ -39,15 +39,15 @@ Two-crate workspace:
 - **`crates/kgr-core`** — library: parsing, graph construction, types
 - **`crates/kgr`** — binary: CLI, rendering, config, rules, baseline
 
-### Parse pipeline (`kgr-core`)
+### Parse pipeline (binary + core)
 
 ```
-walk.rs (ignore crate)
-  → pipeline.rs (rayon par_iter)
-    → parse/<lang>.rs  (tree-sitter queries)
-      → resolve.rs     (relative → absolute paths)
-        → graph.rs     (petgraph DiGraph)
-          → render/<format>.rs
+crates/kgr/src/walk.rs      (ignore crate)
+  -> crates/kgr/src/pipeline.rs  (rayon par_iter)
+    -> crates/kgr-core/src/parse/<lang>.rs  (tree-sitter queries)
+      -> crates/kgr-core/src/resolve.rs     (relative -> absolute paths)
+        -> crates/kgr-core/src/graph.rs     (petgraph DiGraph)
+          -> crates/kgr/src/render/<format>.rs
 ```
 
 Each language parser is a zero-sized struct. The pattern is:
@@ -59,7 +59,8 @@ Each language parser is a zero-sized struct. The pattern is:
 
 - `FileNode` — path + lang + `Vec<Import>`
 - `Import` — `raw: String`, `kind: Local|External|System`, `resolved: Option<PathBuf>`
-- `DepGraph` — the final output: files, edges, cycles, roots, orphans, `external_deps`
+- `DepGraph` — the final output: files, edges, cycles, roots, orphans, `test_entries`
+- `external_deps` — JSON render-time projection added by `crates/kgr/src/render/json.rs`
 - `KGraph` — internal petgraph wrapper used during construction
 
 ### CLI modules (`crates/kgr/src/`)
@@ -87,9 +88,9 @@ Each language parser is a zero-sized struct. The pattern is:
 
 ## tree-sitter version constraints
 
-- tree-sitter **0.24** is required — `QueryMatches` is a `StreamingIterator`, not `Iterator`
+- tree-sitter **0.25** is pinned in the workspace — `QueryMatches` is a `StreamingIterator`, not `Iterator`
 - Parser versions: python=0.23.6, typescript=0.23.2, javascript=0.23.1 (do not upgrade without testing)
-- C and C++ parsers share a C library; both link `tree-sitter-c`
+- C and C++ use separate parser crates: `tree-sitter-c` and `tree-sitter-cpp`
 
 ---
 

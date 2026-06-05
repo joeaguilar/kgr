@@ -4,6 +4,11 @@ use std::io::Write;
 use kgr_core::types::{DepGraph, ImportKind};
 
 pub fn render_json(graph: &DepGraph, writer: &mut dyn Write) -> std::io::Result<()> {
+    let value = graph_value(graph)?;
+    serde_json::to_writer_pretty(writer, &value).map_err(std::io::Error::other)
+}
+
+pub fn graph_value(graph: &DepGraph) -> std::io::Result<serde_json::Value> {
     let mut value = serde_json::to_value(graph).map_err(std::io::Error::other)?;
 
     // Build a per-file map of external package names for convenient agent consumption.
@@ -32,5 +37,5 @@ pub fn render_json(graph: &DepGraph, writer: &mut dyn Write) -> std::io::Result<
         );
     }
 
-    serde_json::to_writer_pretty(writer, &value).map_err(std::io::Error::other)
+    Ok(value)
 }

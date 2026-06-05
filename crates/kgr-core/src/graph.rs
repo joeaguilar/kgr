@@ -293,7 +293,7 @@ impl KGraph {
                 (path.clone(), count)
             })
             .collect();
-        counts.sort_by_key(|b| std::cmp::Reverse(b.1));
+        counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         counts
     }
 
@@ -364,5 +364,52 @@ impl KGraph {
         } else {
             Vec::new()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{Import, Lang};
+
+    fn node(path: &str, deps: &[&str]) -> FileNode {
+        FileNode {
+            path: PathBuf::from(path),
+            lang: Lang::Rust,
+            imports: deps
+                .iter()
+                .map(|dep| Import {
+                    raw: (*dep).to_string(),
+                    kind: ImportKind::Local,
+                    resolved: Some(PathBuf::from(dep)),
+                    span: None,
+                })
+                .collect(),
+            symbols: Vec::new(),
+            calls: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn heaviest_uses_path_tie_breaker() {
+        let files = vec![
+            node("src/d.rs", &["src/a.rs"]),
+            node("src/c.rs", &["src/b.rs"]),
+            node("src/b.rs", &[]),
+            node("src/a.rs", &[]),
+        ];
+
+        let graph = KGraph::from_files(&files);
+        let ranked = graph.heaviest();
+
+        assert_eq!(
+            ranked,
+            vec![
+                (PathBuf::from("src/a.rs"), 1),
+                (PathBuf::from("src/b.rs"), 1),
+                (PathBuf::from("src/c.rs"), 0),
+                (PathBuf::from("src/d.rs"), 0),
+            ]
+        );
     }
 }
