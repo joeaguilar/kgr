@@ -546,6 +546,17 @@ fn setup_tracing(verbosity: u8) {
         .init();
 }
 
+fn load_config_or_exit(root: &Path) -> config::Config {
+    config::load_config(root).unwrap_or_else(|e| {
+        eprintln!(
+            "Error: failed to load config '{}': {}",
+            root.join(".kgr.toml").display(),
+            e
+        );
+        process::exit(2);
+    })
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "CLI dispatch passes through all flags"
@@ -565,7 +576,7 @@ fn run_graph(
         process::exit(2);
     });
 
-    let cfg = config::load_config(&root);
+    let cfg = load_config_or_exit(&root);
     let registry = ParserRegistry::new();
     let files = walk::discover(&root, lang, &cfg.exclude, cfg.max_file_size_bytes());
 
@@ -675,7 +686,7 @@ fn run_check(
         process::exit(2);
     });
 
-    let cfg = config::load_config(&root);
+    let cfg = load_config_or_exit(&root);
     let registry = ParserRegistry::new();
     let files = walk::discover(&root, lang, &cfg.exclude, cfg.max_file_size_bytes());
 
@@ -913,7 +924,7 @@ fn run_query(
         process::exit(2);
     });
 
-    let cfg = config::load_config(&root);
+    let cfg = load_config_or_exit(&root);
     let registry = ParserRegistry::new();
     let files = walk::discover(&root, lang, &cfg.exclude, cfg.max_file_size_bytes());
 
@@ -1172,7 +1183,7 @@ fn build_file_nodes(
         process::exit(2);
     });
 
-    let cfg = config::load_config(&root);
+    let cfg = load_config_or_exit(&root);
     let registry = ParserRegistry::new();
     let files = walk::discover(&root, lang, &cfg.exclude, cfg.max_file_size_bytes());
 

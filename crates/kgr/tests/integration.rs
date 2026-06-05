@@ -184,6 +184,22 @@ fn init_creates_config() {
     assert!(content.contains("[[rules]]"));
 }
 
+#[test]
+fn malformed_config_exits_nonzero_and_reports_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("main.py"), "import os\n").unwrap();
+    std::fs::write(tmp.path().join(".kgr.toml"), "max_file_size_kb = \"500\"\n").unwrap();
+
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args(["graph", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("failed to load config"))
+        .stderr(predicate::str::contains(".kgr.toml"))
+        .stderr(predicate::str::contains("max_file_size_kb"));
+}
+
 // ── Rule system ──────────────────────────────────────────────────────────────
 
 fn make_ts_fixture(tmp: &tempfile::TempDir) {

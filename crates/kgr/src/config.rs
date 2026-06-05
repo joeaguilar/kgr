@@ -81,15 +81,21 @@ impl Default for Config {
     }
 }
 
-pub fn load_config(root: &Path) -> Config {
+pub fn load_config(root: &Path) -> Result<Config, Box<figment::Error>> {
     let config_path = root.join(".kgr.toml");
 
-    Figment::new()
-        .merge(Serialized::defaults(Config::default()))
-        .merge(Toml::file(&config_path))
+    let figment = Figment::new().merge(Serialized::defaults(Config::default()));
+
+    let figment = if config_path.exists() {
+        figment.merge(Toml::file(&config_path))
+    } else {
+        figment
+    };
+
+    figment
         .merge(Env::prefixed("KGR_"))
         .extract()
-        .unwrap_or_default()
+        .map_err(Box::new)
 }
 
 pub fn init_config(root: &Path) -> std::io::Result<PathBuf> {
