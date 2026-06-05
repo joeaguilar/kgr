@@ -277,6 +277,33 @@ severity = "error"
         .stderr(predicate::str::contains("All checks passed."));
 }
 
+#[test]
+fn invalid_rule_glob_exits_nonzero_and_reports_rule() {
+    let tmp = tempfile::tempdir().unwrap();
+    make_ts_fixture(&tmp);
+
+    std::fs::write(
+        tmp.path().join(".kgr.toml"),
+        r#"
+[[rules]]
+name = "bad-glob"
+from = "legacy/["
+to   = "core/**"
+severity = "error"
+"#,
+    )
+    .unwrap();
+
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args(["check", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("warning[kgr::rule-config]"))
+        .stderr(predicate::str::contains("bad-glob"))
+        .stderr(predicate::str::contains("legacy/["));
+}
+
 // ── Baseline enforcement ──────────────────────────────────────────────────────
 
 #[test]

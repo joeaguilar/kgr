@@ -12,26 +12,47 @@ pub struct RuleViolation {
     pub severity: Severity,
 }
 
-pub fn check_rules(graph: &DepGraph, rules: &[Rule]) -> Vec<RuleViolation> {
+#[derive(Debug, Clone)]
+pub struct RuleCompileError {
+    pub rule_name: String,
+    pub field: &'static str,
+    pub pattern: String,
+    pub message: String,
+}
+
+pub fn check_rules(
+    graph: &DepGraph,
+    rules: &[Rule],
+) -> Result<Vec<RuleViolation>, Vec<RuleCompileError>> {
     if rules.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
-    // Pre-compile all glob sets
-    let compiled: Vec<(String, globset::GlobSet, globset::GlobSet, &Severity)> = rules
-        .iter()
-        .filter_map(|rule| {
-            let from_set = GlobSetBuilder::new()
-                .add(Glob::new(&rule.from).ok()?)
-                .build()
-                .ok()?;
-            let to_set = GlobSetBuilder::new()
-                .add(Glob::new(&rule.to).ok()?)
-                .build()
-                .ok()?;
-            Some((rule.name.clone(), from_set, to_set, &rule.severity))
-        })
-        .collect();
+    let mut compile_errors = Vec::new();
+    let mut compiled: Vec<(String, globset::GlobSet, globset::GlobSet, &Severity)> = Vec::new();
+
+    for rule in rules {
+        let from_set = compile_rule_glob(rule, "from", &rule.from);
+        let to_set = compile_rule_glob(rule, "to", &rule.to);
+
+        match (from_set, to_set) {
+            (Ok(from_set), Ok(to_set)) => {
+                compiled.push((rule.name.clone(), from_set, to_set, &rule.severity));
+            }
+            (from_result, to_result) => {
+                if let Err(error) = from_result {
+                    compile_errors.push(error);
+                }
+                if let Err(error) = to_result {
+                    compile_errors.push(error);
+                }
+            }
+        }
+    }
+
+    if !compile_errors.is_empty() {
+        return Err(compile_errors);
+    }
 
     let local_edges: Vec<&DepEdge> = graph
         .edges
@@ -56,5 +77,28 @@ pub fn check_rules(graph: &DepGraph, rules: &[Rule]) -> Vec<RuleViolation> {
         }
     }
 
-    violations
+    Ok(violations)
+}
+
+fn compile_rule_glob(
+    rule: &Rule,
+    field: &'static str,
+    pattern: &str,
+) -> Result<globset::GlobSet, RuleCompileError> {
+    let glob = Glob::new(pattern).map_err(|error| RuleCompileError {
+        rule_name: rule.name.clone(),
+        field,
+        pattern: pattern.to_string(),
+        message: error.to_string(),
+    })?;
+
+    GlobSetBuilder::new()
+        .add(glob)
+        .build()
+        .map_err(|error| RuleCompileError {
+            rule_name: rule.name.clone(),
+            field,
+            pattern: pattern.to_string(),
+            message: error.to_string(),
+        })
 }

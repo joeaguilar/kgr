@@ -696,7 +696,18 @@ fn run_check(
     let kgraph = KGraph::from_files(&file_nodes);
     let dep_graph = kgraph.to_dep_graph(root.clone(), file_nodes);
 
-    let all_rule_violations = rules::check_rules(&dep_graph, &cfg.rules);
+    let all_rule_violations = match rules::check_rules(&dep_graph, &cfg.rules) {
+        Ok(violations) => violations,
+        Err(errors) => {
+            for error in errors {
+                eprintln!(
+                    "warning[kgr::rule-config]: rule '{}' has invalid {} glob '{}': {}",
+                    error.rule_name, error.field, error.pattern, error.message
+                );
+            }
+            process::exit(1);
+        }
+    };
     let resolved_baseline_path = baseline_path
         .map(PathBuf::from)
         .unwrap_or_else(|| root.join(".kgr-baseline.json"));
