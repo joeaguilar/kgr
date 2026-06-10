@@ -435,6 +435,7 @@ fn dead_json_shape() {
     assert_eq!(json["symbol"], "deprecated_helper");
     assert_eq!(json["found"], true);
     assert_eq!(json["dead"], true);
+    assert_eq!(json["status"], "no_references");
     let definitions = json["definitions"].as_array().unwrap();
     assert_eq!(definitions.len(), 1, "should include where it's defined");
     assert!(
@@ -445,6 +446,8 @@ fn dead_json_shape() {
         "should show the defining file"
     );
     assert!(json["references"].as_array().unwrap().is_empty());
+    assert!(json["self_file_references"].as_array().unwrap().is_empty());
+    assert!(json["cross_file_references"].as_array().unwrap().is_empty());
 }
 
 #[test]
@@ -464,10 +467,85 @@ fn dead_json_alive_includes_references() {
     assert_eq!(json["symbol"], "query");
     assert_eq!(json["found"], true);
     assert_eq!(json["dead"], false);
+    assert_eq!(json["status"], "live_cross_file_references");
     assert!(
         !json["references"].as_array().unwrap().is_empty(),
         "alive symbol should list its references"
     );
+    assert!(json["self_file_references"].as_array().unwrap().is_empty());
+    let cross_refs = json["cross_file_references"].as_array().unwrap();
+    assert!(
+        cross_refs
+            .iter()
+            .any(|r| r["file"].as_str().unwrap().contains("service.py")),
+        "cross-file references should include the service.py caller"
+    );
+}
+
+#[test]
+fn dead_json_self_recursive_symbol_is_self_only_not_live() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("worker.py"),
+        "def tick(n):\n    if n <= 0:\n        return 0\n    return tick(n - 1)\n",
+    )
+    .unwrap();
+
+    let output = kgr()
+        .args(["dead", "tick", "--format", "json", "--no-progress"])
+        .arg(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["symbol"], "tick");
+    assert_eq!(json["found"], true);
+    assert_eq!(json["dead"], true);
+    assert_eq!(json["status"], "self_only_references");
+    assert!(json["caveat"]
+        .as_str()
+        .unwrap()
+        .contains("self-file references"));
+
+    let refs = json["references"].as_array().unwrap();
+    let self_refs = json["self_file_references"].as_array().unwrap();
+    let cross_refs = json["cross_file_references"].as_array().unwrap();
+    assert!(
+        !self_refs.is_empty(),
+        "recursive call should be classified as a self-file reference"
+    );
+    assert_eq!(
+        refs.len(),
+        self_refs.len(),
+        "all references should be self-file references"
+    );
+    assert!(
+        cross_refs.is_empty(),
+        "self-recursive symbol should not have cross-file references"
+    );
+}
+
+#[test]
+fn dead_text_names_self_only_references() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("worker.py"),
+        "def tick(n):\n    if n <= 0:\n        return 0\n    return tick(n - 1)\n",
+    )
+    .unwrap();
+
+    kgr()
+        .args(["dead", "tick", "--no-progress"])
+        .arg(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("only self-file reference"))
+        .stdout(predicate::str::contains("Self-file references"))
+        .stdout(predicate::str::contains("Not dead").not());
 }
 
 #[test]

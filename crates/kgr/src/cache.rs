@@ -34,6 +34,8 @@ static CACHE_VERSION: LazyLock<String> = LazyLock::new(|| {
 #[derive(Serialize, Deserialize)]
 struct Entry {
     mtime_secs: u64,
+    #[serde(default)]
+    mtime_nanos: u32,
     size: u64,
     imports: Vec<Import>,
     #[serde(default)]
@@ -58,7 +60,7 @@ fn cache_disabled() -> bool {
     std::env::var_os("KGR_NO_CACHE").is_some_and(|v| !v.is_empty() && v != "0")
 }
 
-/// Persistent per-file parse cache. Keyed on (path_string, mtime_secs, size).
+/// Persistent per-file parse cache. Keyed on (path_string, mtime, size).
 /// Stored as JSON at `.kgr-cache.json` in the scanned root.
 /// Automatically invalidated when the kgr version or binary build changes.
 /// Disabled entirely when `KGR_NO_CACHE` is set (see [`cache_disabled`]).
@@ -68,6 +70,11 @@ pub struct ParseCache {
     // String keys required because serde_json only supports string-keyed maps.
     #[serde(default)]
     entries: HashMap<String, Entry>,
+}
+
+fn mtime_parts(mtime: Option<SystemTime>) -> Option<(u64, u32)> {
+    let duration = mtime?.duration_since(UNIX_EPOCH).ok()?;
+    Some((duration.as_secs(), duration.subsec_nanos()))
 }
 
 impl ParseCache {
@@ -105,13 +112,15 @@ impl ParseCache {
 
     /// Returns cached parse data if `path` has matching `mtime` and `size`.
     pub fn get(&self, path: &Path, mtime: Option<SystemTime>, size: u64) -> Option<CachedParse> {
-        let mtime_secs = mtime?.duration_since(UNIX_EPOCH).ok()?.as_secs();
+        let (mtime_secs, mtime_nanos) = mtime_parts(mtime)?;
         let key = path.to_string_lossy();
         let e = self.entries.get(key.as_ref())?;
-        (e.mtime_secs == mtime_secs && e.size == size).then(|| CachedParse {
-            imports: e.imports.clone(),
-            symbols: e.symbols.clone(),
-            calls: e.calls.clone(),
+        (e.mtime_secs == mtime_secs && e.mtime_nanos == mtime_nanos && e.size == size).then(|| {
+            CachedParse {
+                imports: e.imports.clone(),
+                symbols: e.symbols.clone(),
+                calls: e.calls.clone(),
+            }
         })
     }
 
@@ -125,16 +134,14 @@ impl ParseCache {
         symbols: Vec<Symbol>,
         calls: Vec<CallRef>,
     ) {
-        let Some(mtime_secs) = mtime
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
-        else {
+        let Some((mtime_secs, mtime_nanos)) = mtime_parts(mtime) else {
             return;
         };
         self.entries.insert(
             path.to_string_lossy().into_owned(),
             Entry {
                 mtime_secs,
+                mtime_nanos,
                 size,
                 imports,
                 symbols,
@@ -166,6 +173,10 @@ mod tests {
 
     fn mtime(secs: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    fn mtime_with_nanos(secs: u64, nanos: u32) -> SystemTime {
+        UNIX_EPOCH + Duration::new(secs, nanos)
     }
 
     fn sample_import() -> Import {
@@ -212,6 +223,27 @@ mod tests {
         assert!(
             cache.get(&path, Some(mtime(101)), 42).is_none(),
             "an mtime change must invalidate the entry"
+        );
+    }
+
+    #[test]
+    fn get_misses_when_same_second_same_size_mtime_nanos_change() {
+        let path = PathBuf::from("src/main.py");
+        let mut cache = ParseCache::fresh();
+        cache.insert(
+            path.clone(),
+            Some(mtime_with_nanos(100, 123)),
+            42,
+            vec![sample_import()],
+            Vec::new(),
+            Vec::new(),
+        );
+
+        assert!(
+            cache
+                .get(&path, Some(mtime_with_nanos(100, 456)), 42)
+                .is_none(),
+            "a same-second same-size edit must invalidate the entry"
         );
     }
 

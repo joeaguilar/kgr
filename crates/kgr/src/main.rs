@@ -1756,9 +1756,11 @@ fn run_dead(
 
     // Find all definitions (a symbol may be defined in several files)
     let mut definitions = Vec::new();
+    let mut definition_files = std::collections::HashSet::new();
     for f in &file_nodes {
         for s in &f.symbols {
             if s.name == name {
+                definition_files.insert(f.path.clone());
                 definitions.push(serde_json::json!({
                     "file": f.path.to_string_lossy(),
                     "line": s.span.start_line,
@@ -1777,8 +1779,12 @@ fn run_dead(
                 "symbol": name,
                 "found": false,
                 "dead": null,
+                "status": "not_found",
                 "definitions": [],
                 "references": [],
+                "self_file_references": [],
+                "cross_file_references": [],
+                "caveat": null,
             });
             serde_json::to_writer_pretty(&mut stdout, &result).ok();
             writeln!(stdout).ok();
@@ -1790,6 +1796,8 @@ fn run_dead(
 
     // Find call references
     let mut references = Vec::new();
+    let mut self_file_references = Vec::new();
+    let mut cross_file_references = Vec::new();
     let mut file_cache: std::collections::HashMap<PathBuf, String> =
         std::collections::HashMap::new();
     for f in &file_nodes {
@@ -1811,17 +1819,34 @@ fn run_dead(
                     })
                     .unwrap_or_default();
 
-                references.push(serde_json::json!({
+                let reference = serde_json::json!({
                     "file": f.path.to_string_lossy(),
                     "line": c.span.start_line,
                     "kind": "call",
                     "context": context,
-                }));
+                });
+
+                if definition_files.contains(&f.path) {
+                    self_file_references.push(reference.clone());
+                } else {
+                    cross_file_references.push(reference.clone());
+                }
+                references.push(reference);
             }
         }
     }
 
-    let dead = references.is_empty();
+    let dead = cross_file_references.is_empty();
+    let (status, caveat) = if references.is_empty() {
+        ("no_references", None)
+    } else if cross_file_references.is_empty() {
+        (
+            "self_only_references",
+            Some("Only self-file references found; no cross-file references were found."),
+        )
+    } else {
+        ("live_cross_file_references", None)
+    };
     let mut stdout = std::io::stdout().lock();
 
     if format == "json" {
@@ -1829,12 +1854,16 @@ fn run_dead(
             "symbol": name,
             "found": true,
             "dead": dead,
+            "status": status,
             "definitions": definitions,
             "references": references,
+            "self_file_references": self_file_references,
+            "cross_file_references": cross_file_references,
+            "caveat": caveat,
         });
         serde_json::to_writer_pretty(&mut stdout, &result).ok();
         writeln!(stdout).ok();
-    } else if dead {
+    } else if references.is_empty() {
         writeln!(stdout, "Dead — no references found.").ok();
         for def in &definitions {
             writeln!(
@@ -1843,6 +1872,33 @@ fn run_dead(
                 def["file"].as_str().unwrap_or_default(),
                 def["line"],
                 def["kind"].as_str().unwrap_or_default()
+            )
+            .ok();
+        }
+    } else if cross_file_references.is_empty() {
+        writeln!(
+            stdout,
+            "Dead — only self-file reference(s) found; no cross-file references."
+        )
+        .ok();
+        for def in &definitions {
+            writeln!(
+                stdout,
+                "  Defined at: {}:{} ({})",
+                def["file"].as_str().unwrap_or_default(),
+                def["line"],
+                def["kind"].as_str().unwrap_or_default()
+            )
+            .ok();
+        }
+        writeln!(stdout, "Self-file references:").ok();
+        for r in &self_file_references {
+            writeln!(
+                stdout,
+                "  {}:{} {}",
+                r["file"].as_str().unwrap_or_default(),
+                r["line"],
+                r["context"].as_str().unwrap_or_default()
             )
             .ok();
         }
@@ -1862,11 +1918,11 @@ fn run_dead(
         }
         writeln!(
             stdout,
-            "Not dead — {} reference(s) found:",
-            references.len()
+            "Not dead — {} cross-file reference(s) found:",
+            cross_file_references.len()
         )
         .ok();
-        for r in &references {
+        for r in &cross_file_references {
             writeln!(
                 stdout,
                 "  {}:{} {}",

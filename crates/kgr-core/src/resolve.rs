@@ -17,6 +17,7 @@ struct TsPathAlias {
 
 pub struct Resolver {
     known_files: HashSet<PathBuf>,
+    rust_declared_modules: HashSet<PathBuf>,
     #[expect(dead_code, reason = "root stored for future relative resolution")]
     root: PathBuf,
     tsconfig_paths: Vec<TsPathAlias>,
@@ -26,10 +27,12 @@ pub struct Resolver {
 impl Resolver {
     pub fn new(root: PathBuf, files: &[FileNode]) -> Self {
         let known_files: HashSet<PathBuf> = files.iter().map(|f| f.path.clone()).collect();
+        let rust_declared_modules = collect_rust_declared_modules(&known_files, files);
         let tsconfig_paths = load_tsconfig_paths(&root);
         let go_module = load_go_module(&root);
         Self {
             known_files,
+            rust_declared_modules,
             root,
             tsconfig_paths,
             go_module,
@@ -60,7 +63,7 @@ impl Resolver {
             Lang::JavaScript => self.resolve_js_ts(raw, from, JAVASCRIPT_RESOLVE_EXTS),
             Lang::Java => self.resolve_java(raw),
             Lang::C | Lang::Cpp => self.resolve_c(raw, from, kind),
-            Lang::Rust => self.resolve_rust(raw, from),
+            Lang::Rust => self.resolve_rust(raw, from, kind),
             Lang::Go => self.resolve_go(raw, from),
             Lang::Ruby => self.resolve_ruby(raw, from),
             Lang::Php => self.resolve_php(raw, from),
@@ -309,10 +312,13 @@ impl Resolver {
         None
     }
 
-    fn resolve_rust(&self, raw: &str, from: &Path) -> Option<PathBuf> {
+    fn resolve_rust(&self, raw: &str, from: &Path, kind: ImportKind) -> Option<PathBuf> {
         let from_dir = from.parent().unwrap_or(Path::new("")).to_path_buf();
 
         if is_rust_path_attribute(raw) {
+            if kind != ImportKind::Local {
+                return None;
+            }
             let raw_path = raw.replace('\\', "/");
             let target = normalize_path(&from_dir.join(raw_path));
             return self.known_files.contains(&target).then_some(target);
@@ -326,40 +332,51 @@ impl Resolver {
         // sibling is kept only as a lenient fallback (e.g. `#[path]` quirks).
         // For mod.rs/lib.rs/main.rs the two candidates are the same dir.
         if !raw.contains("::") {
+            if kind == ImportKind::Local {
+                return resolve_rust_mod_declaration(&self.known_files, raw, from);
+            }
+            let resolved = self.try_module(&crate_src_base(from), &[raw])?;
             return self
-                .try_module(&module_dir(from), &[raw])
-                .or_else(|| self.try_module(&from_dir, &[raw]));
+                .rust_declared_modules
+                .contains(&resolved)
+                .then_some(resolved);
         }
 
         // Resolve the base directory and remaining path from the leading
         // qualifier. `crate::` is anchored at the owning crate's `src/` root
         // (NOT a hardcoded `src/` off the scan root, so workspaces resolve);
         // `self::`/`super::` are relative to the current module.
-        let (base, rest): (PathBuf, &str) = if let Some(r) = raw.strip_prefix("crate::") {
-            (crate_src_base(from), r)
-        } else if let Some(r) = raw.strip_prefix("self::") {
-            (module_dir(from), r)
-        } else if raw.starts_with("super::") {
-            let mut dir = module_dir(from);
-            let mut r = raw;
-            while let Some(stripped) = r.strip_prefix("super::") {
-                dir = dir.parent().map(Path::to_path_buf).unwrap_or_default();
-                r = stripped;
-            }
-            (dir, r)
-        } else {
-            // Bare 2018-edition path import of a crate-local module, e.g.
-            // `use cli::Foo;` at the crate root. Falls through to External
-            // (resolved stays None) if no such local module exists.
-            (crate_src_base(from), raw)
-        };
+        let (base, rest, require_declared_module): (PathBuf, &str, bool) =
+            if let Some(r) = raw.strip_prefix("crate::") {
+                (crate_src_base(from), r, false)
+            } else if let Some(r) = raw.strip_prefix("self::") {
+                (module_dir(from), r, false)
+            } else if raw.starts_with("super::") {
+                let mut dir = module_dir(from);
+                let mut r = raw;
+                while let Some(stripped) = r.strip_prefix("super::") {
+                    dir = dir.parent().map(Path::to_path_buf).unwrap_or_default();
+                    r = stripped;
+                }
+                (dir, r, false)
+            } else {
+                // Bare 2018-edition path import of a crate-local module, e.g.
+                // `use cli::Foo;` at the crate root. A file-name collision with
+                // an external crate is not enough: the shortened module target
+                // must also come from a parsed `mod` declaration.
+                (crate_src_base(from), raw, true)
+            };
 
         if rest.split("::").any(|s| s == "*") {
             return None;
         }
 
         let segments: Vec<&str> = rest.split("::").filter(|s| !s.is_empty()).collect();
-        self.try_module(&base, &segments)
+        let resolved = self.try_module(&base, &segments)?;
+        if require_declared_module && !self.rust_declared_modules.contains(&resolved) {
+            return None;
+        }
+        Some(resolved)
     }
 
     /// Resolve a `::`-separated module path under `base` to a file. The final
@@ -367,20 +384,7 @@ impl Resolver {
     /// module, so we shorten the path one segment at a time until it maps to a
     /// known `{path}.rs` or `{path}/mod.rs`.
     fn try_module(&self, base: &Path, segments: &[&str]) -> Option<PathBuf> {
-        let mut segs = segments;
-        while !segs.is_empty() {
-            let joined = segs.join("/");
-            let as_file = base.join(format!("{joined}.rs"));
-            if self.known_files.contains(&as_file) {
-                return Some(as_file);
-            }
-            let as_mod = base.join(&joined).join("mod.rs");
-            if self.known_files.contains(&as_mod) {
-                return Some(as_mod);
-            }
-            segs = &segs[..segs.len() - 1];
-        }
-        None
+        try_module_path(&self.known_files, base, segments)
     }
 
     /// Go import resolution. Relative imports (`./x`, `../x`) resolve against
@@ -542,6 +546,63 @@ impl Resolver {
         let target = normalize_path(&from_dir.join(raw));
         self.known_files.contains(&target).then_some(target)
     }
+}
+
+fn collect_rust_declared_modules(
+    known_files: &HashSet<PathBuf>,
+    files: &[FileNode],
+) -> HashSet<PathBuf> {
+    let mut declared = HashSet::new();
+    for file in files.iter().filter(|f| f.lang == Lang::Rust) {
+        for import in &file.imports {
+            if import.kind != ImportKind::Local || import.raw.contains("::") {
+                continue;
+            }
+            if let Some(target) = resolve_rust_mod_declaration(known_files, &import.raw, &file.path)
+            {
+                declared.insert(target);
+            }
+        }
+    }
+    declared
+}
+
+fn resolve_rust_mod_declaration(
+    known_files: &HashSet<PathBuf>,
+    raw: &str,
+    from: &Path,
+) -> Option<PathBuf> {
+    let from_dir = from.parent().unwrap_or(Path::new("")).to_path_buf();
+
+    if is_rust_path_attribute(raw) {
+        let raw_path = raw.replace('\\', "/");
+        let target = normalize_path(&from_dir.join(raw_path));
+        return known_files.contains(&target).then_some(target);
+    }
+
+    try_module_path(known_files, &module_dir(from), &[raw])
+        .or_else(|| try_module_path(known_files, &from_dir, &[raw]))
+}
+
+fn try_module_path(
+    known_files: &HashSet<PathBuf>,
+    base: &Path,
+    segments: &[&str],
+) -> Option<PathBuf> {
+    let mut segs = segments;
+    while !segs.is_empty() {
+        let joined = segs.join("/");
+        let as_file = base.join(format!("{joined}.rs"));
+        if known_files.contains(&as_file) {
+            return Some(as_file);
+        }
+        let as_mod = base.join(&joined).join("mod.rs");
+        if known_files.contains(&as_mod) {
+            return Some(as_mod);
+        }
+        segs = &segs[..segs.len() - 1];
+    }
+    None
 }
 
 /// The crate's `src` directory for a root-relative file path: the nearest
@@ -706,13 +767,37 @@ mod tests {
         }
     }
 
+    fn node_with_imports(path: &str, imports: Vec<Import>) -> FileNode {
+        FileNode {
+            imports,
+            ..node(path)
+        }
+    }
+
+    fn rust_import(raw: &str, kind: ImportKind) -> Import {
+        Import {
+            raw: raw.to_string(),
+            kind,
+            resolved: None,
+            span: None,
+        }
+    }
+
+    fn resolver_from_nodes(nodes: &[FileNode]) -> Resolver {
+        Resolver::new(PathBuf::new(), nodes)
+    }
+
     fn resolver(files: &[&str]) -> Resolver {
         let nodes: Vec<FileNode> = files.iter().map(|p| node(p)).collect();
-        Resolver::new(PathBuf::new(), &nodes)
+        resolver_from_nodes(&nodes)
     }
 
     fn resolve_rust(files: &[&str], raw: &str, from: &str) -> Option<PathBuf> {
-        resolver(files).resolve_rust(raw, Path::new(from))
+        resolver(files).resolve_rust(raw, Path::new(from), ImportKind::External)
+    }
+
+    fn resolve_rust_mod(files: &[&str], raw: &str, from: &str) -> Option<PathBuf> {
+        resolver(files).resolve_rust(raw, Path::new(from), ImportKind::Local)
     }
 
     fn resolve_go(files: &[&str], raw: &str, from: &str) -> Option<PathBuf> {
@@ -750,10 +835,14 @@ mod tests {
     #[test]
     fn bare_local_module_import_resolves() {
         // `use cli::Command;` at the crate root (the ../itr false-positive).
-        let got = resolve_rust(
-            &["src/main.rs", "src/cli.rs"],
+        let nodes = vec![
+            node_with_imports("src/main.rs", vec![rust_import("cli", ImportKind::Local)]),
+            node("src/cli.rs"),
+        ];
+        let got = resolver_from_nodes(&nodes).resolve_rust(
             "cli::Command",
-            "src/main.rs",
+            Path::new("src/main.rs"),
+            ImportKind::External,
         );
         assert_eq!(got, Some(PathBuf::from("src/cli.rs")));
     }
@@ -776,8 +865,35 @@ mod tests {
     }
 
     #[test]
+    fn bare_external_crate_import_ignores_shadowing_module_file() {
+        let got = resolve_rust(
+            &["src/main.rs", "src/time.rs"],
+            "time::Duration",
+            "src/main.rs",
+        );
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn bare_single_segment_use_resolves_only_when_declared() {
+        let nodes = vec![
+            node_with_imports("src/main.rs", vec![rust_import("cli", ImportKind::Local)]),
+            node("src/cli.rs"),
+        ];
+        let declared = resolver_from_nodes(&nodes).resolve_rust(
+            "cli",
+            Path::new("src/main.rs"),
+            ImportKind::External,
+        );
+        assert_eq!(declared, Some(PathBuf::from("src/cli.rs")));
+
+        let undeclared = resolve_rust(&["src/main.rs", "src/time.rs"], "time", "src/main.rs");
+        assert_eq!(undeclared, None);
+    }
+
+    #[test]
     fn mod_declaration_resolves_sibling() {
-        let got = resolve_rust(&["src/lib.rs", "src/util.rs"], "util", "src/lib.rs");
+        let got = resolve_rust_mod(&["src/lib.rs", "src/util.rs"], "util", "src/lib.rs");
         assert_eq!(got, Some(PathBuf::from("src/util.rs")));
     }
 
@@ -785,7 +901,7 @@ mod tests {
     fn mod_declaration_prefers_child_module_dir_over_sibling() {
         // `mod config;` in src/commands.rs with BOTH src/config.rs and
         // src/commands/config.rs present — rustc only accepts the child.
-        let got = resolve_rust(
+        let got = resolve_rust_mod(
             &["src/commands.rs", "src/config.rs", "src/commands/config.rs"],
             "config",
             "src/commands.rs",
@@ -796,7 +912,7 @@ mod tests {
     #[test]
     fn mod_declaration_prefers_child_mod_rs_over_sibling() {
         // Same collision, with the child shaped as config/mod.rs.
-        let got = resolve_rust(
+        let got = resolve_rust_mod(
             &[
                 "src/commands.rs",
                 "src/config.rs",
@@ -811,7 +927,7 @@ mod tests {
     #[test]
     fn mod_declaration_falls_back_to_sibling_without_child() {
         // No collision: only the lenient sibling exists, so it still resolves.
-        let got = resolve_rust(
+        let got = resolve_rust_mod(
             &["src/commands.rs", "src/config.rs"],
             "config",
             "src/commands.rs",
@@ -821,7 +937,7 @@ mod tests {
 
     #[test]
     fn path_attribute_mod_declaration_resolves_relative_to_declaring_file() {
-        let got = resolve_rust(
+        let got = resolve_rust_mod(
             &[
                 "src/commands.rs",
                 "src/custom/config.rs",
@@ -837,7 +953,7 @@ mod tests {
     fn mod_declaration_from_mod_rs_resolves_own_dir_amid_collision() {
         // From mod.rs the module dir IS the file's own dir; a same-named
         // module one level up must not interfere.
-        let got = resolve_rust(
+        let got = resolve_rust_mod(
             &[
                 "src/commands/mod.rs",
                 "src/commands/config.rs",
@@ -904,25 +1020,44 @@ mod tests {
     fn full_resolve_flips_kind_to_local() {
         // End-to-end through resolve_all: a bare local-module import is
         // upgraded from External to Local once resolved.
-        let r = resolver(&["src/main.rs", "src/cli.rs"]);
-        let mut files = vec![FileNode {
-            path: PathBuf::from("src/main.rs"),
-            lang: Lang::Rust,
-            imports: vec![Import {
-                raw: "cli::Command".to_string(),
-                kind: ImportKind::External,
-                resolved: None,
-                span: None,
-            }],
-            symbols: Vec::new(),
-            calls: Vec::new(),
-        }];
+        let mut files = vec![
+            FileNode {
+                path: PathBuf::from("src/main.rs"),
+                lang: Lang::Rust,
+                imports: vec![
+                    rust_import("cli", ImportKind::Local),
+                    rust_import("cli::Command", ImportKind::External),
+                ],
+                symbols: Vec::new(),
+                calls: Vec::new(),
+            },
+            node("src/cli.rs"),
+        ];
+        let r = resolver_from_nodes(&files);
         r.resolve_all(&mut files);
-        assert_eq!(files[0].imports[0].kind, ImportKind::Local);
+        assert_eq!(files[0].imports[1].kind, ImportKind::Local);
         assert_eq!(
-            files[0].imports[0].resolved,
+            files[0].imports[1].resolved,
             Some(PathBuf::from("src/cli.rs"))
         );
+    }
+
+    #[test]
+    fn full_resolve_keeps_shadowing_bare_crate_import_external() {
+        let mut files = vec![
+            FileNode {
+                path: PathBuf::from("src/main.rs"),
+                lang: Lang::Rust,
+                imports: vec![rust_import("time::Duration", ImportKind::External)],
+                symbols: Vec::new(),
+                calls: Vec::new(),
+            },
+            node("src/time.rs"),
+        ];
+        let r = resolver_from_nodes(&files);
+        r.resolve_all(&mut files);
+        assert_eq!(files[0].imports[0].kind, ImportKind::External);
+        assert_eq!(files[0].imports[0].resolved, None);
     }
 
     #[test]

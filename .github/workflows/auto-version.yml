@@ -1,0 +1,116 @@
+name: Auto Version
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: auto-version-main
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Auto Tag
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.head_commit.message, '[skip version]') }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Determine version bump and create tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch --tags --force
+
+          LATEST_TAG=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname | head -1)
+          if [ -z "$LATEST_TAG" ]; then
+            echo "No existing version tags found, starting at v0.0.0"
+            LATEST_TAG="v0.0.0"
+          fi
+          echo "Latest tag: $LATEST_TAG"
+
+          VERSION="${LATEST_TAG#v}"
+          MAJOR=$(echo "$VERSION" | cut -d. -f1)
+          MINOR=$(echo "$VERSION" | cut -d. -f2)
+          PATCH=$(echo "$VERSION" | cut -d. -f3)
+
+          if git rev-parse "$LATEST_TAG" >/dev/null 2>&1; then
+            COMMITS=$(git log "$LATEST_TAG"..HEAD --pretty=format:"%s%n%b%x1e")
+          else
+            COMMITS=$(git log --pretty=format:"%s%n%b%x1e")
+          fi
+
+          if [ -z "$COMMITS" ]; then
+            echo "No new commits since $LATEST_TAG, skipping"
+            exit 0
+          fi
+
+          echo "Commits since $LATEST_TAG:"
+          printf '%s' "$COMMITS" | tr '\036' '\n'
+
+          BUMP="none"
+          while IFS= read -r -d $'\036' commit || [ -n "$commit" ]; do
+            if printf '%s\n' "$commit" | grep -qF '[skip version]'; then
+              continue
+            fi
+
+            subject=$(printf '%s' "$commit" | awk 'NF{print; exit}')
+
+            if printf '%s\n' "$subject" | grep -qE '^[a-z]+(\(.+\))?!:' || \
+               printf '%s\n' "$commit" | grep -qE '^BREAKING CHANGE:'; then
+              BUMP="major"
+              break
+            fi
+
+            if printf '%s\n' "$subject" | grep -qE '^feat(\(.+\))?:'; then
+              if [ "$BUMP" != "major" ]; then
+                BUMP="minor"
+              fi
+            fi
+
+            if printf '%s\n' "$subject" | grep -qE '^fix(\(.+\))?:'; then
+              if [ "$BUMP" = "none" ]; then
+                BUMP="patch"
+              fi
+            fi
+          done < <(printf '%s' "$COMMITS")
+
+          if [ "$BUMP" = "none" ]; then
+            echo "No feat/fix/breaking commits found, skipping tag"
+            exit 0
+          fi
+
+          case "$BUMP" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+          esac
+
+          NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          if git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
+            echo "Tag $NEW_TAG already exists, skipping"
+            exit 0
+          fi
+
+          echo "Bump: $BUMP -> $NEW_TAG"
+          git tag "$NEW_TAG"
+          git push origin "$NEW_TAG"
+          echo "NEW_TAG=$NEW_TAG" >> "$GITHUB_ENV"
+
+      - name: Dispatch Release workflow
+        if: env.NEW_TAG != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run release.yml \
+            --ref "$NEW_TAG" \
+            -f tag="$NEW_TAG"
+          echo "Dispatched release.yml for $NEW_TAG"

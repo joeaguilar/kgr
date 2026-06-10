@@ -1,6 +1,6 @@
 # kgr — Handoff
 
-_Last updated: 2026-06-10 (blitz session)_
+_Last updated: 2026-06-10 (post-review backlog wave 1)_
 
 A continuity note bridging sessions. The **`itr` tracker is the source of truth** for task
 detail — this doc is the narrative: where things stand, what's next, and the context you
@@ -10,26 +10,24 @@ can't get from code or the tracker alone. Issue IDs (`#N`) link to `itr get N`.
 
 ## TL;DR
 
-This session ran a **full six-reviewer code review** of kgr (69 new issues filed, #46–#114,
-plus #116 found mid-run), then a **12-wave parallel agent blitz** that closed the full
-review-batch backlog: 47 issues in Waves 1–8, 7 in Wave 9, 7 in Wave 10, 6 in Wave 11,
-and the final 3 in Wave 12. `just verify` is green after Wave 12; hostile env checks
-`KGR_EXCLUDE='["**"]' cargo test --workspace` and `KGR_MAX_FILE_SIZE_KB=abc cargo test
---workspace` are also green. Waves 1–11 are committed through `16aa368`; Wave 12 is
-sitting uncommitted on `main`. First order of business: review and commit Wave 12.
+The review-batch blitz is complete and committed through `f20e061` (`fix: close wave 12
+review-batch issues`). A follow-on unscoped wave closed five more live backlog issues:
+**#11, #12, #33, #37, and #2**. `just verify` is green after that wave. The follow-on
+wave is **not committed** yet.
 
-Wave log with full per-wave outcomes and all 17 interventions:
-`sprint/_unscoped/blitz-2026-06-09T22-25-41Z.md`. Blitz epic **#115** is closed.
+Review-batch wave log:
+`sprint/_unscoped/blitz-2026-06-09T22-25-41Z.md`. Follow-on wave log:
+`sprint/_unscoped/blitz-2026-06-10T05-07-32Z.md`. Blitz epic **#115** is closed.
 
 ---
 
 ## Repo / branch state
 
-- **`main` @ `16aa368`** — waves 1–11 committed (`fix: close wave 11 review-batch issues`).
-- **Working tree** — Wave 12 changed 9 tracked source/test/CI files plus the wave log and
-  this handoff, **all gates green** (`just verify` exit 0: check, clippy `-D warnings`,
-  54+1+72+26+35+450 tests, fmt). Hostile env checks for `KGR_EXCLUDE` and invalid
-  `KGR_MAX_FILE_SIZE_KB` also pass. **Not committed** — review and commit Wave 12.
+- **`main` @ `f20e061`** — review-batch Waves 1–12 committed (`fix: close wave 12 review-batch issues`).
+- **Working tree** — Follow-on wave changed rules, cache, Rust resolver, dead reporting,
+  auto-version/release workflow support, the new wave log, and this handoff. **Gate is green**
+  (`just verify` exit 0: check, clippy `-D warnings`, 61+1+72+26+37+453 tests, fmt).
+  **Not committed** — review and commit this follow-on wave.
 - `.claude/settings.local.json` — gitignored; gained allowlist entries this session (see
   playbook below). Leave them; waves depend on them.
 - `tests/fixtures/**/.kgr-cache.json` litter — eliminated (tests now run `KGR_NO_CACHE=1`).
@@ -81,15 +79,27 @@ The review-batch blitz is complete. Wave 12 closed the final three issues:
 | #110 | Extensionless files with recognized first-line shebangs are detected and parsed |
 | #103 | CI tests stable Rust on Linux/macOS/Windows and checks MSRV 1.81.0 |
 
-## Remaining backlog beyond the review batch (~33 issues)
+## Follow-on wave status
+
+The first post-review-batch wave closed five issues:
+
+| Issues | Outcome |
+|---|---|
+| #11 | Rule globs now use literal path separators; root anchoring and `*`/`**` semantics are documented; likely-dead rules warn when endpoint globs match no local edges |
+| #12 | Parse cache keys compare subsecond mtime nanoseconds plus size; same-second/same-size stale-read regression covered |
+| #33 | Rust bare imports only resolve through parsed `mod` declarations, avoiding phantom local edges from external-crate name collisions |
+| #37 | `kgr dead` separates self-file references from cross-file references and treats self-only references as not live |
+| #2 | Added main-branch auto-version tagging and release workflow dispatch; release checkout fetches full tag history |
+
+## Remaining backlog beyond the review batch (~28 issues)
 
 Not scoped into these waves — run `itr ready` for the live list:
-- **Triple-audit findings** under epic #6 (~26 open): resolver semantics (#16/#17/#18/#19,
-  #33/#34/#35, #23), rules anchoring (#11), cache key (#12), `--no-external` (#20), objc
+- **Triple-audit findings** under epic #6: resolver semantics (#16/#17/#18/#19,
+  #34/#35, #23), `--no-external` (#20), objc
   calls (#21), parse failures surfaced (#22), parser drops (#25/#26), cycles/orphans
-  (#27/#28/#32), refs/dead features (#37/#38/#41/#42), entry-point modeling (#39/#40),
+  (#27/#28/#32), refs/dead features (#38/#41/#42), entry-point modeling (#39/#40),
   product features (#43/#44/#45).
-- **Release/install epic #1** (#2–#5): CI versioning, cargo-deny, release smoke tests,
+- **Release/install epic #1** (#3–#5): cargo-deny, release smoke tests,
   install.ps1 parity.
 - Epics #1 and #6 stay open for release/install and triple-audit work. Epic #115 is closed.
 
@@ -128,15 +138,17 @@ Not scoped into these waves — run `itr ready` for the live list:
 
 ```sh
 just verify                      # confirm still green
-git diff --stat                  # review Wave 12
-git add -A && git commit -m "fix: close wave 12 review-batch issues"
+git status --short               # note new .github/workflows/auto-version.yml and wave log
+git diff --stat                  # review tracked follow-on wave changes
+git add -A && git commit -m "fix: close first post-review backlog wave"
 itr ready -f json --fields id,title,urgency,status
-# review-batch blitz is done; next ready work is outside #115
+# current top ready item is #40, followed by #5 and resolver/render/parser follow-ups
 ```
 
 - Wave log: `sprint/_unscoped/blitz-2026-06-09T22-25-41Z.md` (config, conflicts, all
   interventions, per-wave outcomes).
+- Follow-on wave log: `sprint/_unscoped/blitz-2026-06-10T05-07-32Z.md`.
 - Carried-over context still true from the last session: the resolver is knowingly
-  heuristic (`crate_src_base`, `module_dir` — see #33/#35 before "cleaning up"); kgr
+  heuristic (`crate_src_base`, `module_dir` — see #35 before "cleaning up"); kgr
   detects a real 20-node cycle in its own `parse/` module (#32) — break or baseline it;
   clippy 1.95 is stricter than older toolchains.

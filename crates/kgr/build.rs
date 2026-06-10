@@ -32,6 +32,10 @@ fn main() {
     );
     println!(
         "cargo:rerun-if-changed={}",
+        git_dir.join("packed-refs").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
         git_dir.join("refs/heads").display()
     );
 }
