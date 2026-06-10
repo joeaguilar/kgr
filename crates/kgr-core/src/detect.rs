@@ -56,6 +56,29 @@ pub fn lang_extensions(lang: Lang) -> &'static [&'static str] {
 mod tests {
     use super::*;
 
+    const ALL_LANGS: &[Lang] = &[
+        Lang::Python,
+        Lang::TypeScript,
+        Lang::JavaScript,
+        Lang::Java,
+        Lang::C,
+        Lang::Cpp,
+        Lang::Rust,
+        Lang::Go,
+        Lang::Zig,
+        Lang::CSharp,
+        Lang::ObjectiveC,
+        Lang::Swift,
+        Lang::Ruby,
+        Lang::Php,
+        Lang::Scala,
+        Lang::Lua,
+        Lang::Elixir,
+        Lang::Haskell,
+        Lang::Bash,
+        Lang::Unknown,
+    ];
+
     #[test]
     fn detects_typescript_module_extensions() {
         assert_eq!(detect_lang(Path::new("src/main.mts")), Lang::TypeScript);
@@ -72,5 +95,22 @@ mod tests {
         assert!(lang_extensions(Lang::TypeScript).contains(&"mts"));
         assert!(lang_extensions(Lang::TypeScript).contains(&"cts"));
         assert!(lang_extensions(Lang::ObjectiveC).contains(&"mm"));
+    }
+
+    #[test]
+    fn language_extensions_round_trip_through_detection() {
+        for &lang in ALL_LANGS {
+            for ext in lang_extensions(lang) {
+                let file_name = format!("source.{ext}");
+                assert_eq!(
+                    detect_lang(Path::new(&file_name)),
+                    lang,
+                    "{ext} must detect as {lang:?}"
+                );
+            }
+        }
+
+        assert!(lang_extensions(Lang::Unknown).is_empty());
+        assert_eq!(detect_lang(Path::new("source.unknown")), Lang::Unknown);
     }
 }

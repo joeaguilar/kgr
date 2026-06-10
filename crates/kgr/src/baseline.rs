@@ -46,10 +46,19 @@ impl Baseline {
         }
     }
 
-    pub fn load(path: &Path) -> Option<Self> {
-        let content = std::fs::read_to_string(path).ok()?;
-        let baseline: Self = serde_json::from_str(&content).ok()?;
-        Some(baseline.normalized())
+    pub fn load(path: &Path) -> std::io::Result<Option<Self>> {
+        let content = match std::fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let baseline: Self = serde_json::from_str(&content).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("malformed baseline JSON: {e}"),
+            )
+        })?;
+        Ok(Some(baseline.normalized()))
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
@@ -183,7 +192,7 @@ mod tests {
         )
         .unwrap();
 
-        let baseline = Baseline::load(&path).unwrap();
+        let baseline = Baseline::load(&path).unwrap().unwrap();
         let cycles = vec![vec![PathBuf::from("src/b.rs"), PathBuf::from("src/a.rs")]];
         let violations = vec![rule_violation("no-legacy", "legacy/repo.ts", "core/db.ts")];
 

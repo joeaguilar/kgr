@@ -641,6 +641,29 @@ fn validate_format_or_exit(format: &str, valid: &[&str]) {
     }
 }
 
+fn no_supported_files_message(root: &Path) -> String {
+    format!(
+        "No supported source files found in {}. Check the path, --lang filter, and exclude settings.",
+        root.display()
+    )
+}
+
+fn exit_no_supported_files(root: &Path, format: &str) -> ! {
+    let message = no_supported_files_message(root);
+    eprintln!("{message}");
+    if format == "json" {
+        let mut stdout = std::io::stdout().lock();
+        let payload = serde_json::json!({
+            "ok": false,
+            "error": "no supported source files found",
+            "root": root.to_string_lossy(),
+            "hint": "Check the path, --lang filter, and exclude settings.",
+        });
+        write_json_line(&mut stdout, &payload);
+    }
+    process::exit(2);
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "CLI dispatch passes through all flags"
@@ -666,8 +689,7 @@ fn run_graph(
     let files = discover_or_exit(&root, single_file.as_deref(), &lang, &cfg);
 
     if files.is_empty() {
-        eprintln!("No supported source files found in {}", root.display());
-        return;
+        exit_no_supported_files(&root, format);
     }
 
     tracing::info!("Discovered {} files", files.len());
@@ -777,8 +799,7 @@ fn run_check(
     let files = discover_or_exit(&root, single_file.as_deref(), &lang, &cfg);
 
     if files.is_empty() {
-        eprintln!("No supported source files found in {}", root.display());
-        return;
+        exit_no_supported_files(&root, format);
     }
 
     let cache_path = root.join(".kgr-cache.json");
@@ -811,6 +832,14 @@ fn run_check(
 
     // --update-baseline: record current state and exit 0
     if update_baseline {
+        baseline::Baseline::load(&resolved_baseline_path).unwrap_or_else(|e| {
+            eprintln!(
+                "Error: failed to load baseline '{}': {}",
+                resolved_baseline_path.display(),
+                e
+            );
+            process::exit(2);
+        });
         let bl = baseline::Baseline::new(&dep_graph.cycles, &all_rule_violations);
         bl.save(&resolved_baseline_path).unwrap_or_else(|e| {
             eprintln!("Error writing baseline: {}", e);
@@ -826,7 +855,14 @@ fn run_check(
     }
 
     // Load baseline if it exists
-    let bl = baseline::Baseline::load(&resolved_baseline_path);
+    let bl = baseline::Baseline::load(&resolved_baseline_path).unwrap_or_else(|e| {
+        eprintln!(
+            "Error: failed to load baseline '{}': {}",
+            resolved_baseline_path.display(),
+            e
+        );
+        process::exit(2);
+    });
     let suppressed = bl.as_ref().map(|b| b.total()).unwrap_or(0);
 
     let active_cycles: Vec<&Vec<std::path::PathBuf>> = match &bl {
@@ -1110,8 +1146,7 @@ fn run_query(
     let files = discover_or_exit(&root, single_file.as_deref(), &lang, &cfg);
 
     if files.is_empty() {
-        eprintln!("No supported source files found in {}", root.display());
-        return;
+        exit_no_supported_files(&root, format);
     }
 
     let cache_path = root.join(".kgr-cache.json");
@@ -1359,41 +1394,116 @@ fn run_upgrade() {
         process::exit(1);
     }
 
-    // Copy the newly built binary over the current exe.
     let new_bin = workspace_root.join("target/release/kgr");
-    std::fs::copy(&new_bin, &dest).unwrap_or_else(|e| {
+    match replace_executable_atomically(&new_bin, &dest).unwrap_or_else(|e| {
         eprintln!(
-            "Error: failed to copy {} to {}: {}",
-            new_bin.display(),
+            "Error: failed to replace {} with {}: {}",
             dest.display(),
+            new_bin.display(),
             e
         );
         process::exit(2);
-    });
+    }) {
+        UpgradeReplacement::Replaced => {
+            eprintln!("Installed {}", dest.display());
+        }
+        UpgradeReplacement::SkippedSameExecutable => {
+            eprintln!("Built binary is already the running executable; skipping replacement.");
+        }
+    }
 
     eprintln!("kgr upgraded successfully.");
     eprintln!("Version: {}", env!("KGR_VERSION"));
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpgradeReplacement {
+    Replaced,
+    SkippedSameExecutable,
+}
+
+fn replace_executable_atomically(
+    new_bin: &Path,
+    dest: &Path,
+) -> std::io::Result<UpgradeReplacement> {
+    if paths_refer_to_same_file(new_bin, dest) {
+        return Ok(UpgradeReplacement::SkippedSameExecutable);
+    }
+
+    let dest_dir = dest.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("destination has no parent directory: {}", dest.display()),
+        )
+    })?;
+    let dest_name = dest
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::new("kgr"))
+        .to_string_lossy();
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let tmp = dest_dir.join(format!(
+        ".{dest_name}.upgrade-{}-{unique}.tmp",
+        std::process::id()
+    ));
+
+    match std::fs::remove_file(&tmp) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+
+    if let Err(e) = copy_executable_to_temp(new_bin, &tmp) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+
+    if let Err(e) = std::fs::rename(&tmp, dest) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+
+    Ok(UpgradeReplacement::Replaced)
+}
+
+fn paths_refer_to_same_file(left: &Path, right: &Path) -> bool {
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+fn copy_executable_to_temp(src: &Path, tmp: &Path) -> std::io::Result<()> {
+    std::fs::copy(src, tmp)?;
+    let permissions = std::fs::metadata(src)?.permissions();
+    std::fs::set_permissions(tmp, permissions)
+}
+
 /// Discover and parse all files for the scan target. Config-level defaults
-/// (`languages`, `no_progress`) are resolved here; the loaded `Config` is
-/// returned so callers can resolve config-aware settings like `format`.
+/// (`format`, `languages`, `no_progress`) are resolved here so zero-file
+/// errors can still respect JSON output.
 fn build_file_nodes(
     path: &Path,
+    format: Option<&str>,
+    default_format: &str,
+    valid_formats: &[&str],
     lang: &Option<Vec<String>>,
     no_progress: bool,
-) -> (PathBuf, Vec<kgr_core::types::FileNode>, config::Config) {
+) -> (PathBuf, Vec<kgr_core::types::FileNode>, String) {
     let (root, single_file) = resolve_scan_target(path);
 
     let cfg = load_config_or_exit(&root);
+    let format = config::resolve_format(format, cfg.format.as_deref(), default_format).to_string();
+    validate_format_or_exit(&format, valid_formats);
     let lang = config::resolve_langs(lang, &cfg.languages);
     let no_progress = config::resolve_no_progress(no_progress, cfg.no_progress);
     let registry = ParserRegistry::new();
     let files = discover_or_exit(&root, single_file.as_deref(), &lang, &cfg);
 
     if files.is_empty() {
-        eprintln!("No supported source files found in {}", root.display());
-        return (root, Vec::new(), cfg);
+        exit_no_supported_files(&root, &format);
     }
 
     tracing::info!("Discovered {} files", files.len());
@@ -1403,13 +1513,12 @@ fn build_file_nodes(
     let file_nodes = pipeline::parse_all(&root, files, &registry, &mut parse_cache, !no_progress);
     parse_cache.save(&cache_path);
 
-    (root, file_nodes, cfg)
+    (root, file_nodes, format)
 }
 
 fn run_symbols(path: &Path, format: Option<&str>, lang: &Option<Vec<String>>, no_progress: bool) {
-    let (root, file_nodes, cfg) = build_file_nodes(path, lang, no_progress);
-    let format = config::resolve_format(format, cfg.format.as_deref(), "table");
-    validate_format_or_exit(format, &["table", "json"]);
+    let (root, file_nodes, format) =
+        build_file_nodes(path, format, "table", &["table", "json"], lang, no_progress);
     if file_nodes.is_empty() {
         return;
     }
@@ -1478,9 +1587,8 @@ fn run_refs(
     lang: &Option<Vec<String>>,
     no_progress: bool,
 ) {
-    let (root, file_nodes, cfg) = build_file_nodes(path, lang, no_progress);
-    let format = config::resolve_format(format, cfg.format.as_deref(), "table");
-    validate_format_or_exit(format, &["table", "json"]);
+    let (root, file_nodes, format) =
+        build_file_nodes(path, format, "table", &["table", "json"], lang, no_progress);
 
     // Find definitions: symbols matching the name
     let mut definitions = Vec::new();
@@ -1592,9 +1700,8 @@ fn run_dead(
     lang: &Option<Vec<String>>,
     no_progress: bool,
 ) {
-    let (root, file_nodes, cfg) = build_file_nodes(path, lang, no_progress);
-    let format = config::resolve_format(format, cfg.format.as_deref(), "table");
-    validate_format_or_exit(format, &["table", "json"]);
+    let (root, file_nodes, format) =
+        build_file_nodes(path, format, "table", &["table", "json"], lang, no_progress);
 
     // Find all definitions (a symbol may be defined in several files)
     let mut definitions = Vec::new();
@@ -1732,9 +1839,14 @@ fn run_agent_info(format: &str) {
 }
 
 fn run_skeleton(path: &Path, format: Option<&str>, lang: &Option<Vec<String>>, no_progress: bool) {
-    let (root, file_nodes, cfg) = build_file_nodes(path, lang, no_progress);
-    let format = config::resolve_format(format, cfg.format.as_deref(), "text");
-    validate_format_or_exit(format, &["text", "json", "table"]);
+    let (root, file_nodes, format) = build_file_nodes(
+        path,
+        format,
+        "text",
+        &["text", "json", "table"],
+        lang,
+        no_progress,
+    );
     if file_nodes.is_empty() {
         return;
     }
@@ -1870,9 +1982,8 @@ fn run_orient(path: &Path, format: Option<&str>, lang: &Option<Vec<String>>, no_
     use kgr_core::types::ImportKind;
     use std::collections::{HashMap, HashSet};
 
-    let (root, mut file_nodes, cfg) = build_file_nodes(path, lang, no_progress);
-    let format = config::resolve_format(format, cfg.format.as_deref(), "text");
-    validate_format_or_exit(format, &["text", "json"]);
+    let (root, mut file_nodes, format) =
+        build_file_nodes(path, format, "text", &["text", "json"], lang, no_progress);
     if file_nodes.is_empty() {
         return;
     }
@@ -2020,9 +2131,8 @@ fn run_impact(
     depth: Option<usize>,
     no_progress: bool,
 ) {
-    let (_root, mut file_nodes, cfg) = build_file_nodes(path, lang, no_progress);
-    let format = config::resolve_format(format, cfg.format.as_deref(), "text");
-    validate_format_or_exit(format, &["text", "json"]);
+    let (_root, mut file_nodes, format) =
+        build_file_nodes(path, format, "text", &["text", "json"], lang, no_progress);
 
     let resolver = Resolver::new(PathBuf::new(), &file_nodes);
     resolver.resolve_all(&mut file_nodes);
@@ -2186,9 +2296,14 @@ fn run_hotspots(
 ) {
     use kgr_core::types::SymbolKind;
 
-    let (root, file_nodes, cfg) = build_file_nodes(path, lang, no_progress);
-    let format = config::resolve_format(format, cfg.format.as_deref(), "table");
-    validate_format_or_exit(format, &["table", "json", "text"]);
+    let (root, file_nodes, format) = build_file_nodes(
+        path,
+        format,
+        "table",
+        &["table", "json", "text"],
+        lang,
+        no_progress,
+    );
     let limit = top.unwrap_or(20);
 
     #[derive(serde::Serialize)]
@@ -2247,7 +2362,7 @@ fn run_hotspots(
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
 
-    match format {
+    match format.as_str() {
         "json" => {
             let _ = serde_json::to_writer_pretty(&mut out, &entries);
             let _ = writeln!(out);
@@ -2287,7 +2402,7 @@ fn run_hotspots(
 
 #[cfg(test)]
 mod tests {
-    use super::callee_matches;
+    use super::{callee_matches, replace_executable_atomically, UpgradeReplacement};
 
     #[test]
     fn callee_matches_bare_name() {
@@ -2313,6 +2428,33 @@ mod tests {
         assert!(!callee_matches("unhelper", "helper"));
         assert!(!callee_matches("util::unhelper", "helper"));
         assert!(!callee_matches("obj.unhelper", "helper"));
+    }
+
+    #[test]
+    fn upgrade_replacement_skips_same_executable_without_truncating() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("kgr");
+        std::fs::write(&bin, "fresh binary").unwrap();
+
+        let result = replace_executable_atomically(&bin, &bin).unwrap();
+
+        assert_eq!(result, UpgradeReplacement::SkippedSameExecutable);
+        assert_eq!(std::fs::read_to_string(&bin).unwrap(), "fresh binary");
+    }
+
+    #[test]
+    fn upgrade_replacement_renames_temp_over_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let new_bin = dir.path().join("target-kgr");
+        let dest = dir.path().join("installed-kgr");
+        std::fs::write(&new_bin, "new binary").unwrap();
+        std::fs::write(&dest, "old binary").unwrap();
+
+        let result = replace_executable_atomically(&new_bin, &dest).unwrap();
+
+        assert_eq!(result, UpgradeReplacement::Replaced);
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "new binary");
+        assert_eq!(std::fs::read_to_string(&new_bin).unwrap(), "new binary");
     }
 
     /// End-to-end through `run_graph`: config `languages` acts as the
@@ -2405,7 +2547,8 @@ mod tests {
         .unwrap();
         std::fs::write(src.join("util.rs"), "pub fn helper() {}\n").unwrap();
 
-        let (_root, file_nodes, _cfg) = super::build_file_nodes(dir.path(), &None, true);
+        let (_root, file_nodes, _format) =
+            super::build_file_nodes(dir.path(), None, "table", &["table", "json"], &None, true);
 
         // The definition is found...
         assert!(file_nodes

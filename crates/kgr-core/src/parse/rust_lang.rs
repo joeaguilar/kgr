@@ -356,11 +356,13 @@ impl super::Parser for RustParser {
 
                 // mod declarations with a body (mod foo { ... }) are inline, skip them
                 if capture.index == mod_idx {
-                    if let Some(parent) = node.parent() {
-                        if parent.child_by_field_name("body").is_some() {
-                            continue;
-                        }
+                    let Some(mod_item) = node.parent() else {
+                        continue;
+                    };
+                    if mod_item.child_by_field_name("body").is_some() {
+                        continue;
                     }
+                    let raw = mod_path_attribute(mod_item, source).unwrap_or(raw);
                     if !seen.insert(raw.clone()) {
                         continue;
                     }
@@ -388,6 +390,102 @@ impl super::Parser for RustParser {
 
         imports
     }
+}
+
+/// Read a `#[path = "..."]` attribute attached to a `mod_item`, if present.
+/// Like other Rust attributes in tree-sitter, it appears as a sibling directly
+/// before the item it annotates.
+fn mod_path_attribute(mod_item: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let mut sibling = mod_item.prev_sibling();
+    while let Some(node) = sibling {
+        match node.kind() {
+            "attribute_item" => {
+                if let Ok(text) = node.utf8_text(source) {
+                    if let Some(path) = path_attribute_value(text) {
+                        return Some(path);
+                    }
+                }
+            }
+            "line_comment" | "block_comment" => {}
+            _ => break,
+        }
+        sibling = node.prev_sibling();
+    }
+    None
+}
+
+fn path_attribute_value(attribute: &str) -> Option<String> {
+    let inner = attribute
+        .trim()
+        .strip_prefix("#[")?
+        .strip_suffix(']')?
+        .trim();
+    let rest = inner.strip_prefix("path")?;
+    if rest
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return None;
+    }
+    let value = rest.trim_start().strip_prefix('=')?.trim_start();
+    read_rust_string_literal(value)
+}
+
+fn read_rust_string_literal(value: &str) -> Option<String> {
+    let value = value.trim_start();
+    if let Some(rest) = value.strip_prefix('"') {
+        return read_quoted_rust_string(rest);
+    }
+    read_raw_rust_string(value)
+}
+
+fn read_quoted_rust_string(rest: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut escaped = false;
+    for ch in rest.chars() {
+        if escaped {
+            match ch {
+                '\\' => out.push('\\'),
+                '"' => out.push('"'),
+                'n' => out.push('\n'),
+                'r' => out.push('\r'),
+                't' => out.push('\t'),
+                '0' => out.push('\0'),
+                other => out.push(other),
+            }
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == '"' {
+            return Some(out);
+        } else {
+            out.push(ch);
+        }
+    }
+    None
+}
+
+fn read_raw_rust_string(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    if bytes.first() != Some(&b'r') {
+        return None;
+    }
+
+    let mut pos = 1usize;
+    while bytes.get(pos) == Some(&b'#') {
+        pos += 1;
+    }
+    if bytes.get(pos) != Some(&b'"') {
+        return None;
+    }
+    pos += 1;
+
+    let hashes = "#".repeat(pos - 2);
+    let terminator = format!("\"{hashes}");
+    let rest = &value[pos..];
+    let end = rest.find(&terminator)?;
+    Some(rest[..end].to_string())
 }
 
 /// True if a `macro_definition` node is preceded by a `#[macro_export]`
@@ -535,6 +633,19 @@ mod tests {
         let imports = parse("mod utils;");
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].raw, "utils");
+        assert_eq!(imports[0].kind, ImportKind::Local);
+    }
+
+    #[test]
+    fn path_attribute_mod_declaration_uses_attribute_path() {
+        let imports = parse(
+            r#"
+#[path = "other/dir/foo.rs"]
+mod foo;
+"#,
+        );
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].raw, "other/dir/foo.rs");
         assert_eq!(imports[0].kind, ImportKind::Local);
     }
 

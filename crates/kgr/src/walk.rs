@@ -141,30 +141,32 @@ fn lang_matches(lang: Lang, langs: &Option<Vec<String>>) -> bool {
     let Some(filter) = langs else {
         return true;
     };
-    let short = match lang {
-        Lang::Python => "py",
-        Lang::TypeScript => "ts",
-        Lang::JavaScript => "js",
-        Lang::Java => "java",
-        Lang::C => "c",
-        Lang::Cpp => "cpp",
-        Lang::Rust => "rs",
-        Lang::Go => "go",
-        Lang::Zig => "zig",
-        Lang::CSharp => "cs",
-        Lang::ObjectiveC => "objc",
-        Lang::Swift => "swift",
-        Lang::Ruby => "rb",
-        Lang::Php => "php",
-        Lang::Scala => "scala",
-        Lang::Lua => "lua",
-        Lang::Elixir => "ex",
-        Lang::Haskell => "hs",
-        Lang::Bash => "sh",
+    let aliases: &[&str] = match lang {
+        Lang::Python => &["py"],
+        Lang::TypeScript => &["ts"],
+        Lang::JavaScript => &["js"],
+        Lang::Java => &["java"],
+        Lang::C => &["c"],
+        Lang::Cpp => &["cpp"],
+        Lang::Rust => &["rs"],
+        Lang::Go => &["go"],
+        Lang::Zig => &["zig"],
+        Lang::CSharp => &["cs"],
+        Lang::ObjectiveC => &["objc", "objectivec"],
+        Lang::Swift => &["swift"],
+        Lang::Ruby => &["rb"],
+        Lang::Php => &["php"],
+        Lang::Scala => &["scala"],
+        Lang::Lua => &["lua"],
+        Lang::Elixir => &["ex"],
+        Lang::Haskell => &["hs"],
+        Lang::Bash => &["sh"],
         Lang::Unknown => return false,
     };
     let lang_str = lang.to_string();
-    filter.iter().any(|l| l == &lang_str || l == short)
+    filter
+        .iter()
+        .any(|l| l == &lang_str || aliases.iter().any(|alias| l == alias))
 }
 
 struct CompiledExcludes {
@@ -245,5 +247,17 @@ mod tests {
         assert_eq!(compiled.diagnostics.len(), 1);
         assert!(compiled.set.is_match("vendor/generated.py"));
         assert!(!compiled.set.is_match("src/main.py"));
+    }
+
+    #[test]
+    fn objective_c_filter_accepts_display_and_json_names() {
+        assert!(lang_matches(
+            Lang::ObjectiveC,
+            &Some(vec!["objc".to_string()])
+        ));
+        assert!(lang_matches(
+            Lang::ObjectiveC,
+            &Some(vec!["objectivec".to_string()])
+        ));
     }
 }

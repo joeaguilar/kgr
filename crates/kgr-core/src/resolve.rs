@@ -312,6 +312,12 @@ impl Resolver {
     fn resolve_rust(&self, raw: &str, from: &Path) -> Option<PathBuf> {
         let from_dir = from.parent().unwrap_or(Path::new("")).to_path_buf();
 
+        if is_rust_path_attribute(raw) {
+            let raw_path = raw.replace('\\', "/");
+            let target = normalize_path(&from_dir.join(raw_path));
+            return self.known_files.contains(&target).then_some(target);
+        }
+
         // `mod foo;` — a submodule of the current file's module. From
         // mod.rs/lib.rs/main.rs it's a sibling (`foo.rs`); from `bar.rs` it
         // nests under `bar/`. The module dir must win: rustc only accepts
@@ -564,6 +570,14 @@ fn module_dir(from: &Path) -> PathBuf {
     }
 }
 
+fn is_rust_path_attribute(raw: &str) -> bool {
+    raw.contains('/')
+        || raw.contains('\\')
+        || Path::new(raw)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("rs"))
+}
+
 fn normalize_path(path: &Path) -> PathBuf {
     let mut components = Vec::new();
     for component in path.components() {
@@ -803,6 +817,20 @@ mod tests {
             "src/commands.rs",
         );
         assert_eq!(got, Some(PathBuf::from("src/config.rs")));
+    }
+
+    #[test]
+    fn path_attribute_mod_declaration_resolves_relative_to_declaring_file() {
+        let got = resolve_rust(
+            &[
+                "src/commands.rs",
+                "src/custom/config.rs",
+                "src/commands/custom/config.rs",
+            ],
+            "custom/config.rs",
+            "src/commands.rs",
+        );
+        assert_eq!(got, Some(PathBuf::from("src/custom/config.rs")));
     }
 
     #[test]

@@ -438,6 +438,24 @@ fn baseline_fails_on_new_violation() {
         .stderr(predicate::str::contains("no-legacy"));
 }
 
+#[test]
+fn malformed_baseline_exits_2_and_reports_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    make_ts_fixture(&tmp);
+    let baseline_path = tmp.path().join(".kgr-baseline.json");
+    std::fs::write(&baseline_path, "not json\n").unwrap();
+
+    kgr()
+        .args(["check", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .code(2)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("failed to load baseline"))
+        .stderr(predicate::str::contains(".kgr-baseline.json"))
+        .stderr(predicate::str::contains("malformed baseline JSON"));
+}
+
 // ── JSON format for check ─────────────────────────────────────────────────────
 
 #[test]
@@ -505,6 +523,72 @@ fn check_json_orphans_reported() {
     assert_eq!(json["ok"], true);
     let orphans = json["orphans"].as_array().unwrap();
     assert!(!orphans.is_empty());
+}
+
+#[test]
+fn check_zero_files_json_exits_2_with_parseable_error() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    let output = kgr()
+        .args(["check", "--format", "json", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("No supported source files found"))
+        .stderr(predicate::str::contains("--lang filter"))
+        .stderr(predicate::str::contains("exclude settings"))
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"], "no supported source files found");
+}
+
+#[test]
+fn check_update_baseline_zero_files_errors_without_writing_baseline() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    kgr()
+        .args(["check", "--no-progress", "--update-baseline"])
+        .arg(tmp.path())
+        .assert()
+        .code(2)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("No supported source files found"))
+        .stderr(predicate::str::contains("--lang filter"))
+        .stderr(predicate::str::contains("exclude settings"));
+
+    assert!(
+        !tmp.path().join(".kgr-baseline.json").exists(),
+        "zero-file --update-baseline must not create a stale baseline"
+    );
+}
+
+#[test]
+fn zero_file_json_scan_commands_emit_parseable_errors() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cases: &[&[&str]] = &[
+        &["graph", "--format", "json", "--no-progress"],
+        &["query", "--cycles", "--format", "json", "--no-progress"],
+        &["symbols", "--format", "json", "--no-progress"],
+    ];
+
+    for args in cases {
+        let output = kgr()
+            .args(args.iter().copied())
+            .arg(tmp.path())
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("No supported source files found"))
+            .get_output()
+            .stdout
+            .clone();
+
+        let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(json["error"], "no supported source files found");
+    }
 }
 
 // ── Single-file PATH support ──────────────────────────────────────────────────

@@ -12,11 +12,11 @@ can't get from code or the tracker alone. Issue IDs (`#N`) link to `itr get N`.
 
 This session ran a **full six-reviewer code review** of kgr (69 new issues filed, #46–#114,
 plus #116 found mid-run), then an **8-wave parallel agent blitz** that closed **47 of
-them**, a follow-on **Wave 9** that closed **7 more**, and **Wave 10** that closed
-another **7**. `just verify` is green after Wave 10. Waves 1–9 are committed through
-`93b6f11`; Wave 10 is sitting uncommitted on `main` as 9 tracked files plus 5 new JSON
-snapshot files. First order of business: review and commit Wave 10. Then 2 planned waves
-(below) clear the remaining 9 review-batch issues.
+them**, a follow-on **Wave 9** that closed **7 more**, **Wave 10** that closed another
+**7**, and **Wave 11** that closed **6**. `just verify` is green after Wave 11. Waves
+1–10 are committed through `af89c2b`; Wave 11 is sitting uncommitted on `main` as 8
+tracked files plus 1 new integration test file. First order of business: review and
+commit Wave 11. Then Wave 12 (below) clears the remaining 3 review-batch issues.
 
 Wave log with full per-wave outcomes and all 15 interventions:
 `sprint/_unscoped/blitz-2026-06-09T22-25-41Z.md`. Blitz epic: **#115**.
@@ -25,10 +25,11 @@ Wave log with full per-wave outcomes and all 15 interventions:
 
 ## Repo / branch state
 
-- **`main` @ `93b6f11`** — waves 1–9 committed (`fix: close wave 9 review-batch issues`).
-- **Working tree** — Wave 10 changed 9 tracked files plus 5 new JSON snapshots, **all gates
-  green** (`just verify` exit 0: check, clippy `-D warnings`, 48+67+26+35+445 tests, fmt).
-  **Not committed** — review and commit before launching Wave 11.
+- **`main` @ `af89c2b`** — waves 1–10 committed (`fix: close wave 10 review-batch issues`).
+- **Working tree** — Wave 11 changed 8 tracked files plus 1 new integration test file,
+  **all gates green** (`just verify` exit 0: check, clippy `-D warnings`,
+  51+1+71+26+35+448 tests, fmt). **Not committed** — review and commit before launching
+  Wave 12.
 - `.claude/settings.local.json` — gitignored; gained allowlist entries this session (see
   playbook below). Leave them; waves depend on them.
 - `tests/fixtures/**/.kgr-cache.json` litter — eliminated (tests now run `KGR_NO_CACHE=1`).
@@ -62,21 +63,16 @@ Wave log with full per-wave outcomes and all 15 interventions:
 - **W10** #63/#74/#106 direct who-imports + agent-doc synopsis + heaviest `--top`, #109 go
   nested-subpackage resolution, #67 invalid exclude-glob warnings, #104 cache pruning,
   #101 JSON graph snapshots
+- **W11** #68 malformed-baseline error, #69 safe upgrade replacement, #70 zero-file check
+  errors, #114 Rust `#[path]` mod resolution, #108 Objective-C `--lang` JSON round-trip,
+  #100 all-language e2e coverage + detect round-trip
 
 ---
 
-## Remaining waves (the plan — 9 review-batch issues, 2 waves)
+## Remaining wave (the plan — 3 review-batch issues, 1 wave)
 
 Bundling convention: same-file sibling issues share one agent slot (they can't parallelize
 anyway); that agent closes all its issue IDs. Within a wave no two slots share a file.
-
-### Wave 11 (6 issues, 4 slots)
-| Slot | Issues | Owns |
-|---|---|---|
-| 1 | #68 + #69 + #70 | main.rs, baseline.rs, tests/integration.rs — corrupted-baseline error, upgrade self-copy, zero-files exit |
-| 2 | #114 | parse/rust_lang.rs, resolve.rs — `#[path]` attribute |
-| 3 | #108 | types.rs, walk.rs — objc serde/Display alignment (JSON value may change → snapshot touch-ups possible) |
-| 4 | #100 | tests/fixtures/** + NEW tests/e2e_languages.rs + detect.rs round-trip test (new test file avoids integration.rs conflict) |
 
 ### Wave 12 (3 issues, 3 slots)
 | Slot | Issues | Owns |
@@ -86,8 +82,8 @@ anyway); that agent closes all its issue IDs. Within a wave no two slots share a
 | 3 | #103 | .github/workflows/ci.yml, Cargo.toml — mac/windows + MSRV CI matrix |
 
 Conflict notes baked into the ordering: #99 must come after every wave that edits the three
-test files; #110 after #100/#80 (detect.rs) and #67/#108 (walk.rs); #114 after #109
-(resolve.rs). #101 is now closed, so #99's snapshot-file dependency is clear.
+test files; #110 after #100/#80 (detect.rs) and #67/#108 (walk.rs). #101 and #100 are now
+closed, so #99's snapshot-file dependency and #110's detect/walk dependency are clear.
 
 ## Remaining backlog beyond the review batch (~34 issues)
 
@@ -136,9 +132,9 @@ Not scoped into these waves — run `itr ready` for the live list:
 
 ```sh
 just verify                      # confirm still green
-git add -A && git commit ...     # land Wave 10 first (branch if you prefer)
+git add -A && git commit ...     # land Wave 11 first (branch if you prefer)
 itr ready -f json --fields id,title,urgency,status
-# then run /blitz and point it at Wave 11 above, or work issues solo
+# then run /blitz and point it at Wave 12 above, or work issues solo
 ```
 
 - Wave log: `sprint/_unscoped/blitz-2026-06-09T22-25-41Z.md` (config, conflicts, all
