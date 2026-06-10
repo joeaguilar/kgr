@@ -90,10 +90,17 @@ kgr dead <NAME> [PATH] [FLAGS]
   JSON output shape:
     {
       "symbol": "old_helper",
+      "found": true,
       "dead": true,
-      "definition": {"file": "utils.py", "line": 42, "kind": "function"},
+      "definitions": [{"file": "utils.py", "line": 42, "kind": "function"}],
       "references": []
     }
+  "definitions" lists every definition of the name — a symbol defined in
+  several files yields several entries, and "dead"/"references" are computed
+  across all of them.
+  If the symbol is not defined anywhere, "found" is false and "dead" is null
+  (NOT true) — a not-found symbol is never a removable verdict:
+    {"symbol": "no_such", "found": false, "dead": null, "definitions": [], "references": []}
 
 kgr skeleton [PATH] [FLAGS]
   Emit a token-minimal skeleton of each file: signatures only, bodies elided.
@@ -139,9 +146,15 @@ kgr impact <NAME> [PATH] [FLAGS]
   JSON output shape:
     {
       "symbol": "query",
-      "defined_in": {"file": "db.ts", "line": 3, "kind": "function"},
+      "found": true,
+      "definitions": [{"file": "db.ts", "line": 3, "kind": "function"}],
       "impact": [{"file": "service.ts", "depth": 1, "calls_symbol": true}]
     }
+  "definitions" lists every definition of the name; "impact" is the union of
+  transitive dependents of every defining file (minimum depth wins when a
+  dependent is reachable from several definitions).
+  If the symbol is not found:
+    {"symbol": "x", "found": false, "definitions": [], "impact": [], "error": "Symbol 'x' not found"}
 
 kgr hotspots [PATH] [FLAGS]
   Rank files by function count and average function length.
@@ -205,7 +218,9 @@ RECOMMENDED AGENT WORKFLOW
   5. Use `kgr refs <name> --format json --no-progress .` to find all usages
      of a function/class — replaces multi-step grep+read workflows.
   6. Use `kgr dead <name> --format json --no-progress .` to check if a
-     symbol is safe to remove before deleting it.
+     symbol is safe to remove before deleting it. Check "found" first:
+     "found": false means the symbol does not exist in the parsed project
+     (typo or unparsed language) — it does NOT mean the symbol is removable.
   7. Use `kgr symbols --format json --no-progress .` to get a table of
      contents of all definitions — useful for orientation in unfamiliar code.
   8. Always pass --no-progress when parsing output programmatically.

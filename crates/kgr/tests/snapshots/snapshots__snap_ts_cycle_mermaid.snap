@@ -1,0 +1,15 @@
+---
+source: crates/kgr/tests/snapshots.rs
+expression: stdout
+---
+graph LR
+  n0["a.ts"]
+  n1["b.ts"]
+  n2["c.ts"]
+
+  n0 -.-> n1
+  n1 -.-> n2
+  n2 -.-> n0
+  style n0 fill:#ff000022
+  style n1 fill:#ff000022
+  style n2 fill:#ff000022

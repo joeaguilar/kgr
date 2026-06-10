@@ -36,9 +36,9 @@ enum Commands {
         #[arg(default_value = ".")]
         path: PathBuf,
 
-        /// Output format: tree, json, table, dot, mermaid
-        #[arg(short, long, default_value = "tree")]
-        format: String,
+        /// Output format: tree, json, table, dot, mermaid [default: tree]
+        #[arg(short, long)]
+        format: Option<String>,
 
         /// Filter by language: py, ts, js, rs, java, c, cpp, go, zig, cs, objc, swift, rb, php, scala, lua, ex, hs, sh
         #[arg(short, long)]
@@ -75,9 +75,9 @@ enum Commands {
         #[arg(default_value = ".")]
         path: PathBuf,
 
-        /// Output format: text, json
-        #[arg(short, long, default_value = "text")]
-        format: String,
+        /// Output format: text, json [default: text]
+        #[arg(short, long)]
+        format: Option<String>,
 
         /// Filter by language
         #[arg(short, long)]
@@ -138,9 +138,9 @@ enum Commands {
         #[arg(long)]
         largest_cycle: bool,
 
-        /// Output format
-        #[arg(short, long, default_value = "table")]
-        format: String,
+        /// Output format [default: table]
+        #[arg(short, long)]
+        format: Option<String>,
 
         /// Filter by language
         #[arg(short, long)]
@@ -161,9 +161,9 @@ enum Commands {
         #[arg(default_value = ".")]
         path: PathBuf,
 
-        /// Output format: table, json
-        #[arg(short, long, default_value = "table")]
-        format: String,
+        /// Output format: table, json [default: table]
+        #[arg(short, long)]
+        format: Option<String>,
 
         /// Filter by language
         #[arg(short, long)]
@@ -187,9 +187,9 @@ enum Commands {
         #[arg(default_value = ".")]
         path: PathBuf,
 
-        /// Output format: table, json
-        #[arg(short, long, default_value = "table")]
-        format: String,
+        /// Output format: table, json [default: table]
+        #[arg(short, long)]
+        format: Option<String>,
 
         /// Filter by language
         #[arg(short, long)]
@@ -213,9 +213,9 @@ enum Commands {
         #[arg(default_value = ".")]
         path: PathBuf,
 
-        /// Output format: table, json
-        #[arg(short, long, default_value = "table")]
-        format: String,
+        /// Output format: table, json [default: table]
+        #[arg(short, long)]
+        format: Option<String>,
 
         /// Filter by language
         #[arg(short, long)]
@@ -236,9 +236,9 @@ enum Commands {
         #[arg(default_value = ".")]
         path: PathBuf,
 
-        /// Output format: text, json, table
-        #[arg(short, long, default_value = "text")]
-        format: String,
+        /// Output format: text, json, table [default: text]
+        #[arg(short, long)]
+        format: Option<String>,
 
         /// Filter by language
         #[arg(short, long)]
@@ -259,9 +259,9 @@ enum Commands {
         #[arg(default_value = ".")]
         path: PathBuf,
 
-        /// Output format: text, json
-        #[arg(short, long, default_value = "text")]
-        format: String,
+        /// Output format: text, json [default: text]
+        #[arg(short, long)]
+        format: Option<String>,
 
         /// Filter by language
         #[arg(short, long)]
@@ -285,9 +285,9 @@ enum Commands {
         #[arg(default_value = ".")]
         path: PathBuf,
 
-        /// Output format: text, json
-        #[arg(short, long, default_value = "text")]
-        format: String,
+        /// Output format: text, json [default: text]
+        #[arg(short, long)]
+        format: Option<String>,
 
         /// Filter by language
         #[arg(short, long)]
@@ -312,9 +312,9 @@ enum Commands {
         #[arg(default_value = ".")]
         path: PathBuf,
 
-        /// Output format: text, json, table
-        #[arg(short, long, default_value = "table")]
-        format: String,
+        /// Output format: text, json, table [default: table]
+        #[arg(short, long)]
+        format: Option<String>,
 
         /// Filter by language
         #[arg(short, long)]
@@ -338,6 +338,10 @@ enum Commands {
         /// Directory to initialize
         #[arg(default_value = ".")]
         path: PathBuf,
+
+        /// Overwrite an existing .kgr.toml
+        #[arg(long)]
+        force: bool,
     },
 
     /// Rebuild kgr from source and replace the running binary
@@ -369,7 +373,7 @@ fn main() {
             setup_tracing(verbose);
             run_graph(
                 &path,
-                &format,
+                format.as_deref(),
                 &lang,
                 no_external,
                 show_external,
@@ -391,7 +395,7 @@ fn main() {
             setup_tracing(verbose);
             run_check(
                 &path,
-                &format,
+                format.as_deref(),
                 &lang,
                 no_progress,
                 update_baseline,
@@ -423,7 +427,7 @@ fn main() {
                 orphans,
                 heaviest,
                 largest_cycle,
-                &format,
+                format.as_deref(),
                 &lang,
                 no_progress,
             );
@@ -436,7 +440,7 @@ fn main() {
             verbose,
         }) => {
             setup_tracing(verbose);
-            run_symbols(&path, &format, &lang, no_progress);
+            run_symbols(&path, format.as_deref(), &lang, no_progress);
         }
         Some(Commands::Refs {
             name,
@@ -447,7 +451,7 @@ fn main() {
             verbose,
         }) => {
             setup_tracing(verbose);
-            run_refs(&name, &path, &format, &lang, no_progress);
+            run_refs(&name, &path, format.as_deref(), &lang, no_progress);
         }
         Some(Commands::Dead {
             name,
@@ -458,7 +462,7 @@ fn main() {
             verbose,
         }) => {
             setup_tracing(verbose);
-            run_dead(&name, &path, &format, &lang, no_progress);
+            run_dead(&name, &path, format.as_deref(), &lang, no_progress);
         }
         Some(Commands::Skeleton {
             path,
@@ -468,7 +472,7 @@ fn main() {
             verbose,
         }) => {
             setup_tracing(verbose);
-            run_skeleton(&path, &format, &lang, no_progress);
+            run_skeleton(&path, format.as_deref(), &lang, no_progress);
         }
         Some(Commands::Orient {
             path,
@@ -478,7 +482,7 @@ fn main() {
             verbose,
         }) => {
             setup_tracing(verbose);
-            run_orient(&path, &format, &lang, no_progress);
+            run_orient(&path, format.as_deref(), &lang, no_progress);
         }
         Some(Commands::Impact {
             name,
@@ -490,7 +494,7 @@ fn main() {
             verbose,
         }) => {
             setup_tracing(verbose);
-            run_impact(&name, &path, &format, &lang, depth, no_progress);
+            run_impact(&name, &path, format.as_deref(), &lang, depth, no_progress);
         }
         Some(Commands::Hotspots {
             path,
@@ -501,10 +505,10 @@ fn main() {
             verbose,
         }) => {
             setup_tracing(verbose);
-            run_hotspots(&path, &format, &lang, top, no_progress);
+            run_hotspots(&path, format.as_deref(), &lang, top, no_progress);
         }
-        Some(Commands::Init { path }) => {
-            run_init(&path);
+        Some(Commands::Init { path, force }) => {
+            run_init(&path, force);
         }
         Some(Commands::Upgrade) => {
             run_upgrade();
@@ -513,11 +517,12 @@ fn main() {
             run_agent_info(&format);
         }
         None => {
-            // Default: run graph with tree format on current directory
+            // Default: run graph on the current directory (format resolves
+            // to config `format` if set, otherwise tree)
             setup_tracing(0);
             run_graph(
                 &PathBuf::from("."),
-                "tree",
+                None,
                 &None,
                 false,
                 false,
@@ -546,6 +551,51 @@ fn setup_tracing(verbosity: u8) {
         .init();
 }
 
+/// Canonicalize the user-supplied PATH and resolve the scan target.
+///
+/// When PATH is a directory, it becomes the scan root. When PATH is a file,
+/// the scan root becomes its parent directory (so discovered paths stay
+/// root-relative and import resolution works as usual) and the file itself
+/// is returned for single-file discovery.
+fn resolve_scan_target(path: &Path) -> (PathBuf, Option<PathBuf>) {
+    let canon = std::fs::canonicalize(path).unwrap_or_else(|e| {
+        eprintln!("Error: cannot access '{}': {}", path.display(), e);
+        process::exit(2);
+    });
+    if canon.is_file() {
+        let root = canon
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("/"));
+        (root, Some(canon))
+    } else {
+        (canon, None)
+    }
+}
+
+/// Discover source files for the scan target. For a single explicitly-named
+/// file, a clear error is printed and the process exits non-zero when the
+/// file cannot be analyzed (unsupported language, --lang mismatch, too big).
+fn discover_or_exit(
+    root: &Path,
+    single_file: Option<&Path>,
+    lang: &Option<Vec<String>>,
+    cfg: &config::Config,
+) -> Vec<walk::DiscoveredFile> {
+    match single_file {
+        Some(file) => {
+            match walk::discover_single_file(root, file, lang, cfg.max_file_size_bytes()) {
+                Ok(f) => vec![f],
+                Err(reason) => {
+                    eprintln!("Error: cannot analyze '{}': {}", file.display(), reason);
+                    process::exit(2);
+                }
+            }
+        }
+        None => walk::discover(root, lang, &cfg.exclude, cfg.max_file_size_bytes()),
+    }
+}
+
 fn load_config_or_exit(root: &Path) -> config::Config {
     config::load_config(root).unwrap_or_else(|e| {
         eprintln!(
@@ -557,13 +607,27 @@ fn load_config_or_exit(root: &Path) -> config::Config {
     })
 }
 
+/// Reject a resolved output format that the subcommand does not support.
+///
+/// Runs after `config::resolve_format`, so it covers bad values from the
+/// CLI flag, the config `format` field, and the `KGR_FORMAT` env var alike.
+/// Exits 2 with an error naming the valid formats, matching `kgr graph`'s
+/// rejection behavior, instead of silently falling through to the default
+/// text/table branch.
+fn validate_format_or_exit(format: &str, valid: &[&str]) {
+    if !valid.contains(&format) {
+        eprintln!("Unknown format: {format} (expected: {})", valid.join(", "));
+        process::exit(2);
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "CLI dispatch passes through all flags"
 )]
 fn run_graph(
-    path: &PathBuf,
-    format: &str,
+    path: &Path,
+    format: Option<&str>,
     lang: &Option<Vec<String>>,
     no_external: bool,
     show_external: bool,
@@ -571,14 +635,15 @@ fn run_graph(
     include_symbols: bool,
     output: Option<&std::path::Path>,
 ) {
-    let root = std::fs::canonicalize(path).unwrap_or_else(|e| {
-        eprintln!("Error: cannot access '{}': {}", path.display(), e);
-        process::exit(2);
-    });
+    let (root, single_file) = resolve_scan_target(path);
 
     let cfg = load_config_or_exit(&root);
+    let format = config::resolve_format(format, cfg.format.as_deref(), "tree");
+    validate_format_or_exit(format, &["tree", "json", "table", "dot", "mermaid"]);
+    let lang = config::resolve_langs(lang, &cfg.languages);
+    let no_progress = config::resolve_no_progress(no_progress, cfg.no_progress);
     let registry = ParserRegistry::new();
-    let files = walk::discover(&root, lang, &cfg.exclude, cfg.max_file_size_bytes());
+    let files = discover_or_exit(&root, single_file.as_deref(), &lang, &cfg);
 
     if files.is_empty() {
         eprintln!("No supported source files found in {}", root.display());
@@ -673,22 +738,23 @@ fn run_graph(
 }
 
 fn run_check(
-    path: &PathBuf,
-    format: &str,
+    path: &Path,
+    format: Option<&str>,
     lang: &Option<Vec<String>>,
     no_progress: bool,
     update_baseline: bool,
     baseline_path: Option<&Path>,
     syntax: bool,
 ) {
-    let root = std::fs::canonicalize(path).unwrap_or_else(|e| {
-        eprintln!("Error: cannot access '{}': {}", path.display(), e);
-        process::exit(2);
-    });
+    let (root, single_file) = resolve_scan_target(path);
 
     let cfg = load_config_or_exit(&root);
+    let format = config::resolve_format(format, cfg.format.as_deref(), "text");
+    validate_format_or_exit(format, &["text", "json"]);
+    let lang = config::resolve_langs(lang, &cfg.languages);
+    let no_progress = config::resolve_no_progress(no_progress, cfg.no_progress);
     let registry = ParserRegistry::new();
-    let files = walk::discover(&root, lang, &cfg.exclude, cfg.max_file_size_bytes());
+    let files = discover_or_exit(&root, single_file.as_deref(), &lang, &cfg);
 
     if files.is_empty() {
         eprintln!("No supported source files found in {}", root.display());
@@ -907,7 +973,7 @@ fn run_check(
     reason = "CLI dispatch passes through all flags"
 )]
 fn run_query(
-    path: &PathBuf,
+    path: &Path,
     who_imports: Option<&Path>,
     deps_of: Option<&Path>,
     path_between: Option<&[PathBuf]>,
@@ -915,18 +981,19 @@ fn run_query(
     orphans: bool,
     heaviest: bool,
     largest_cycle: bool,
-    format: &str,
+    format: Option<&str>,
     lang: &Option<Vec<String>>,
     no_progress: bool,
 ) {
-    let root = std::fs::canonicalize(path).unwrap_or_else(|e| {
-        eprintln!("Error: cannot access '{}': {}", path.display(), e);
-        process::exit(2);
-    });
+    let (root, single_file) = resolve_scan_target(path);
 
     let cfg = load_config_or_exit(&root);
+    let format = config::resolve_format(format, cfg.format.as_deref(), "table");
+    validate_format_or_exit(format, &["table", "json"]);
+    let lang = config::resolve_langs(lang, &cfg.languages);
+    let no_progress = config::resolve_no_progress(no_progress, cfg.no_progress);
     let registry = ParserRegistry::new();
-    let files = walk::discover(&root, lang, &cfg.exclude, cfg.max_file_size_bytes());
+    let files = discover_or_exit(&root, single_file.as_deref(), &lang, &cfg);
 
     if files.is_empty() {
         eprintln!("No supported source files found in {}", root.display());
@@ -1076,8 +1143,8 @@ fn run_query(
     }
 }
 
-fn run_init(path: &Path) {
-    match config::init_config(path) {
+fn run_init(path: &Path, force: bool) {
+    match config::init_config(path, force) {
         Ok(config_path) => {
             println!("Created {}", config_path.display());
         }
@@ -1173,23 +1240,25 @@ fn run_upgrade() {
     eprintln!("Version: {}", env!("KGR_VERSION"));
 }
 
+/// Discover and parse all files for the scan target. Config-level defaults
+/// (`languages`, `no_progress`) are resolved here; the loaded `Config` is
+/// returned so callers can resolve config-aware settings like `format`.
 fn build_file_nodes(
-    path: &PathBuf,
+    path: &Path,
     lang: &Option<Vec<String>>,
     no_progress: bool,
-) -> (PathBuf, Vec<kgr_core::types::FileNode>) {
-    let root = std::fs::canonicalize(path).unwrap_or_else(|e| {
-        eprintln!("Error: cannot access '{}': {}", path.display(), e);
-        process::exit(2);
-    });
+) -> (PathBuf, Vec<kgr_core::types::FileNode>, config::Config) {
+    let (root, single_file) = resolve_scan_target(path);
 
     let cfg = load_config_or_exit(&root);
+    let lang = config::resolve_langs(lang, &cfg.languages);
+    let no_progress = config::resolve_no_progress(no_progress, cfg.no_progress);
     let registry = ParserRegistry::new();
-    let files = walk::discover(&root, lang, &cfg.exclude, cfg.max_file_size_bytes());
+    let files = discover_or_exit(&root, single_file.as_deref(), &lang, &cfg);
 
     if files.is_empty() {
         eprintln!("No supported source files found in {}", root.display());
-        return (root, Vec::new());
+        return (root, Vec::new(), cfg);
     }
 
     tracing::info!("Discovered {} files", files.len());
@@ -1199,11 +1268,13 @@ fn build_file_nodes(
     let file_nodes = pipeline::parse_all(&root, files, &registry, &mut parse_cache, !no_progress);
     parse_cache.save(&cache_path);
 
-    (root, file_nodes)
+    (root, file_nodes, cfg)
 }
 
-fn run_symbols(path: &PathBuf, format: &str, lang: &Option<Vec<String>>, no_progress: bool) {
-    let (root, file_nodes) = build_file_nodes(path, lang, no_progress);
+fn run_symbols(path: &Path, format: Option<&str>, lang: &Option<Vec<String>>, no_progress: bool) {
+    let (root, file_nodes, cfg) = build_file_nodes(path, lang, no_progress);
+    let format = config::resolve_format(format, cfg.format.as_deref(), "table");
+    validate_format_or_exit(format, &["table", "json"]);
     if file_nodes.is_empty() {
         return;
     }
@@ -1256,14 +1327,25 @@ fn run_symbols(path: &PathBuf, format: &str, lang: &Option<Vec<String>>, no_prog
     }
 }
 
+/// True when a recorded callee refers to `name`, treating both `.` and `::`
+/// as qualifier separators: matches `name`, `obj.name`, and `path::name`
+/// (e.g. `util::helper`, `Foo::bar`, `tracing::warn`).
+fn callee_matches(callee_raw: &str, name: &str) -> bool {
+    callee_raw == name
+        || callee_raw.ends_with(&format!(".{name}"))
+        || callee_raw.ends_with(&format!("::{name}"))
+}
+
 fn run_refs(
     name: &str,
-    path: &PathBuf,
-    format: &str,
+    path: &Path,
+    format: Option<&str>,
     lang: &Option<Vec<String>>,
     no_progress: bool,
 ) {
-    let (root, file_nodes) = build_file_nodes(path, lang, no_progress);
+    let (root, file_nodes, cfg) = build_file_nodes(path, lang, no_progress);
+    let format = config::resolve_format(format, cfg.format.as_deref(), "table");
+    validate_format_or_exit(format, &["table", "json"]);
 
     // Find definitions: symbols matching the name
     let mut definitions = Vec::new();
@@ -1286,8 +1368,7 @@ fn run_refs(
         std::collections::HashMap::new();
     for f in &file_nodes {
         for c in &f.calls {
-            let matches = c.callee_raw == name || c.callee_raw.ends_with(&format!(".{name}"));
-            if matches {
+            if callee_matches(&c.callee_raw, name) {
                 // Read source for context line
                 let context = if !file_cache.contains_key(&f.path) {
                     let full_path = root.join(&f.path);
@@ -1371,29 +1452,47 @@ fn run_refs(
 
 fn run_dead(
     name: &str,
-    path: &PathBuf,
-    format: &str,
+    path: &Path,
+    format: Option<&str>,
     lang: &Option<Vec<String>>,
     no_progress: bool,
 ) {
-    let (root, file_nodes) = build_file_nodes(path, lang, no_progress);
+    let (root, file_nodes, cfg) = build_file_nodes(path, lang, no_progress);
+    let format = config::resolve_format(format, cfg.format.as_deref(), "table");
+    validate_format_or_exit(format, &["table", "json"]);
 
-    // Find definition
-    let mut definition = None;
+    // Find all definitions (a symbol may be defined in several files)
+    let mut definitions = Vec::new();
     for f in &file_nodes {
         for s in &f.symbols {
             if s.name == name {
-                definition = Some(serde_json::json!({
+                definitions.push(serde_json::json!({
                     "file": f.path.to_string_lossy(),
                     "line": s.span.start_line,
                     "kind": s.kind.to_string(),
                 }));
-                break;
             }
         }
-        if definition.is_some() {
-            break;
+    }
+
+    // Not found is a distinct verdict from dead: a typo'd or parser-missed
+    // symbol must never read as a machine-removable `dead: true`.
+    if definitions.is_empty() {
+        let mut stdout = std::io::stdout().lock();
+        if format == "json" {
+            let result = serde_json::json!({
+                "symbol": name,
+                "found": false,
+                "dead": null,
+                "definitions": [],
+                "references": [],
+            });
+            serde_json::to_writer_pretty(&mut stdout, &result).ok();
+            writeln!(stdout).ok();
+        } else {
+            writeln!(stdout, "Symbol '{name}' not found in project.").ok();
         }
+        return;
     }
 
     // Find call references
@@ -1402,8 +1501,7 @@ fn run_dead(
         std::collections::HashMap::new();
     for f in &file_nodes {
         for c in &f.calls {
-            let matches = c.callee_raw == name || c.callee_raw.ends_with(&format!(".{name}"));
-            if matches {
+            if callee_matches(&c.callee_raw, name) {
                 if !file_cache.contains_key(&f.path) {
                     let full_path = root.join(&f.path);
                     if let Ok(content) = std::fs::read_to_string(&full_path) {
@@ -1434,37 +1532,41 @@ fn run_dead(
     let mut stdout = std::io::stdout().lock();
 
     if format == "json" {
-        let result = if let Some(def) = &definition {
-            serde_json::json!({
-                "symbol": name,
-                "dead": dead,
-                "definition": def,
-                "references": references,
-            })
-        } else {
-            serde_json::json!({
-                "symbol": name,
-                "dead": true,
-                "definition": null,
-                "references": [],
-            })
-        };
+        let result = serde_json::json!({
+            "symbol": name,
+            "found": true,
+            "dead": dead,
+            "definitions": definitions,
+            "references": references,
+        });
         serde_json::to_writer_pretty(&mut stdout, &result).ok();
         writeln!(stdout).ok();
-    } else if definition.is_none() {
-        writeln!(stdout, "Symbol '{name}' not found in project.").ok();
     } else if dead {
-        let def = definition.unwrap();
         writeln!(stdout, "Dead — no references found.").ok();
-        writeln!(
-            stdout,
-            "  Defined at: {}:{} ({})",
-            def["file"].as_str().unwrap_or_default(),
-            def["line"],
-            def["kind"].as_str().unwrap_or_default()
-        )
-        .ok();
+        for def in &definitions {
+            writeln!(
+                stdout,
+                "  Defined at: {}:{} ({})",
+                def["file"].as_str().unwrap_or_default(),
+                def["line"],
+                def["kind"].as_str().unwrap_or_default()
+            )
+            .ok();
+        }
     } else {
+        if definitions.len() > 1 {
+            writeln!(stdout, "Defined in {} locations:", definitions.len()).ok();
+            for def in &definitions {
+                writeln!(
+                    stdout,
+                    "  {}:{} ({})",
+                    def["file"].as_str().unwrap_or_default(),
+                    def["line"],
+                    def["kind"].as_str().unwrap_or_default()
+                )
+                .ok();
+            }
+        }
         writeln!(
             stdout,
             "Not dead — {} reference(s) found:",
@@ -1485,6 +1587,7 @@ fn run_dead(
 }
 
 fn run_agent_info(format: &str) {
+    validate_format_or_exit(format, &["text", "json"]);
     if format == "json" {
         let json = serde_json::json!({ "guide": agent_docs::AGENT_DOCS });
         println!("{}", serde_json::to_string_pretty(&json).unwrap());
@@ -1493,8 +1596,10 @@ fn run_agent_info(format: &str) {
     }
 }
 
-fn run_skeleton(path: &PathBuf, format: &str, lang: &Option<Vec<String>>, no_progress: bool) {
-    let (root, file_nodes) = build_file_nodes(path, lang, no_progress);
+fn run_skeleton(path: &Path, format: Option<&str>, lang: &Option<Vec<String>>, no_progress: bool) {
+    let (root, file_nodes, cfg) = build_file_nodes(path, lang, no_progress);
+    let format = config::resolve_format(format, cfg.format.as_deref(), "text");
+    validate_format_or_exit(format, &["text", "json", "table"]);
     if file_nodes.is_empty() {
         return;
     }
@@ -1626,11 +1731,13 @@ fn run_skeleton(path: &PathBuf, format: &str, lang: &Option<Vec<String>>, no_pro
     }
 }
 
-fn run_orient(path: &PathBuf, format: &str, lang: &Option<Vec<String>>, no_progress: bool) {
+fn run_orient(path: &Path, format: Option<&str>, lang: &Option<Vec<String>>, no_progress: bool) {
     use kgr_core::types::ImportKind;
     use std::collections::{HashMap, HashSet};
 
-    let (root, mut file_nodes) = build_file_nodes(path, lang, no_progress);
+    let (root, mut file_nodes, cfg) = build_file_nodes(path, lang, no_progress);
+    let format = config::resolve_format(format, cfg.format.as_deref(), "text");
+    validate_format_or_exit(format, &["text", "json"]);
     if file_nodes.is_empty() {
         return;
     }
@@ -1772,65 +1879,80 @@ fn run_orient(path: &PathBuf, format: &str, lang: &Option<Vec<String>>, no_progr
 
 fn run_impact(
     name: &str,
-    path: &PathBuf,
-    format: &str,
+    path: &Path,
+    format: Option<&str>,
     lang: &Option<Vec<String>>,
     depth: Option<usize>,
     no_progress: bool,
 ) {
-    let (_root, mut file_nodes) = build_file_nodes(path, lang, no_progress);
+    let (_root, mut file_nodes, cfg) = build_file_nodes(path, lang, no_progress);
+    let format = config::resolve_format(format, cfg.format.as_deref(), "text");
+    validate_format_or_exit(format, &["text", "json"]);
 
     let resolver = Resolver::new(PathBuf::new(), &file_nodes);
     resolver.resolve_all(&mut file_nodes);
 
     let kgraph = KGraph::from_files(&file_nodes);
 
-    // Find which file(s) define the named symbol
-    let mut defining_file = None;
-    let mut defining_symbol = None;
+    // Find every file that defines the named symbol — common names (init,
+    // main, helper) are often defined in several files, and the blast radius
+    // must cover all of them.
+    let mut definitions = Vec::new();
+    let mut defining_files: Vec<PathBuf> = Vec::new();
     for f in &file_nodes {
         for s in &f.symbols {
             if s.name == name {
-                defining_file = Some(f.path.clone());
-                defining_symbol = Some(s.clone());
-                break;
+                definitions.push(serde_json::json!({
+                    "file": f.path.to_string_lossy(),
+                    "line": s.span.start_line,
+                    "kind": s.kind.to_string(),
+                }));
+                if !defining_files.contains(&f.path) {
+                    defining_files.push(f.path.clone());
+                }
             }
-        }
-        if defining_file.is_some() {
-            break;
         }
     }
 
-    let (defining_file, defining_symbol) = match (defining_file, defining_symbol) {
-        (Some(f), Some(s)) => (f, s),
-        _ => {
-            if format == "json" {
-                let result = serde_json::json!({
-                    "symbol": name,
-                    "error": format!("Symbol '{name}' not found"),
-                });
-                let mut stdout = std::io::stdout().lock();
-                serde_json::to_writer_pretty(&mut stdout, &result).ok();
-                writeln!(stdout).ok();
-            } else {
-                eprintln!("Symbol '{name}' not found");
-            }
-            return;
+    if definitions.is_empty() {
+        if format == "json" {
+            let result = serde_json::json!({
+                "symbol": name,
+                "found": false,
+                "definitions": [],
+                "impact": [],
+                "error": format!("Symbol '{name}' not found"),
+            });
+            let mut stdout = std::io::stdout().lock();
+            serde_json::to_writer_pretty(&mut stdout, &result).ok();
+            writeln!(stdout).ok();
+        } else {
+            eprintln!("Symbol '{name}' not found");
         }
-    };
+        return;
+    }
 
-    // Get transitive dependents with depth
-    let dependents = kgraph.transitive_dependents_with_depth(&defining_file, depth);
+    // Union of transitive dependents across every defining file; when a
+    // dependent is reachable from several definitions, the minimum depth wins.
+    let mut depth_by_file: std::collections::HashMap<PathBuf, usize> =
+        std::collections::HashMap::new();
+    for def_file in &defining_files {
+        for (p, d) in kgraph.transitive_dependents_with_depth(def_file, depth) {
+            depth_by_file
+                .entry(p)
+                .and_modify(|existing| *existing = (*existing).min(d))
+                .or_insert(d);
+        }
+    }
+    let mut dependents: Vec<(PathBuf, usize)> = depth_by_file.into_iter().collect();
+    dependents.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
 
     // Cross-reference: for each dependent, check if it calls the symbol
     let calls_symbol: std::collections::HashMap<PathBuf, bool> = dependents
         .iter()
         .map(|(dep_path, _)| {
             let has_call = file_nodes.iter().any(|f| {
-                f.path == *dep_path
-                    && f.calls.iter().any(|c| {
-                        c.callee_raw == name || c.callee_raw.ends_with(&format!(".{name}"))
-                    })
+                f.path == *dep_path && f.calls.iter().any(|c| callee_matches(&c.callee_raw, name))
             });
             (dep_path.clone(), has_call)
         })
@@ -1852,24 +1974,40 @@ fn run_impact(
 
         let result = serde_json::json!({
             "symbol": name,
-            "defined_in": {
-                "file": defining_file.to_string_lossy(),
-                "line": defining_symbol.span.start_line,
-                "kind": defining_symbol.kind.to_string(),
-            },
+            "found": true,
+            "definitions": definitions,
             "impact": impact,
         });
         serde_json::to_writer_pretty(&mut stdout, &result).ok();
         writeln!(stdout).ok();
     } else {
-        writeln!(
-            stdout,
-            "Symbol: {name}\nDefined in: {}:{} ({})",
-            defining_file.display(),
-            defining_symbol.span.start_line,
-            defining_symbol.kind,
-        )
-        .ok();
+        if definitions.len() == 1 {
+            writeln!(
+                stdout,
+                "Symbol: {name}\nDefined in: {}:{} ({})",
+                definitions[0]["file"].as_str().unwrap_or_default(),
+                definitions[0]["line"],
+                definitions[0]["kind"].as_str().unwrap_or_default(),
+            )
+            .ok();
+        } else {
+            writeln!(
+                stdout,
+                "Symbol: {name}\nDefined in {} locations:",
+                definitions.len()
+            )
+            .ok();
+            for def in &definitions {
+                writeln!(
+                    stdout,
+                    "  {}:{} ({})",
+                    def["file"].as_str().unwrap_or_default(),
+                    def["line"],
+                    def["kind"].as_str().unwrap_or_default(),
+                )
+                .ok();
+            }
+        }
         writeln!(stdout).ok();
 
         if dependents.is_empty() {
@@ -1905,15 +2043,17 @@ fn run_impact(
 }
 
 fn run_hotspots(
-    path: &PathBuf,
-    format: &str,
+    path: &Path,
+    format: Option<&str>,
     lang: &Option<Vec<String>>,
     top: Option<usize>,
     no_progress: bool,
 ) {
     use kgr_core::types::SymbolKind;
 
-    let (root, file_nodes) = build_file_nodes(path, lang, no_progress);
+    let (root, file_nodes, cfg) = build_file_nodes(path, lang, no_progress);
+    let format = config::resolve_format(format, cfg.format.as_deref(), "table");
+    validate_format_or_exit(format, &["table", "json", "text"]);
     let limit = top.unwrap_or(20);
 
     #[derive(serde::Serialize)]
@@ -2007,5 +2147,143 @@ fn run_hotspots(
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::callee_matches;
+
+    #[test]
+    fn callee_matches_bare_name() {
+        assert!(callee_matches("helper", "helper"));
+    }
+
+    #[test]
+    fn callee_matches_dot_qualified() {
+        assert!(callee_matches("obj.helper", "helper"));
+    }
+
+    #[test]
+    fn callee_matches_scoped_path() {
+        assert!(callee_matches("util::helper", "helper"));
+        assert!(callee_matches("Foo::bar", "bar"));
+        assert!(callee_matches("crate::util::helper", "helper"));
+        assert!(callee_matches("tracing::warn", "warn"));
+    }
+
+    #[test]
+    fn callee_matches_rejects_suffix_overlap() {
+        // Name must follow a separator (or match whole) — not a substring tail.
+        assert!(!callee_matches("unhelper", "helper"));
+        assert!(!callee_matches("util::unhelper", "helper"));
+        assert!(!callee_matches("obj.unhelper", "helper"));
+    }
+
+    /// End-to-end through `run_graph`: config `languages` acts as the
+    /// default --lang filter and config `format` as the default --format
+    /// when the CLI flags are absent.
+    /// (Config writes "json" — same value the lone env-manipulating config
+    /// test sets for KGR_FORMAT, so even a parallel-test overlap cannot
+    /// change the outcome.)
+    #[test]
+    fn config_defaults_drive_run_graph_when_flags_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("app.py"), "import helper\n").unwrap();
+        std::fs::write(dir.path().join("helper.py"), "x = 1\n").unwrap();
+        std::fs::write(dir.path().join("main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(
+            dir.path().join(".kgr.toml"),
+            "languages = [\"py\"]\nformat = \"json\"\nno_progress = true\n",
+        )
+        .unwrap();
+
+        let out = dir.path().join("out.json");
+        super::run_graph(
+            dir.path(),
+            None,
+            &None,
+            false,
+            false,
+            false,
+            false,
+            Some(&out),
+        );
+
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        let files: Vec<&str> = json["files"]
+            .as_array()
+            .expect("config format=json must produce JSON output")
+            .iter()
+            .map(|f| f["path"].as_str().unwrap())
+            .collect();
+        assert!(files.iter().any(|p| p.ends_with("app.py")));
+        // languages = ["py"] excludes the Rust file when --lang is absent.
+        assert!(!files.iter().any(|p| p.ends_with("main.rs")));
+    }
+
+    /// CLI flags win over config defaults: --format dot and --lang rs
+    /// override config format/languages.
+    #[test]
+    fn cli_flags_beat_config_defaults_in_run_graph() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("app.py"), "import helper\n").unwrap();
+        std::fs::write(dir.path().join("helper.py"), "x = 1\n").unwrap();
+        std::fs::write(dir.path().join("main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(
+            dir.path().join(".kgr.toml"),
+            "languages = [\"py\"]\nformat = \"tree\"\nno_progress = true\n",
+        )
+        .unwrap();
+
+        let out = dir.path().join("out.dot");
+        super::run_graph(
+            dir.path(),
+            Some("dot"),
+            &Some(vec!["rs".to_string()]),
+            false,
+            false,
+            false,
+            false,
+            Some(&out),
+        );
+
+        let content = std::fs::read_to_string(&out).unwrap();
+        assert!(content.contains("digraph"));
+        assert!(content.contains("main.rs"));
+        assert!(!content.contains("app.py"));
+    }
+
+    /// End-to-end through walk -> parse -> extract_calls -> callee_matches:
+    /// a function invoked only as `util::helper()` must not look dead.
+    /// This is exactly the liveness predicate `run_dead` applies.
+    #[test]
+    fn scoped_rust_call_is_visible_to_dead_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(
+            src.join("main.rs"),
+            "mod util;\n\nfn main() {\n    util::helper();\n    tracing::warn!(\"x\");\n}\n",
+        )
+        .unwrap();
+        std::fs::write(src.join("util.rs"), "pub fn helper() {}\n").unwrap();
+
+        let (_root, file_nodes, _cfg) = super::build_file_nodes(dir.path(), &None, true);
+
+        // The definition is found...
+        assert!(file_nodes
+            .iter()
+            .any(|f| f.symbols.iter().any(|s| s.name == "helper")));
+        // ...and the scoped call site keeps it alive.
+        assert!(file_nodes.iter().any(|f| f
+            .calls
+            .iter()
+            .any(|c| callee_matches(&c.callee_raw, "helper"))));
+        // Scoped macros are captured as call refs too.
+        assert!(file_nodes
+            .iter()
+            .any(|f| f.calls.iter().any(|c| c.callee_raw == "tracing::warn")));
     }
 }

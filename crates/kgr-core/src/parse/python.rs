@@ -42,7 +42,13 @@ const PYTHON_SYMBOL_QUERY_SRC: &str = r#"
   (function_definition
     name: (identifier) @fn.name))
 
-;; Class definition
+;; Decorated top-level function: @deco def foo()
+(module
+  (decorated_definition
+    definition: (function_definition
+      name: (identifier) @fn.name)))
+
+;; Class definition (unanchored: also matches inside decorated_definition)
 (class_definition
   name: (identifier) @class.name)
 
@@ -51,6 +57,13 @@ const PYTHON_SYMBOL_QUERY_SRC: &str = r#"
   body: (block
     (function_definition
       name: (identifier) @method.name)))
+
+;; Decorated method inside class body: @deco def m(self)
+(class_definition
+  body: (block
+    (decorated_definition
+      definition: (function_definition
+        name: (identifier) @method.name))))
 "#;
 
 static PYTHON_CALL_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -102,6 +115,10 @@ impl PythonParser {
 impl super::Parser for PythonParser {
     fn lang(&self) -> Lang {
         Lang::Python
+    }
+
+    fn ts_language(&self) -> Option<tree_sitter::Language> {
+        Some(tree_sitter_python::LANGUAGE.into())
     }
 
     fn extract_symbols(&self, source: &[u8], path: &Path) -> Vec<Symbol> {
@@ -278,6 +295,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_errors_flags_malformed_source() {
+        let errors = PythonParser.parse_errors(b"def broken(:", Path::new("broken.py"));
+        assert!(
+            !errors.is_empty(),
+            "expected syntax errors for malformed python source"
+        );
+    }
+
+    #[test]
+    fn parse_errors_clean_on_valid_source() {
+        let errors = PythonParser.parse_errors(b"import os\n", Path::new("ok.py"));
+        assert!(errors.is_empty());
+    }
+
+    #[test]
     fn simple_import() {
         let imports = parse("import os");
         assert_eq!(imports.len(), 1);
@@ -367,6 +399,60 @@ from . import utils
         assert_eq!(methods.len(), 2);
         assert_eq!(methods[0].name, "get");
         assert_eq!(methods[1].name, "put");
+    }
+
+    #[test]
+    fn symbols_finds_decorated_functions() {
+        let syms = symbols(
+            "@property\ndef foo():\n    pass\n\n@functools.lru_cache\ndef bar():\n    pass\n",
+        );
+        let fns: Vec<_> = syms
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Function)
+            .collect();
+        assert_eq!(fns.len(), 2);
+        assert_eq!(fns[0].name, "foo");
+        assert_eq!(fns[1].name, "bar");
+    }
+
+    #[test]
+    fn symbols_finds_decorated_methods() {
+        let syms = symbols(
+            "class Svc:\n    @staticmethod\n    def build():\n        pass\n    @property\n    def name(self):\n        pass\n",
+        );
+        let methods: Vec<_> = syms
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Method)
+            .collect();
+        assert_eq!(methods.len(), 2);
+        assert_eq!(methods[0].name, "build");
+        assert_eq!(methods[1].name, "name");
+        // The decorated method must be a Method, not a top-level Function.
+        assert!(syms.iter().all(|s| s.kind != SymbolKind::Function));
+    }
+
+    #[test]
+    fn symbols_finds_decorated_classes() {
+        let syms = symbols(
+            "@functools.total_ordering\nclass Ordered:\n    @property\n    def key(self):\n        pass\n",
+        );
+        let class = syms.iter().find(|s| s.kind == SymbolKind::Class).unwrap();
+        assert_eq!(class.name, "Ordered");
+        let method = syms.iter().find(|s| s.kind == SymbolKind::Method).unwrap();
+        assert_eq!(method.name, "key");
+    }
+
+    #[test]
+    fn symbols_mixed_decorated_and_plain() {
+        let syms = symbols(
+            "def plain():\n    pass\n\n@app.route('/x')\ndef handler():\n    pass\n\nclass C:\n    def m(self):\n        pass\n",
+        );
+        let names: Vec<(&str, SymbolKind)> =
+            syms.iter().map(|s| (s.name.as_str(), s.kind)).collect();
+        assert!(names.contains(&("plain", SymbolKind::Function)));
+        assert!(names.contains(&("handler", SymbolKind::Function)));
+        assert!(names.contains(&("C", SymbolKind::Class)));
+        assert!(names.contains(&("m", SymbolKind::Method)));
     }
 
     #[test]

@@ -57,7 +57,13 @@ pub fn parse_all(
         .filter_map(|(i, f)| {
             let parser = registry.get(f.lang)?;
             let full_path = root.join(&f.path);
-            let source = std::fs::read(&full_path).ok()?;
+            let source = match std::fs::read(&full_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("skipping unreadable file {}: {}", full_path.display(), e);
+                    return None;
+                }
+            };
             let imports = parser.parse(&source, &f.path);
             let symbols = parser.extract_symbols(&source, &f.path);
             let calls = parser.extract_calls(&source, &f.path);

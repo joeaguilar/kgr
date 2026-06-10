@@ -115,6 +115,10 @@ impl super::Parser for SwiftParser {
         Lang::Swift
     }
 
+    fn ts_language(&self) -> Option<tree_sitter::Language> {
+        Some(tree_sitter_swift::LANGUAGE.into())
+    }
+
     fn extract_symbols(&self, source: &[u8], path: &Path) -> Vec<Symbol> {
         let tree = match self.parse_tree(source, path) {
             Some(t) => t,

@@ -1,12 +1,35 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 use kgr_core::types::{CallRef, Import, Symbol};
 
-const CACHE_VERSION: &str = env!("CARGO_PKG_VERSION");
+const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Cache version tag: package version plus a fingerprint of the running
+/// binary (mtime + size of `current_exe`). Any rebuild of kgr changes the
+/// fingerprint and invalidates all caches, so a cache written by an older
+/// build can never mask changed parser behavior — even when the package
+/// version has not bumped (e.g. a warm `.kgr-cache.json` left in a fixture
+/// directory between dev test runs).
+static CACHE_VERSION: LazyLock<String> = LazyLock::new(|| {
+    let fingerprint = std::env::current_exe()
+        .ok()
+        .and_then(|exe| std::fs::metadata(exe).ok())
+        .map(|meta| {
+            let mtime = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_secs());
+            format!("{mtime}.{}", meta.len())
+        })
+        .unwrap_or_default();
+    format!("{PKG_VERSION}+{fingerprint}")
+});
 
 #[derive(Serialize, Deserialize)]
 struct Entry {
@@ -26,9 +49,19 @@ pub struct CachedParse {
     pub calls: Vec<CallRef>,
 }
 
+/// Returns true when the `KGR_NO_CACHE` environment variable disables the
+/// parse cache (set to any non-empty value other than `0`). With the cache
+/// disabled, `load` always returns an empty cache and `save` never writes —
+/// every run re-parses sources. The test suite sets this so stale warm caches
+/// can never mask a parser regression.
+fn cache_disabled() -> bool {
+    std::env::var_os("KGR_NO_CACHE").is_some_and(|v| !v.is_empty() && v != "0")
+}
+
 /// Persistent per-file parse cache. Keyed on (path_string, mtime_secs, size).
 /// Stored as JSON at `.kgr-cache.json` in the scanned root.
-/// Automatically invalidated when the kgr version changes.
+/// Automatically invalidated when the kgr version or binary build changes.
+/// Disabled entirely when `KGR_NO_CACHE` is set (see [`cache_disabled`]).
 #[derive(Serialize, Deserialize, Default)]
 pub struct ParseCache {
     version: String,
@@ -38,20 +71,33 @@ pub struct ParseCache {
 }
 
 impl ParseCache {
-    /// Load cache from disk. Returns an empty cache on any error or version mismatch.
+    /// An empty cache tagged with the current version + build fingerprint.
+    fn fresh() -> Self {
+        Self {
+            version: CACHE_VERSION.clone(),
+            entries: HashMap::new(),
+        }
+    }
+
+    /// Load cache from disk. Returns an empty cache on any error, on
+    /// version/build mismatch, or when `KGR_NO_CACHE` disables caching.
     pub fn load(path: &Path) -> Self {
+        if cache_disabled() {
+            return Self::fresh();
+        }
         std::fs::read(path)
             .ok()
             .and_then(|b| serde_json::from_slice::<ParseCache>(&b).ok())
-            .filter(|c| c.version == CACHE_VERSION)
-            .unwrap_or_else(|| Self {
-                version: CACHE_VERSION.to_owned(),
-                entries: HashMap::new(),
-            })
+            .filter(|c| c.version == *CACHE_VERSION)
+            .unwrap_or_else(Self::fresh)
     }
 
-    /// Persist cache to disk. Silently ignores write errors (cache is best-effort).
+    /// Persist cache to disk. Silently ignores write errors (cache is
+    /// best-effort). No-ops when `KGR_NO_CACHE` disables caching.
     pub fn save(&self, path: &Path) {
+        if cache_disabled() {
+            return;
+        }
         if let Ok(bytes) = serde_json::to_vec(self) {
             let _ = std::fs::write(path, bytes);
         }
@@ -95,5 +141,161 @@ impl ParseCache {
                 calls,
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use kgr_core::types::ImportKind;
+
+    use super::*;
+
+    fn mtime(secs: u64) -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    fn sample_import() -> Import {
+        Import {
+            raw: "helper".to_owned(),
+            kind: ImportKind::Local,
+            resolved: Some(PathBuf::from("helper.py")),
+            span: None,
+        }
+    }
+
+    fn warm_cache(path: &Path) -> ParseCache {
+        let mut cache = ParseCache::fresh();
+        cache.insert(
+            path.to_path_buf(),
+            Some(mtime(100)),
+            42,
+            vec![sample_import()],
+            Vec::new(),
+            Vec::new(),
+        );
+        cache
+    }
+
+    #[test]
+    fn get_hits_on_matching_path_mtime_and_size() {
+        let path = PathBuf::from("src/main.py");
+        let cache = warm_cache(&path);
+
+        let hit = cache
+            .get(&path, Some(mtime(100)), 42)
+            .expect("expected cache hit");
+        assert_eq!(hit.imports.len(), 1);
+        assert_eq!(hit.imports[0].raw, "helper");
+        assert!(hit.symbols.is_empty());
+        assert!(hit.calls.is_empty());
+    }
+
+    #[test]
+    fn get_misses_when_mtime_changes() {
+        let path = PathBuf::from("src/main.py");
+        let cache = warm_cache(&path);
+
+        assert!(
+            cache.get(&path, Some(mtime(101)), 42).is_none(),
+            "an mtime change must invalidate the entry"
+        );
+    }
+
+    #[test]
+    fn get_misses_when_size_changes() {
+        let path = PathBuf::from("src/main.py");
+        let cache = warm_cache(&path);
+
+        assert!(
+            cache.get(&path, Some(mtime(100)), 43).is_none(),
+            "a size change must invalidate the entry"
+        );
+    }
+
+    #[test]
+    fn get_misses_when_mtime_unavailable() {
+        let path = PathBuf::from("src/main.py");
+        let cache = warm_cache(&path);
+
+        assert!(
+            cache.get(&path, None, 42).is_none(),
+            "an unavailable mtime must never produce a hit"
+        );
+    }
+
+    #[test]
+    fn save_then_load_preserves_entries_for_current_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join(".kgr-cache.json");
+        let path = PathBuf::from("src/main.py");
+        warm_cache(&path).save(&cache_path);
+
+        let loaded = ParseCache::load(&cache_path);
+        let hit = loaded
+            .get(&path, Some(mtime(100)), 42)
+            .expect("round-tripped entry should hit");
+        assert_eq!(hit.imports[0].raw, "helper");
+    }
+
+    #[test]
+    fn load_discards_cache_written_by_a_different_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join(".kgr-cache.json");
+        let path = PathBuf::from("src/main.py");
+        let mut stale = warm_cache(&path);
+        stale.version = "0.0.0-stale".to_owned();
+        stale.save(&cache_path);
+
+        let loaded = ParseCache::load(&cache_path);
+        assert!(
+            loaded.get(&path, Some(mtime(100)), 42).is_none(),
+            "entries from a different kgr version must be discarded"
+        );
+        assert_eq!(loaded.version, *CACHE_VERSION);
+    }
+
+    #[test]
+    fn load_discards_cache_written_by_a_different_build_of_same_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join(".kgr-cache.json");
+        let path = PathBuf::from("src/main.py");
+        let mut stale = warm_cache(&path);
+        // Same package version, different (older) build fingerprint — the
+        // exact shape of a cache left behind by a pre-regression dev build.
+        stale.version = format!("{PKG_VERSION}+stale-build");
+        stale.save(&cache_path);
+
+        let loaded = ParseCache::load(&cache_path);
+        assert!(
+            loaded.get(&path, Some(mtime(100)), 42).is_none(),
+            "entries from a different build of the same version must be discarded"
+        );
+    }
+
+    #[test]
+    fn cache_version_includes_a_build_fingerprint() {
+        let fingerprint = CACHE_VERSION
+            .split_once('+')
+            .map(|(_, fp)| fp)
+            .unwrap_or_default();
+        assert!(
+            !fingerprint.is_empty(),
+            "CACHE_VERSION should carry a build fingerprint, got {:?}",
+            *CACHE_VERSION
+        );
+        assert!(CACHE_VERSION.starts_with(PKG_VERSION));
+    }
+
+    #[test]
+    fn load_returns_empty_cache_on_corrupt_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join(".kgr-cache.json");
+        std::fs::write(&cache_path, b"{ not json").unwrap();
+
+        let loaded = ParseCache::load(&cache_path);
+        assert!(loaded.entries.is_empty());
+        assert_eq!(loaded.version, *CACHE_VERSION);
     }
 }

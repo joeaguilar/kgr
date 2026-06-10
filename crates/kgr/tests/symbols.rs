@@ -35,6 +35,7 @@ fn fixtures_dir() -> PathBuf {
 fn symbols_python_json_returns_all_definitions() {
     let fixture = fixtures_dir().join("python/calls");
     let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["symbols", "--format", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -82,6 +83,7 @@ fn symbols_python_json_returns_all_definitions() {
 fn symbols_python_json_includes_classes() {
     let fixture = fixtures_dir().join("python/calls");
     let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["symbols", "--format", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -107,6 +109,7 @@ fn symbols_python_json_includes_classes() {
 fn symbols_python_json_has_correct_shape() {
     let fixture = fixtures_dir().join("python/calls");
     let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["symbols", "--format", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -117,6 +120,10 @@ fn symbols_python_json_has_correct_shape() {
 
     let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
     let entries = json.as_array().unwrap();
+    assert!(
+        !entries.is_empty(),
+        "symbols json should have at least one file entry"
+    );
 
     // Each entry should have file + symbols
     for entry in entries {
@@ -124,6 +131,11 @@ fn symbols_python_json_has_correct_shape() {
         let symbols = entry["symbols"]
             .as_array()
             .expect("entry missing 'symbols' array");
+        assert!(
+            !symbols.is_empty(),
+            "entry {} should have at least one symbol",
+            entry["file"]
+        );
         for sym in symbols {
             assert!(sym["name"].is_string(), "symbol missing 'name'");
             assert!(sym["kind"].is_string(), "symbol missing 'kind'");
@@ -142,6 +154,7 @@ fn symbols_python_json_has_correct_shape() {
 fn symbols_typescript_json_marks_exported() {
     let fixture = fixtures_dir().join("typescript/calls");
     let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["symbols", "--format", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -189,6 +202,7 @@ fn symbols_typescript_json_marks_exported() {
 fn symbols_table_output() {
     let fixture = fixtures_dir().join("python/calls");
     assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["symbols", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -206,6 +220,7 @@ fn symbols_table_output() {
 fn refs_finds_function_definition_and_calls() {
     let fixture = fixtures_dir().join("python/calls");
     let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["refs", "normalize", "--format", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -238,6 +253,7 @@ fn refs_finds_function_definition_and_calls() {
 fn refs_finds_class_references() {
     let fixture = fixtures_dir().join("python/calls");
     let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["refs", "UserService", "--format", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -267,6 +283,7 @@ fn refs_finds_class_references() {
 fn refs_includes_context_line() {
     let fixture = fixtures_dir().join("python/calls");
     let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["refs", "query", "--format", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -277,6 +294,10 @@ fn refs_includes_context_line() {
 
     let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
     let refs = json["references"].as_array().unwrap();
+    assert!(
+        !refs.is_empty(),
+        "query is called in service.py — references must not be empty"
+    );
 
     // Every reference should include a context snippet
     for r in refs {
@@ -295,6 +316,7 @@ fn refs_no_results_exits_cleanly() {
 
     // Should succeed but with empty results (not crash)
     let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args([
             "refs",
             "nonexistent_symbol",
@@ -317,6 +339,7 @@ fn refs_no_results_exits_cleanly() {
 fn refs_typescript_exported_function() {
     let fixture = fixtures_dir().join("typescript/calls");
     let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["refs", "fetchUsers", "--format", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -345,6 +368,7 @@ fn refs_typescript_exported_function() {
 fn refs_table_output() {
     let fixture = fixtures_dir().join("python/calls");
     assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["refs", "normalize", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -363,6 +387,7 @@ fn dead_reports_unused_function() {
     let fixture = fixtures_dir().join("python/calls");
     // deprecated_helper is defined in utils.py but never called
     assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["dead", "deprecated_helper", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -376,6 +401,7 @@ fn dead_confirms_used_function_is_alive() {
     let fixture = fixtures_dir().join("python/calls");
     // normalize is called in app.py — not dead
     assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["dead", "normalize", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -387,6 +413,7 @@ fn dead_confirms_used_function_is_alive() {
 fn dead_json_shape() {
     let fixture = fixtures_dir().join("python/calls");
     let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args([
             "dead",
             "deprecated_helper",
@@ -404,13 +431,12 @@ fn dead_json_shape() {
     let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
 
     assert_eq!(json["symbol"], "deprecated_helper");
+    assert_eq!(json["found"], true);
     assert_eq!(json["dead"], true);
+    let definitions = json["definitions"].as_array().unwrap();
+    assert_eq!(definitions.len(), 1, "should include where it's defined");
     assert!(
-        json["definition"].is_object(),
-        "should include where it's defined"
-    );
-    assert!(
-        json["definition"]["file"]
+        definitions[0]["file"]
             .as_str()
             .unwrap()
             .contains("utils.py"),
@@ -423,6 +449,7 @@ fn dead_json_shape() {
 fn dead_json_alive_includes_references() {
     let fixture = fixtures_dir().join("python/calls");
     let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["dead", "query", "--format", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -434,6 +461,7 @@ fn dead_json_alive_includes_references() {
     let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
 
     assert_eq!(json["symbol"], "query");
+    assert_eq!(json["found"], true);
     assert_eq!(json["dead"], false);
     assert!(
         !json["references"].as_array().unwrap().is_empty(),
@@ -446,6 +474,7 @@ fn dead_private_python_function() {
     let fixture = fixtures_dir().join("python/calls");
     // _internal_reset is private (leading _) and never called
     assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["dead", "_internal_reset", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -458,6 +487,7 @@ fn dead_typescript_unexported_function() {
     let fixture = fixtures_dir().join("typescript/calls");
     // internalReset is not exported and never called
     assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["dead", "internalReset", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -470,6 +500,7 @@ fn dead_typescript_exported_unused() {
     let fixture = fixtures_dir().join("typescript/calls");
     // deprecatedHelper is exported but never called anywhere
     assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["dead", "deprecatedHelper", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -482,6 +513,7 @@ fn dead_nonexistent_symbol() {
     let fixture = fixtures_dir().join("python/calls");
     // Symbol that doesn't exist at all — should report not found, not crash
     assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["dead", "no_such_thing", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -497,6 +529,7 @@ fn dead_nonexistent_symbol() {
 fn graph_json_with_symbols_flag_enriches_file_nodes() {
     let fixture = fixtures_dir().join("python/calls");
     let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["graph", "--format", "json", "--symbols", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -507,6 +540,7 @@ fn graph_json_with_symbols_flag_enriches_file_nodes() {
 
     let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
     let files = json["files"].as_array().unwrap();
+    assert!(!files.is_empty(), "graph should have file nodes");
 
     // With --symbols, each file node should have a symbols array
     for file in files {
@@ -537,6 +571,7 @@ fn graph_json_with_symbols_flag_enriches_file_nodes() {
 fn skeleton_text_output() {
     let fixture = fixtures_dir().join("python/calls");
     assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["skeleton", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -549,6 +584,7 @@ fn skeleton_text_output() {
 fn skeleton_json_output() {
     let fixture = fixtures_dir().join("python/calls");
     let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["skeleton", "--format", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -559,6 +595,10 @@ fn skeleton_json_output() {
 
     let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
     let entries = json.as_array().expect("top-level should be array");
+    assert!(
+        !entries.is_empty(),
+        "skeleton json should have at least one file entry"
+    );
 
     // Every entry should have file + skeleton
     for entry in entries {
@@ -566,6 +606,11 @@ fn skeleton_json_output() {
         let skeleton = entry["skeleton"]
             .as_array()
             .expect("entry missing 'skeleton' array");
+        assert!(
+            !skeleton.is_empty(),
+            "entry {} should have at least one skeleton item",
+            entry["file"]
+        );
         for item in skeleton {
             assert!(item["name"].is_string(), "skeleton item missing 'name'");
             assert!(item["kind"].is_string(), "skeleton item missing 'kind'");
@@ -582,6 +627,7 @@ fn skeleton_json_output() {
 fn skeleton_table_output() {
     let fixture = fixtures_dir().join("python/calls");
     assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["skeleton", "--format", "table", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -599,6 +645,7 @@ fn skeleton_table_output() {
 fn orient_text_output() {
     let fixture = fixtures_dir().join("python/simple");
     assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["orient", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -610,6 +657,7 @@ fn orient_text_output() {
 fn orient_json_output() {
     let fixture = fixtures_dir().join("python/simple");
     assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["orient", "--format", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -625,6 +673,7 @@ fn orient_json_output() {
 fn impact_text_output() {
     let fixture = fixtures_dir().join("typescript/calls");
     assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["impact", "query", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -638,6 +687,7 @@ fn impact_text_output() {
 fn impact_json_output() {
     let fixture = fixtures_dir().join("typescript/calls");
     let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["impact", "query", "-f", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -648,15 +698,14 @@ fn impact_json_output() {
 
     let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(json["symbol"], "query");
-    assert!(json["defined_in"].is_object(), "should have defined_in");
+    assert_eq!(json["found"], true);
+    let definitions = json["definitions"].as_array().unwrap();
+    assert_eq!(definitions.len(), 1, "should have one definition");
     assert!(
-        json["defined_in"]["file"]
-            .as_str()
-            .unwrap()
-            .contains("db.ts"),
+        definitions[0]["file"].as_str().unwrap().contains("db.ts"),
         "should be defined in db.ts"
     );
-    assert_eq!(json["defined_in"]["kind"], "function");
+    assert_eq!(definitions[0]["kind"], "function");
     assert!(json["impact"].is_array(), "should have impact array");
 
     // db.ts -> service.ts -> app.ts, so impact should have 2 entries
@@ -668,6 +717,7 @@ fn impact_json_output() {
 fn impact_json_shows_calls_symbol() {
     let fixture = fixtures_dir().join("typescript/calls");
     let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["impact", "query", "-f", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -719,16 +769,21 @@ fn impact_json_shows_calls_symbol() {
 fn impact_not_found_text() {
     let fixture = fixtures_dir().join("python/calls");
     assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["impact", "nonexistent_symbol", "--no-progress"])
         .arg(&fixture)
         .assert()
-        .success();
+        .success()
+        .stderr(predicate::str::contains(
+            "Symbol 'nonexistent_symbol' not found",
+        ));
 }
 
 #[test]
 fn impact_not_found_json() {
     let fixture = fixtures_dir().join("python/calls");
     let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args([
             "impact",
             "nonexistent_symbol",
@@ -745,7 +800,10 @@ fn impact_not_found_json() {
 
     let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(json["symbol"], "nonexistent_symbol");
+    assert_eq!(json["found"], false);
     assert!(json["error"].is_string(), "should have error field");
+    assert!(json["definitions"].as_array().unwrap().is_empty());
+    assert!(json["impact"].as_array().unwrap().is_empty());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -756,6 +814,7 @@ fn impact_not_found_json() {
 fn hotspots_table_output() {
     let fixture = fixtures_dir().join("python/simple");
     assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["hotspots", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -767,6 +826,7 @@ fn hotspots_table_output() {
 fn hotspots_json_output() {
     let fixture = fixtures_dir().join("python/simple");
     assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["hotspots", "-f", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -778,6 +838,7 @@ fn hotspots_json_output() {
 fn hotspots_text_output() {
     let fixture = fixtures_dir().join("python/calls");
     assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["hotspots", "-f", "text", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -790,6 +851,7 @@ fn hotspots_text_output() {
 fn hotspots_json_shape() {
     let fixture = fixtures_dir().join("python/calls");
     let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["hotspots", "-f", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -800,6 +862,10 @@ fn hotspots_json_shape() {
 
     let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
     let entries = json.as_array().expect("top-level should be an array");
+    assert!(
+        !entries.is_empty(),
+        "hotspots json should have at least one entry"
+    );
 
     for entry in entries {
         assert!(entry["file"].is_string(), "entry missing 'file'");
@@ -820,6 +886,7 @@ fn hotspots_json_shape() {
 fn hotspots_sorted_descending() {
     let fixture = fixtures_dir().join("python/calls");
     let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["hotspots", "-f", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -835,6 +902,10 @@ fn hotspots_sorted_descending() {
         .iter()
         .map(|e| e["score"].as_u64().unwrap())
         .collect();
+    assert!(
+        scores.len() >= 2,
+        "fixture has multiple files with functions — need at least 2 entries to check ordering"
+    );
 
     for w in scores.windows(2) {
         assert!(w[0] >= w[1], "scores should be in descending order");

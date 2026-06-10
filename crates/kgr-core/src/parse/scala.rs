@@ -84,6 +84,10 @@ impl super::Parser for ScalaParser {
         Lang::Scala
     }
 
+    fn ts_language(&self) -> Option<tree_sitter::Language> {
+        Some(tree_sitter_scala::LANGUAGE.into())
+    }
+
     fn extract_symbols(&self, source: &[u8], path: &Path) -> Vec<Symbol> {
         let tree = match self.parse_tree(source, path) {
             Some(t) => t,
@@ -206,35 +210,137 @@ impl super::Parser for ScalaParser {
         while let Some(m) = matches.next() {
             for capture in m.captures {
                 let node = capture.node;
-                // Extract path by stripping "import " prefix from declaration text
+                // Extract path by stripping the "import" prefix from declaration text
                 let raw = match node.utf8_text(source) {
-                    Ok(s) => s.strip_prefix("import ").unwrap_or(s).trim().to_string(),
+                    Ok(s) => s.strip_prefix("import").unwrap_or(s).trim().to_string(),
                     Err(_) => continue,
                 };
 
-                if raw.is_empty() || !seen.insert(raw.clone()) {
-                    continue;
-                }
-
                 let start = node.start_position();
                 let end = node.end_position();
+                let span = Span {
+                    start_line: start.row + 1,
+                    start_col: start.column,
+                    end_line: end.row + 1,
+                    end_col: end.column,
+                };
 
-                imports.push(Import {
-                    raw,
-                    kind: ImportKind::External,
-                    resolved: None,
-                    span: Some(Span {
-                        start_line: start.row + 1,
-                        start_col: start.column,
-                        end_line: end.row + 1,
-                        end_col: end.column,
-                    }),
-                });
+                // A single declaration may pull in several paths via comma
+                // clauses and brace groups: `import a.b.{C, D}, m.n` ->
+                // a.b.C, a.b.D, m.n. Expand so each path stands alone and
+                // external_deps lists clean, brace-free names.
+                for path in expand_import_clauses(&raw) {
+                    if path.is_empty() || !seen.insert(path.clone()) {
+                        continue;
+                    }
+                    imports.push(Import {
+                        raw: path,
+                        kind: ImportKind::External,
+                        resolved: None,
+                        span: Some(span),
+                    });
+                }
             }
         }
 
         imports
     }
+}
+
+/// Expand a Scala import argument (the declaration minus the `import` keyword)
+/// into individual import paths. Comma-separated clauses split first
+/// (`m.n, o.pp` -> `["m.n", "o.pp"]`), then each clause's brace group expands
+/// against its prefix (`a.b.{C, D}` -> `["a.b.C", "a.b.D"]`). Renames
+/// (`R => Renamed`, `R as Renamed`) strip to the original name; wildcards
+/// (`_`, `*`, `given`) are kept as a trailing segment.
+fn expand_import_clauses(arg: &str) -> Vec<String> {
+    split_top_level(arg)
+        .into_iter()
+        .flat_map(|clause| expand_clause(clause.trim()))
+        .collect()
+}
+
+fn expand_clause(clause: &str) -> Vec<String> {
+    let Some(open) = clause.find('{') else {
+        return vec![strip_rename(clause)];
+    };
+    let prefix = clause[..open].trim();
+    let Some(close) = matching_brace(&clause[open..]) else {
+        return vec![strip_rename(clause)];
+    };
+    let inner = &clause[open + 1..open + close];
+
+    let mut out = Vec::new();
+    for member in split_top_level(inner) {
+        let member = strip_rename(member);
+        if member.is_empty() {
+            continue;
+        }
+        out.push(format!("{prefix}{member}"));
+    }
+    if out.is_empty() {
+        out.push(prefix.trim_end_matches('.').to_string());
+    }
+    out
+}
+
+/// Strip a rename target, keeping the ORIGINAL name: `R => Renamed` and
+/// `R as Renamed` both yield `R`. A given-by-type selector (`given TC`)
+/// collapses to the bare `given` wildcard segment.
+fn strip_rename(member: &str) -> String {
+    let member = member.trim();
+    let original = if let Some((head, _)) = member.split_once("=>") {
+        head.trim()
+    } else if let Some((head, _)) = member.split_once(" as ") {
+        head.trim()
+    } else {
+        member
+    };
+    // `given Ordering[Int]` imports givens by type; keep just `given`.
+    if let Some(pos) = original.find("given ") {
+        if pos == 0 || original.as_bytes()[pos - 1] == b'.' {
+            return original[..pos + "given".len()].to_string();
+        }
+    }
+    original.to_string()
+}
+
+/// Byte index (relative to the leading `{`) of its matching `}`.
+fn matching_brace(s: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    for (i, c) in s.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Split on top-level commas, ignoring commas nested inside brace groups.
+fn split_top_level(s: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for (i, c) in s.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&s[start..]);
+    parts
 }
 
 #[cfg(test)]
@@ -264,6 +370,115 @@ import com.example.MyClass
 "#,
         );
         assert_eq!(imports.len(), 3);
+    }
+
+    fn raws(src: &str) -> Vec<String> {
+        parse(src).into_iter().map(|i| i.raw).collect()
+    }
+
+    #[test]
+    fn brace_group_expands_to_individual_paths() {
+        assert_eq!(raws("import a.b.{C, D}"), vec!["a.b.C", "a.b.D"]);
+    }
+
+    #[test]
+    fn comma_clauses_split_into_separate_imports() {
+        assert_eq!(raws("import m.n, o.pp"), vec!["m.n", "o.pp"]);
+    }
+
+    #[test]
+    fn scala2_rename_strips_to_original_name() {
+        assert_eq!(raws("import p.q.{R => Renamed}"), vec!["p.q.R"]);
+    }
+
+    #[test]
+    fn scala3_rename_strips_to_original_name() {
+        assert_eq!(raws("import p.q.{R as Renamed}"), vec!["p.q.R"]);
+    }
+
+    #[test]
+    fn scala3_top_level_rename_strips_to_original_name() {
+        assert_eq!(
+            raws("import java.util.List as JList"),
+            vec!["java.util.List"]
+        );
+    }
+
+    #[test]
+    fn wildcard_underscore_retained_as_trailing_segment() {
+        assert_eq!(raws("import a.b._"), vec!["a.b._"]);
+    }
+
+    #[test]
+    fn wildcard_star_retained_as_trailing_segment() {
+        assert_eq!(raws("import a.b.*"), vec!["a.b.*"]);
+    }
+
+    #[test]
+    fn given_retained_as_trailing_segment() {
+        assert_eq!(raws("import a.b.given"), vec!["a.b.given"]);
+    }
+
+    #[test]
+    fn group_with_wildcard_member() {
+        assert_eq!(raws("import a.b.{C, _}"), vec!["a.b.C", "a.b._"]);
+    }
+
+    #[test]
+    fn hide_clause_keeps_wildcard() {
+        // `C => _` hides C; the wildcard still imports the rest.
+        let r = raws("import a.b.{C => _, _}");
+        assert!(r.contains(&"a.b._".to_string()));
+        for raw in &r {
+            assert!(!raw.contains("=>"), "rename arrow leaked: {raw}");
+        }
+    }
+
+    #[test]
+    fn comma_clause_with_brace_group_expands_both() {
+        assert_eq!(
+            raws("import a.b.{C, D}, m.n"),
+            vec!["a.b.C", "a.b.D", "m.n"]
+        );
+    }
+
+    #[test]
+    fn duplicate_expansions_do_not_double_emit() {
+        let r = raws("import a.b.{C, D}\nimport a.b.C");
+        assert_eq!(r, vec!["a.b.C", "a.b.D"]);
+    }
+
+    #[test]
+    fn no_raw_contains_grouping_or_rename_syntax() {
+        let r = raws(
+            r#"
+import a.b.{C, D}
+import p.q.{R => Renamed}
+import s.t.{U as Aliased}
+import m.n, o.pp
+import w.x._
+import y.z.*
+"#,
+        );
+        assert!(!r.is_empty());
+        for raw in &r {
+            assert!(!raw.contains('{'), "brace leaked: {raw}");
+            assert!(!raw.contains('}'), "brace leaked: {raw}");
+            assert!(!raw.contains(','), "comma leaked: {raw}");
+            assert!(!raw.contains("=>"), "arrow leaked: {raw}");
+            assert!(!raw.contains(" as "), "rename leaked: {raw}");
+        }
+    }
+
+    #[test]
+    fn expanded_imports_share_declaration_span() {
+        let imports = parse("import a.b.{C, D}");
+        assert_eq!(imports.len(), 2);
+        let lines: Vec<_> = imports
+            .iter()
+            .map(|i| i.span.as_ref().unwrap().start_line)
+            .collect();
+        assert_eq!(lines, vec![1, 1]);
     }
 
     // ── Symbol extraction tests ──────────────────────────────────────────

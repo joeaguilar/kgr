@@ -23,8 +23,11 @@ pub struct Rule {
     pub severity: Severity,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
+    /// Default `--lang` filter applied when the CLI flag is absent.
+    /// The CLI flag always wins when given.
+    /// Example: `languages = ["rs", "py"]`
     #[serde(default)]
     pub languages: Option<Vec<String>>,
     /// Glob patterns (relative to root) to exclude from scanning.
@@ -37,18 +40,19 @@ pub struct Config {
     /// Example: `max_file_size_kb = 500`
     #[serde(default)]
     pub max_file_size_kb: Option<u64>,
-    #[serde(default = "default_format")]
-    pub format: String,
+    /// Default `--format` applied when the CLI flag is absent.
+    /// Precedence: CLI flag > this setting > each subcommand's built-in
+    /// default (graph: tree, check: text, query: table, ...).
+    #[serde(default)]
+    pub format: Option<String>,
+    /// Reserved: paired with the `--no-external` flag (currently a render
+    /// no-op, tracked separately). Kept for config-file compatibility.
     #[serde(default)]
     pub no_external: bool,
-    #[serde(default)]
-    pub no_color: bool,
+    /// Suppress the progress bar by default (same as `--no-progress`).
+    /// OR-semantics: either the CLI flag or this setting suppresses it.
     #[serde(default)]
     pub no_progress: bool,
-    #[serde(default)]
-    pub depth: Option<usize>,
-    #[serde(default)]
-    pub entry: Option<PathBuf>,
     #[serde(default)]
     pub rules: Vec<Rule>,
 }
@@ -60,25 +64,29 @@ impl Config {
     }
 }
 
-fn default_format() -> String {
-    "tree".to_string()
+/// Resolve the effective output format: CLI flag > config `format` >
+/// the subcommand's built-in default.
+pub fn resolve_format<'a>(
+    cli: Option<&'a str>,
+    config: Option<&'a str>,
+    built_in: &'a str,
+) -> &'a str {
+    cli.or(config).unwrap_or(built_in)
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            languages: None,
-            exclude: Vec::new(),
-            max_file_size_kb: None,
-            format: default_format(),
-            no_external: false,
-            no_color: false,
-            no_progress: false,
-            depth: None,
-            entry: None,
-            rules: Vec::new(),
-        }
-    }
+/// Resolve the effective language filter: the CLI `--lang` flag wins when
+/// given; otherwise config `languages` applies; otherwise no filter.
+pub fn resolve_langs(
+    cli: &Option<Vec<String>>,
+    config: &Option<Vec<String>>,
+) -> Option<Vec<String>> {
+    cli.clone().or_else(|| config.clone())
+}
+
+/// Resolve progress-bar suppression with OR-semantics: either the CLI
+/// `--no-progress` flag or config `no_progress = true` suppresses it.
+pub fn resolve_no_progress(cli: bool, config: bool) -> bool {
+    cli || config
 }
 
 pub fn load_config(root: &Path) -> Result<Config, Box<figment::Error>> {
@@ -98,8 +106,18 @@ pub fn load_config(root: &Path) -> Result<Config, Box<figment::Error>> {
         .map_err(Box::new)
 }
 
-pub fn init_config(root: &Path) -> std::io::Result<PathBuf> {
+pub fn init_config(root: &Path, force: bool) -> std::io::Result<PathBuf> {
     let config_path = root.join(".kgr.toml");
+
+    if config_path.exists() && !force {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!(
+                "{} already exists; refusing to overwrite (use --force to replace it)",
+                config_path.display()
+            ),
+        ));
+    }
 
     let mut detected = std::collections::HashSet::new();
 
@@ -151,8 +169,17 @@ exclude = []
 # of projects with large vendored or generated files).
 # max_file_size_kb = 500
 
-# Detected languages (used by kgr graph/check/query as the default --lang filter).
+# Detected languages — the default --lang filter when the CLI flag is
+# absent (the CLI flag always wins).
 # languages = [{}]
+
+# Default output format when --format is not given on the command line.
+# Precedence: CLI flag > this setting > each subcommand's built-in default
+# (graph: tree, check: text, query: table, ...).
+# format = "json"
+
+# Suppress the progress bar by default (same as always passing --no-progress).
+# no_progress = true
 
 # Enforce architectural boundaries. Each rule checks that no import
 # edge runs from a 'from' file to a 'to' file matching the globs.
@@ -169,4 +196,136 @@ exclude = []
 
     std::fs::write(&config_path, content)?;
     Ok(config_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_format_cli_beats_config_and_built_in() {
+        assert_eq!(resolve_format(Some("dot"), Some("json"), "tree"), "dot");
+    }
+
+    #[test]
+    fn resolve_format_config_beats_built_in() {
+        assert_eq!(resolve_format(None, Some("json"), "tree"), "json");
+    }
+
+    #[test]
+    fn resolve_format_falls_back_to_built_in() {
+        assert_eq!(resolve_format(None, None, "tree"), "tree");
+    }
+
+    #[test]
+    fn resolve_langs_cli_beats_config() {
+        let cli = Some(vec!["py".to_string()]);
+        let config = Some(vec!["rs".to_string()]);
+        assert_eq!(resolve_langs(&cli, &config), Some(vec!["py".to_string()]));
+    }
+
+    #[test]
+    fn resolve_langs_config_applies_when_cli_absent() {
+        let config = Some(vec!["rs".to_string()]);
+        assert_eq!(resolve_langs(&None, &config), Some(vec!["rs".to_string()]));
+    }
+
+    #[test]
+    fn resolve_langs_none_when_neither_set() {
+        assert_eq!(resolve_langs(&None, &None), None);
+    }
+
+    #[test]
+    fn resolve_no_progress_or_semantics() {
+        assert!(!resolve_no_progress(false, false));
+        assert!(resolve_no_progress(true, false));
+        assert!(resolve_no_progress(false, true));
+        assert!(resolve_no_progress(true, true));
+    }
+
+    /// All load_config assertions that touch KGR_FORMAT live in this single
+    /// test so the env-var manipulation cannot race a parallel test reading
+    /// the same key. (Other tests in this process call `load_config` but
+    /// never consume `format`.)
+    #[test]
+    fn load_config_layers_defaults_toml_and_env() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::remove_var("KGR_FORMAT");
+
+        // Built-in defaults: optional fields stay unset.
+        let cfg = load_config(dir.path()).unwrap();
+        assert_eq!(cfg.format, None);
+        assert_eq!(cfg.languages, None);
+        assert!(!cfg.no_progress);
+
+        // Toml layer fills in the wired fields.
+        std::fs::write(
+            dir.path().join(".kgr.toml"),
+            "languages = [\"rs\"]\nformat = \"table\"\nno_progress = true\n",
+        )
+        .unwrap();
+        let cfg = load_config(dir.path()).unwrap();
+        assert_eq!(cfg.languages, Some(vec!["rs".to_string()]));
+        assert_eq!(cfg.format.as_deref(), Some("table"));
+        assert!(cfg.no_progress);
+
+        // Env layer (KGR_FORMAT) wins over the toml value.
+        std::env::set_var("KGR_FORMAT", "json");
+        let cfg = load_config(dir.path());
+        std::env::remove_var("KGR_FORMAT");
+        assert_eq!(cfg.unwrap().format.as_deref(), Some("json"));
+    }
+
+    /// `depth`, `entry`, and `no_color` were removed from Config (never
+    /// consumed); old config files that still set them must load fine.
+    #[test]
+    fn load_config_ignores_removed_legacy_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".kgr.toml"),
+            "depth = 3\nentry = \"src/main.py\"\nno_color = true\n",
+        )
+        .unwrap();
+        let cfg = load_config(dir.path()).unwrap();
+        assert_eq!(cfg.languages, None);
+        assert!(cfg.exclude.is_empty());
+    }
+
+    #[test]
+    fn init_config_creates_file_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = init_config(dir.path(), false).unwrap();
+        assert_eq!(path, dir.path().join(".kgr.toml"));
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("# .kgr.toml"));
+    }
+
+    #[test]
+    fn init_config_refuses_to_overwrite_existing_without_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join(".kgr.toml");
+        let existing = "[[rules]]\nname = \"keep-me\"\nfrom = \"a/**\"\nto = \"b/**\"\n";
+        std::fs::write(&config_path, existing).unwrap();
+
+        let err = init_config(dir.path(), false).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(err.to_string().contains(".kgr.toml"));
+
+        // The existing file must be preserved byte-for-byte.
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        assert_eq!(content, existing);
+    }
+
+    #[test]
+    fn init_config_overwrites_existing_with_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join(".kgr.toml");
+        std::fs::write(&config_path, "[[rules]]\nname = \"old\"\n").unwrap();
+
+        let path = init_config(dir.path(), true).unwrap();
+        assert_eq!(path, config_path);
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        assert!(content.contains("# .kgr.toml"));
+        assert!(!content.contains("\"old\""));
+    }
 }

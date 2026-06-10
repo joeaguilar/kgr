@@ -63,12 +63,45 @@ const RUST_SYMBOL_QUERY_SRC: &str = r#"
   body: (declaration_list
     (function_item
       name: (identifier) @method.name)))
+
+;; Required trait method (signature only): trait T { fn required(&self); }
+(trait_item
+  body: (declaration_list
+    (function_signature_item
+      name: (identifier) @method.name)))
+
+;; Pub type alias: pub type Alias = u32;
+(type_item
+  (visibility_modifier)
+  name: (type_identifier) @class.exported)
+
+;; Type alias (non-pub)
+(type_item
+  name: (type_identifier) @class.name)
+
+;; Pub union
+(union_item
+  (visibility_modifier)
+  name: (type_identifier) @class.exported)
+
+;; Union (non-pub)
+(union_item
+  name: (type_identifier) @class.name)
+
+;; Macro definition: macro_rules! mymac { ... }
+;; Exported-ness (#[macro_export]) is decided Rust-side from sibling attributes.
+(macro_definition
+  name: (identifier) @macro.name)
 "#;
 
 const RUST_CALL_QUERY_SRC: &str = r#"
 ;; Regular call: foo()
 (call_expression
   function: (identifier) @call.name)
+
+;; Scoped call: Foo::bar(), util::helper(), String::from()
+(call_expression
+  function: (scoped_identifier) @call.name)
 
 ;; Method call: obj.method()
 (call_expression
@@ -78,6 +111,10 @@ const RUST_CALL_QUERY_SRC: &str = r#"
 ;; Macro invocation: println!()
 (macro_invocation
   macro: (identifier) @call.macro)
+
+;; Scoped macro invocation: tracing::warn!()
+(macro_invocation
+  macro: (scoped_identifier) @call.macro)
 
 ;; Type identifier in any position (annotations, fields, etc.)
 (type_identifier) @type.ref
@@ -127,6 +164,10 @@ impl super::Parser for RustParser {
         Lang::Rust
     }
 
+    fn ts_language(&self) -> Option<tree_sitter::Language> {
+        Some(tree_sitter_rust::LANGUAGE.into())
+    }
+
     fn extract_symbols(&self, source: &[u8], path: &Path) -> Vec<Symbol> {
         let tree = match parse_tree(source, path) {
             Some(t) => t,
@@ -139,6 +180,7 @@ impl super::Parser for RustParser {
         let class_name_idx = query.capture_index_for_name("class.name").unwrap();
         let class_exported_idx = query.capture_index_for_name("class.exported").unwrap();
         let method_idx = query.capture_index_for_name("method.name").unwrap();
+        let macro_idx = query.capture_index_for_name("macro.name").unwrap();
 
         let mut cursor = QueryCursor::new();
         let mut symbols = Vec::new();
@@ -161,6 +203,11 @@ impl super::Parser for RustParser {
                     (SymbolKind::Class, false)
                 } else if capture.index == method_idx {
                     (SymbolKind::Method, false)
+                } else if capture.index == macro_idx {
+                    // macro_rules! macros are exported via #[macro_export],
+                    // which sits as a sibling attribute_item, not a child.
+                    let exported = node.parent().is_some_and(|d| macro_is_exported(d, source));
+                    (SymbolKind::Function, exported)
                 } else {
                     continue;
                 };
@@ -343,6 +390,28 @@ impl super::Parser for RustParser {
     }
 }
 
+/// True if a `macro_definition` node is preceded by a `#[macro_export]`
+/// attribute. Attributes are siblings of the item they annotate, so walk
+/// backwards over any attribute_items (and doc comments) directly above it.
+fn macro_is_exported(macro_def: tree_sitter::Node, source: &[u8]) -> bool {
+    let mut sibling = macro_def.prev_sibling();
+    while let Some(node) = sibling {
+        match node.kind() {
+            "attribute_item" => {
+                if let Ok(text) = node.utf8_text(source) {
+                    if text.contains("macro_export") {
+                        return true;
+                    }
+                }
+            }
+            "line_comment" | "block_comment" => {}
+            _ => break,
+        }
+        sibling = node.prev_sibling();
+    }
+    false
+}
+
 /// Expand a Rust `use` argument into individual import paths, distributing the
 /// shared prefix across brace groups: `a::b::{c, d}` -> `["a::b::c", "a::b::d"]`.
 /// Aliases (`as x`) are stripped and globs (`*`) are kept as a trailing segment.
@@ -430,6 +499,21 @@ mod tests {
 
     fn parse(src: &str) -> Vec<Import> {
         RustParser.parse(src.as_bytes(), Path::new("lib.rs"))
+    }
+
+    #[test]
+    fn parse_errors_flags_malformed_source() {
+        let errors = RustParser.parse_errors(b"fn broken(:", Path::new("broken.rs"));
+        assert!(
+            !errors.is_empty(),
+            "expected syntax errors for malformed rust source"
+        );
+    }
+
+    #[test]
+    fn parse_errors_clean_on_valid_source() {
+        let errors = RustParser.parse_errors(b"fn main() {}\n", Path::new("ok.rs"));
+        assert!(errors.is_empty());
     }
 
     #[test]
@@ -593,6 +677,60 @@ extern crate log;
         assert_eq!(methods.len(), 2);
     }
 
+    #[test]
+    fn symbols_finds_type_aliases() {
+        let syms = symbols("pub type Alias = u32;\ntype Private = i8;\n");
+        let alias = syms.iter().find(|s| s.name == "Alias").unwrap();
+        assert_eq!(alias.kind, SymbolKind::Class);
+        assert!(alias.exported);
+        let private = syms.iter().find(|s| s.name == "Private").unwrap();
+        assert_eq!(private.kind, SymbolKind::Class);
+        assert!(!private.exported);
+    }
+
+    #[test]
+    fn symbols_finds_unions() {
+        let syms = symbols("pub union U { a: u32, b: f32 }\nunion V { x: u8 }\n");
+        let public = syms.iter().find(|s| s.name == "U").unwrap();
+        assert_eq!(public.kind, SymbolKind::Class);
+        assert!(public.exported);
+        let private = syms.iter().find(|s| s.name == "V").unwrap();
+        assert_eq!(private.kind, SymbolKind::Class);
+        assert!(!private.exported);
+    }
+
+    #[test]
+    fn symbols_finds_macro_definitions() {
+        let syms = symbols(
+            "#[macro_export]\nmacro_rules! mymac { () => {}; }\nmacro_rules! privmac { () => {}; }\n",
+        );
+        let exported = syms.iter().find(|s| s.name == "mymac").unwrap();
+        assert_eq!(exported.kind, SymbolKind::Function);
+        assert!(exported.exported);
+        let private = syms.iter().find(|s| s.name == "privmac").unwrap();
+        assert_eq!(private.kind, SymbolKind::Function);
+        assert!(!private.exported);
+    }
+
+    #[test]
+    fn symbols_macro_export_seen_past_doc_comments_and_other_attrs() {
+        let syms = symbols(
+            "#[macro_export]\n// helper macro\n#[allow(unused)]\nmacro_rules! spaced { () => {}; }\n",
+        );
+        let mac = syms.iter().find(|s| s.name == "spaced").unwrap();
+        assert!(mac.exported);
+    }
+
+    #[test]
+    fn symbols_finds_required_trait_methods() {
+        let syms = symbols("trait T { fn required(&self); fn defaulted(&self) {} }\n");
+        let required = syms.iter().find(|s| s.name == "required").unwrap();
+        assert_eq!(required.kind, SymbolKind::Method);
+        // Default method bodies are function_items; captured once, no dupes.
+        let defaulted: Vec<_> = syms.iter().filter(|s| s.name == "defaulted").collect();
+        assert_eq!(defaulted.len(), 1);
+    }
+
     // ── Call extraction tests ────────────────────────────────────────────
 
     fn calls(src: &str) -> Vec<CallRef> {
@@ -617,6 +755,27 @@ extern crate log;
         let c = calls("fn main() { println!(\"hello\"); vec![1,2,3]; }\n");
         assert!(c.iter().any(|c| c.callee_raw == "println"));
         assert!(c.iter().any(|c| c.callee_raw == "vec"));
+    }
+
+    #[test]
+    fn calls_scoped() {
+        let c = calls("fn main() { Foo::bar(); util::helper(); let s = String::from(\"x\"); }\n");
+        let names: Vec<&str> = c.iter().map(|c| c.callee_raw.as_str()).collect();
+        assert!(names.contains(&"Foo::bar"));
+        assert!(names.contains(&"util::helper"));
+        assert!(names.contains(&"String::from"));
+    }
+
+    #[test]
+    fn calls_scoped_nested_path() {
+        let c = calls("fn main() { crate::util::helper(); }\n");
+        assert!(c.iter().any(|c| c.callee_raw == "crate::util::helper"));
+    }
+
+    #[test]
+    fn calls_scoped_macro() {
+        let c = calls("fn main() { tracing::warn!(\"uh oh\"); }\n");
+        assert!(c.iter().any(|c| c.callee_raw == "tracing::warn"));
     }
 
     #[test]

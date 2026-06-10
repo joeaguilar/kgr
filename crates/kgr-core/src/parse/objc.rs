@@ -15,6 +15,12 @@ const OBJC_QUERY_SRC: &str = r#"
 ;; #import <Foundation/Foundation.h> and #include <stdio.h>
 (preproc_include
   path: (system_lib_string) @import.system)
+
+;; @import Foundation; and @import UIKit.UIView; — modern module imports.
+;; Dotted submodule paths produce one path: (identifier) per segment, so we
+;; capture the whole module_import node and join the segments in parse().
+;; Classified as System for consistency with #import <Foundation/Foundation.h>.
+(module_import) @import.module
 "#;
 
 static OBJC_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -36,9 +42,20 @@ const OBJC_SYMBOL_QUERY_SRC: &str = r#"
 (class_implementation
   (identifier) @class.name)
 
-;; Method definition — identifier is a direct child, no selector: field
+;; Method definition — identifier is a direct child, no selector: field.
+;; Multi-keyword selectors (doX:withY:) produce one bare identifier child per
+;; segment; we anchor to the FIRST segment so each method_definition yields
+;; exactly one symbol, named after its first selector segment (doX).
+;; With an explicit return type, method_type is the first named child and the
+;; first selector identifier immediately follows it:
 (method_definition
-  (identifier) @method.name)
+  . (method_type)
+  . (identifier) @method.name)
+
+;; Without a return type (implicit id), the first selector identifier is the
+;; first named child:
+(method_definition
+  . (identifier) @method.name)
 "#;
 
 static OBJC_SYMBOL_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -88,6 +105,10 @@ impl ObjCParser {
 impl super::Parser for ObjCParser {
     fn lang(&self) -> Lang {
         Lang::ObjectiveC
+    }
+
+    fn ts_language(&self) -> Option<tree_sitter::Language> {
+        Some(tree_sitter_objc::LANGUAGE.into())
     }
 
     fn extract_symbols(&self, source: &[u8], path: &Path) -> Vec<Symbol> {
@@ -212,6 +233,9 @@ impl super::Parser for ObjCParser {
             let system_idx = query
                 .capture_index_for_name("import.system")
                 .expect("import.system capture must exist");
+            let module_idx = query
+                .capture_index_for_name("import.module")
+                .expect("import.module capture must exist");
 
             let mut cursor = QueryCursor::new();
             let mut imports = Vec::new();
@@ -221,30 +245,51 @@ impl super::Parser for ObjCParser {
             while let Some(m) = matches.next() {
                 for capture in m.captures {
                     let node = capture.node;
-                    let full_text = match node.utf8_text(source) {
-                        Ok(s) => s.to_string(),
-                        Err(_) => continue,
-                    };
 
-                    // Strip quotes or angle brackets
-                    let raw = full_text
-                        .trim_start_matches('"')
-                        .trim_end_matches('"')
-                        .trim_start_matches('<')
-                        .trim_end_matches('>')
-                        .to_string();
+                    let (raw, kind) = if capture.index == module_idx {
+                        // @import UIKit.UIView; — one path: (identifier) per
+                        // dotted segment; rejoin them into "UIKit.UIView".
+                        // The anonymous "." tokens also carry the path field,
+                        // so keep only the named identifier segments.
+                        let mut walker = node.walk();
+                        let segments: Vec<&str> = node
+                            .children_by_field_name("path", &mut walker)
+                            .filter(|c| c.is_named())
+                            .filter_map(|c| c.utf8_text(source).ok())
+                            .collect();
+                        if segments.is_empty() {
+                            continue;
+                        }
+                        // System, matching #import <Foundation/Foundation.h>.
+                        (segments.join("."), ImportKind::System)
+                    } else {
+                        let full_text = match node.utf8_text(source) {
+                            Ok(s) => s.to_string(),
+                            Err(_) => continue,
+                        };
+
+                        // Strip quotes or angle brackets
+                        let raw = full_text
+                            .trim_start_matches('"')
+                            .trim_end_matches('"')
+                            .trim_start_matches('<')
+                            .trim_end_matches('>')
+                            .to_string();
+
+                        let kind = if capture.index == local_idx {
+                            ImportKind::Local
+                        } else if capture.index == system_idx {
+                            ImportKind::System
+                        } else {
+                            ImportKind::External
+                        };
+
+                        (raw, kind)
+                    };
 
                     if !seen.insert(raw.clone()) {
                         continue;
                     }
-
-                    let kind = if capture.index == local_idx {
-                        ImportKind::Local
-                    } else if capture.index == system_idx {
-                        ImportKind::System
-                    } else {
-                        ImportKind::External
-                    };
 
                     let start = node.start_position();
                     let end = node.end_position();
@@ -318,6 +363,40 @@ mod tests {
         assert_eq!(imports[3].kind, ImportKind::Local);
     }
 
+    #[test]
+    fn module_import() {
+        let imports = parse("@import Foundation;");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].raw, "Foundation");
+        assert_eq!(imports[0].kind, ImportKind::System);
+    }
+
+    #[test]
+    fn module_import_dotted_submodule() {
+        let imports = parse("@import UIKit.UIView;");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].raw, "UIKit.UIView");
+        assert_eq!(imports[0].kind, ImportKind::System);
+    }
+
+    #[test]
+    fn module_import_mixed_with_preproc_imports() {
+        let imports = parse(
+            r#"
+@import Foundation;
+#import <UIKit/UIKit.h>
+#import "AppDelegate.h"
+"#,
+        );
+        assert_eq!(imports.len(), 3);
+        assert_eq!(imports[0].raw, "Foundation");
+        assert_eq!(imports[0].kind, ImportKind::System);
+        assert_eq!(imports[1].raw, "UIKit/UIKit.h");
+        assert_eq!(imports[1].kind, ImportKind::System);
+        assert_eq!(imports[2].raw, "AppDelegate.h");
+        assert_eq!(imports[2].kind, ImportKind::Local);
+    }
+
     // ── Symbol extraction tests ──────────────────────────────────────────
 
     fn symbols(src: &str) -> Vec<Symbol> {
@@ -361,6 +440,95 @@ mod tests {
         for s in &syms {
             assert!(s.exported, "symbol {} should be exported", s.name);
         }
+    }
+
+    #[test]
+    fn multi_keyword_method_emits_single_symbol() {
+        let syms = symbols(
+            r#"
+@implementation Foo
+- (void)doX:(int)x withY:(int)y {}
+@end
+"#,
+        );
+        let methods: Vec<_> = syms
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Method)
+            .collect();
+        // Exactly one symbol per method_definition, named after the FIRST
+        // selector segment.
+        assert_eq!(methods.len(), 1);
+        assert_eq!(methods[0].name, "doX");
+        assert!(!syms.iter().any(|s| s.name == "withY"));
+    }
+
+    #[test]
+    fn single_keyword_method_detection() {
+        let syms = symbols(
+            r#"
+@implementation Foo
+- (void)setValue:(int)v {}
+@end
+"#,
+        );
+        let methods: Vec<_> = syms
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Method)
+            .collect();
+        assert_eq!(methods.len(), 1);
+        assert_eq!(methods[0].name, "setValue");
+    }
+
+    #[test]
+    fn no_arg_method_detection() {
+        let syms = symbols(
+            r#"
+@implementation Foo
+- (void)reset {}
+@end
+"#,
+        );
+        let methods: Vec<_> = syms
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Method)
+            .collect();
+        assert_eq!(methods.len(), 1);
+        assert_eq!(methods[0].name, "reset");
+    }
+
+    #[test]
+    fn untyped_return_method_detection() {
+        // Implicit id return type: identifier is the first named child.
+        let syms = symbols(
+            r#"
+@implementation Foo
+- initWithName:(int)n andAge:(int)a {}
+@end
+"#,
+        );
+        let methods: Vec<_> = syms
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Method)
+            .collect();
+        assert_eq!(methods.len(), 1);
+        assert_eq!(methods[0].name, "initWithName");
+    }
+
+    #[test]
+    fn class_method_detection() {
+        let syms = symbols(
+            r#"
+@implementation Foo
++ (void)makeWithA:(int)a andB:(int)b {}
+@end
+"#,
+        );
+        let methods: Vec<_> = syms
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Method)
+            .collect();
+        assert_eq!(methods.len(), 1);
+        assert_eq!(methods[0].name, "makeWithA");
     }
 
     // ── Call extraction tests ────────────────────────────────────────────

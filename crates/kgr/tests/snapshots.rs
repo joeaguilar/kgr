@@ -14,8 +14,14 @@ fn kgr_output(fixture: &str, format: &str) -> String {
     kgr_output_path(&fixture_path, format)
 }
 
+// All helpers set KGR_NO_CACHE=1 so fixture scans are hermetic: every run
+// re-parses sources, never reads a stale `.kgr-cache.json`, and never writes
+// one into tests/fixtures/. A warm cache must not be able to mask a parser
+// regression in snapshot output.
+
 fn kgr_output_path(path: &Path, format: &str) -> String {
     let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["graph", "--format", format, "--no-progress"])
         .arg(path)
         .assert()
@@ -28,6 +34,7 @@ fn kgr_output_path(path: &Path, format: &str) -> String {
 
 fn kgr_orient_json_path(path: &Path) -> String {
     let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["orient", "--format", "json", "--no-progress"])
         .arg(path)
         .assert()
@@ -41,6 +48,7 @@ fn kgr_orient_json_path(path: &Path) -> String {
 fn kgr_check_stderr(fixture: &str) -> String {
     let fixture_path = fixtures_dir().join(fixture);
     let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .env("KGR_NO_CACHE", "1")
         .args(["check", "--no-progress"])
         .arg(&fixture_path)
         .output()
@@ -87,6 +95,10 @@ snapshot_format!(snap_js_mixed_tree, "javascript/mixed", "tree");
 snapshot_format!(snap_js_mixed_dot, "javascript/mixed", "dot");
 snapshot_format!(snap_js_mixed_mermaid, "javascript/mixed", "mermaid");
 snapshot_format!(snap_js_mixed_table, "javascript/mixed", "table");
+
+// typescript/cycle × mermaid — pins deterministic node IDs and sorted
+// cycle style-line ordering (the old HashSet iteration shuffled them).
+snapshot_format!(snap_ts_cycle_mermaid, "typescript/cycle", "mermaid");
 
 // cycle check stderr snapshots
 #[test]

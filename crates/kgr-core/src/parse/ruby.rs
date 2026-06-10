@@ -8,7 +8,7 @@ use tree_sitter::{Language, Query, QueryCursor};
 use crate::types::{CallRef, Import, ImportKind, Lang, Span, Symbol, SymbolKind};
 
 const RUBY_QUERY_SRC: &str = r#"
-;; require 'foo' / require_relative 'foo'
+;; require 'foo' / require_relative 'foo' / load 'foo.rb' / autoload :C, 'foo'
 (call
   method: (identifier) @_fn
   arguments: (argument_list (string (string_content) @import.path)))
@@ -24,13 +24,28 @@ const RUBY_SYMBOL_QUERY_SRC: &str = r#"
 (method
   name: (identifier) @fn.name)
 
+;; Singleton method definition (def self.x / def Foo.x)
+(singleton_method
+  name: (identifier) @method.name)
+
 ;; Class definition
 (class
   name: (constant) @class.name)
 
+;; Scoped class definition (class Foo::Bar) — capture the innermost
+;; constant (`Bar`), matching the C++ qualified-name convention
+(class
+  name: (scope_resolution
+    name: (constant) @class.name))
+
 ;; Module definition
 (module
   name: (constant) @class.name)
+
+;; Scoped module definition (module Foo::Bar)
+(module
+  name: (scope_resolution
+    name: (constant) @class.name))
 "#;
 
 static RUBY_SYMBOL_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -77,6 +92,10 @@ impl super::Parser for RubyParser {
         Lang::Ruby
     }
 
+    fn ts_language(&self) -> Option<tree_sitter::Language> {
+        Some(tree_sitter_ruby::LANGUAGE.into())
+    }
+
     fn extract_symbols(&self, source: &[u8], path: &Path) -> Vec<Symbol> {
         let tree = match self.parse_tree(source, path) {
             Some(t) => t,
@@ -85,6 +104,7 @@ impl super::Parser for RubyParser {
 
         let query = &*RUBY_SYMBOL_QUERY;
         let fn_idx = query.capture_index_for_name("fn.name").unwrap();
+        let method_idx = query.capture_index_for_name("method.name").unwrap();
         let class_idx = query.capture_index_for_name("class.name").unwrap();
 
         let mut cursor = QueryCursor::new();
@@ -100,6 +120,8 @@ impl super::Parser for RubyParser {
 
                 let kind = if capture.index == fn_idx {
                     SymbolKind::Function
+                } else if capture.index == method_idx {
+                    SymbolKind::Method
                 } else if capture.index == class_idx {
                     SymbolKind::Class
                 } else {
@@ -145,16 +167,55 @@ impl super::Parser for RubyParser {
                     continue;
                 }
                 let node = capture.node;
-                let callee_raw = match node.utf8_text(source) {
+                let method_text = match node.utf8_text(source) {
                     Ok(s) => s.to_string(),
                     Err(_) => continue,
                 };
+
+                // Constant receivers carry the class reference in Ruby
+                // (MyService.new / A::B.call). Qualify the callee as
+                // `Receiver.method` (callee_matches splits on '.', so it
+                // still answers refs queries for the bare method name) AND
+                // emit a second ref for the bare receiver constant so
+                // `kgr refs MyService` / `kgr refs A::B` find the usage.
+                let receiver = node
+                    .parent()
+                    .and_then(|call| call.child_by_field_name("receiver"))
+                    .filter(|r| matches!(r.kind(), "constant" | "scope_resolution"));
+
+                if let Some(recv) = receiver {
+                    if let Ok(recv_text) = recv.utf8_text(source) {
+                        let recv_start = recv.start_position();
+                        let recv_end = recv.end_position();
+                        let method_end = node.end_position();
+
+                        calls.push(CallRef {
+                            callee_raw: format!("{recv_text}.{method_text}"),
+                            span: Span {
+                                start_line: recv_start.row + 1,
+                                start_col: recv_start.column,
+                                end_line: method_end.row + 1,
+                                end_col: method_end.column,
+                            },
+                        });
+                        calls.push(CallRef {
+                            callee_raw: recv_text.to_string(),
+                            span: Span {
+                                start_line: recv_start.row + 1,
+                                start_col: recv_start.column,
+                                end_line: recv_end.row + 1,
+                                end_col: recv_end.column,
+                            },
+                        });
+                        continue;
+                    }
+                }
 
                 let start = node.start_position();
                 let end = node.end_position();
 
                 calls.push(CallRef {
-                    callee_raw,
+                    callee_raw: method_text,
                     span: Span {
                         start_line: start.row + 1,
                         start_col: start.column,
@@ -200,7 +261,11 @@ impl super::Parser for RubyParser {
             };
 
             let is_require_relative = fn_name == "require_relative";
-            if fn_name != "require" && !is_require_relative {
+            let is_autoload = fn_name == "autoload";
+            if !matches!(
+                fn_name,
+                "require" | "require_relative" | "load" | "autoload"
+            ) {
                 continue;
             }
 
@@ -211,6 +276,28 @@ impl super::Parser for RubyParser {
             };
 
             let node = path_capture.node;
+
+            // The capture is a `string_content` fragment inside a `string`
+            // node. If the string has interpolation siblings
+            // (require "foo/#{bar}"), the fragment is a truncated garbage
+            // path — skip the whole import.
+            let string_node = node.parent();
+            if let Some(s) = string_node {
+                let mut walk = s.walk();
+                if s.named_children(&mut walk)
+                    .any(|child| child.kind() == "interpolation")
+                {
+                    continue;
+                }
+            }
+
+            // autoload :Helper, 'helper' — the path is the SECOND argument.
+            // Only accept a string that follows another argument, so a
+            // (rare) string first argument is never mistaken for the path.
+            if is_autoload && string_node.and_then(|s| s.prev_named_sibling()).is_none() {
+                continue;
+            }
+
             let raw = match node.utf8_text(source) {
                 Ok(s) => s.to_string(),
                 Err(_) => continue,
@@ -346,6 +433,52 @@ require_relative 'config'
     }
 
     #[test]
+    fn symbols_finds_singleton_methods() {
+        let syms = symbols("def self.create\nend\n\ndef Foo.build\nend\n");
+        let methods: Vec<_> = syms
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Method)
+            .collect();
+        assert_eq!(methods.len(), 2);
+        assert_eq!(methods[0].name, "create");
+        assert_eq!(methods[1].name, "build");
+    }
+
+    #[test]
+    fn symbols_finds_scoped_classes() {
+        let syms = symbols("class Foo::Bar\nend\n");
+        let classes: Vec<_> = syms
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Class)
+            .collect();
+        assert_eq!(classes.len(), 1);
+        assert_eq!(classes[0].name, "Bar");
+    }
+
+    #[test]
+    fn symbols_finds_scoped_modules() {
+        let syms = symbols("module Foo::Bar::Baz\nend\n");
+        let classes: Vec<_> = syms
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Class)
+            .collect();
+        assert_eq!(classes.len(), 1);
+        assert_eq!(classes[0].name, "Baz");
+    }
+
+    #[test]
+    fn symbols_scoped_class_with_singleton_and_instance_methods() {
+        let syms = symbols(
+            "class Foo::Bar\n  def self.singleton_meth\n  end\n\n  def instance_meth\n  end\nend\n",
+        );
+        let names: Vec<_> = syms.iter().map(|s| (s.name.as_str(), s.kind)).collect();
+        assert!(names.contains(&("Bar", SymbolKind::Class)));
+        assert!(names.contains(&("singleton_meth", SymbolKind::Method)));
+        assert!(names.contains(&("instance_meth", SymbolKind::Function)));
+        assert_eq!(syms.len(), 3);
+    }
+
+    #[test]
     fn symbols_all_exported() {
         let syms = symbols("def _private_method\nend\n\ndef public_method\nend\n");
         assert!(syms.iter().all(|s| s.exported));
@@ -369,5 +502,82 @@ require_relative 'config'
         let names: Vec<_> = c.iter().map(|call| call.callee_raw.as_str()).collect();
         assert!(names.contains(&"require"));
         assert!(names.contains(&"puts"));
+    }
+
+    #[test]
+    fn calls_constant_receiver_qualifies_and_emits_bare_constant() {
+        let c = calls("obj = MyService.new\n");
+        let names: Vec<_> = c.iter().map(|call| call.callee_raw.as_str()).collect();
+        assert!(names.contains(&"MyService.new"), "got {names:?}");
+        assert!(names.contains(&"MyService"), "got {names:?}");
+        assert!(!names.contains(&"new"), "got {names:?}");
+    }
+
+    #[test]
+    fn calls_scoped_constant_receiver() {
+        let c = calls("A::B.call\n");
+        let names: Vec<_> = c.iter().map(|call| call.callee_raw.as_str()).collect();
+        assert!(names.contains(&"A::B.call"), "got {names:?}");
+        assert!(names.contains(&"A::B"), "got {names:?}");
+    }
+
+    #[test]
+    fn calls_deeply_scoped_constant_receiver() {
+        let c = calls("Foo::Bar::Baz.build(1)\n");
+        let names: Vec<_> = c.iter().map(|call| call.callee_raw.as_str()).collect();
+        assert!(names.contains(&"Foo::Bar::Baz.build"), "got {names:?}");
+        assert!(names.contains(&"Foo::Bar::Baz"), "got {names:?}");
+    }
+
+    #[test]
+    fn calls_non_constant_receiver_stays_bare() {
+        let c = calls("foo.bar\n");
+        let names: Vec<_> = c.iter().map(|call| call.callee_raw.as_str()).collect();
+        assert!(names.contains(&"bar"), "got {names:?}");
+        assert!(!names.contains(&"foo.bar"), "got {names:?}");
+    }
+
+    // ── load / autoload / interpolation import tests ────────────────────
+
+    #[test]
+    fn load_statement() {
+        let imports = parse("load 'extra.rb'");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].raw, "extra.rb");
+    }
+
+    #[test]
+    fn autoload_takes_path_argument() {
+        let imports = parse("autoload :Helper, 'helper'");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].raw, "helper");
+        assert_eq!(imports[0].kind, ImportKind::External);
+    }
+
+    #[test]
+    fn autoload_relative_path() {
+        let imports = parse("autoload :Util, './lib/util'");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].raw, "./lib/util");
+        assert_eq!(imports[0].kind, ImportKind::Local);
+    }
+
+    #[test]
+    fn interpolated_require_is_skipped() {
+        let imports = parse(r##"require "foo/#{bar}""##);
+        assert!(imports.is_empty(), "got {imports:?}");
+    }
+
+    #[test]
+    fn interpolated_require_leading_fragment_skipped() {
+        let imports = parse(r##"require "#{root}/config""##);
+        assert!(imports.is_empty(), "got {imports:?}");
+    }
+
+    #[test]
+    fn plain_double_quoted_require_still_works() {
+        let imports = parse("require \"json\"");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].raw, "json");
     }
 }

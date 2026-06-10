@@ -48,7 +48,7 @@ pub fn render_tree(
 
     let roots = &graph.roots;
 
-    if roots.is_empty() {
+    if roots.is_empty() && graph.cycles.is_empty() {
         writeln!(writer, "(no entry points found)")?;
         return Ok(());
     }
@@ -60,6 +60,29 @@ pub fn render_tree(
         show_external,
         ext_map: &ext_map,
     };
+
+    if roots.is_empty() {
+        // Every file has an incoming edge, so the graph is (at least at its
+        // entry layer) fully cyclic. Bailing out here would hide the single
+        // most important fact about the codebase, so list the cycles in
+        // place of the root tree and fall through to the trailing sections.
+        writeln!(writer, "(no entry points: dependency cycles detected)")?;
+        writeln!(writer)?;
+        writeln!(writer, "Cycles:")?;
+        for cycle in &graph.cycles {
+            write!(writer, "  ")?;
+            for (i, member) in cycle.iter().enumerate() {
+                if i > 0 {
+                    write!(writer, " -> ")?;
+                }
+                write!(writer, "{}", member.display())?;
+            }
+            match cycle.first() {
+                Some(first) => writeln!(writer, " -> {}", first.display())?,
+                None => writeln!(writer)?,
+            }
+        }
+    }
 
     for root in roots {
         // Skip orphans and test entries from root display
@@ -161,4 +184,81 @@ fn render_children(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kgr_core::types::{FileNode, Import, Lang};
+
+    fn file(path: &str, imports: &[&str]) -> FileNode {
+        FileNode {
+            path: PathBuf::from(path),
+            lang: Lang::TypeScript,
+            imports: imports
+                .iter()
+                .map(|target| Import {
+                    raw: (*target).to_string(),
+                    kind: ImportKind::Local,
+                    resolved: Some(PathBuf::from(target)),
+                    span: None,
+                })
+                .collect(),
+            symbols: Vec::new(),
+            calls: Vec::new(),
+        }
+    }
+
+    fn render(files: Vec<FileNode>) -> String {
+        let kgraph = KGraph::from_files(&files);
+        let graph = kgraph.to_dep_graph(PathBuf::from("."), files);
+        let mut out = Vec::new();
+        render_tree(&graph, &kgraph, false, false, &mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn empty_graph_reports_no_entry_points() {
+        let out = render(Vec::new());
+        assert_eq!(out, "(no entry points found)\n");
+    }
+
+    #[test]
+    fn fully_cyclic_graph_lists_cycles_instead_of_bailing_out() {
+        let out = render(vec![
+            file("a.ts", &["b.ts"]),
+            file("b.ts", &["c.ts"]),
+            file("c.ts", &["a.ts"]),
+        ]);
+        assert!(
+            !out.contains("(no entry points found)"),
+            "fully-cyclic graph must not bail out:\n{out}"
+        );
+        assert!(out.contains("Cycles:"), "missing Cycles section:\n{out}");
+        for member in ["a.ts", "b.ts", "c.ts"] {
+            assert!(
+                out.contains(member),
+                "missing cycle member {member}:\n{out}"
+            );
+        }
+    }
+
+    #[test]
+    fn rooted_graph_does_not_emit_cycles_section() {
+        // main.ts -> a.ts <-> b.ts: a root exists, so the cycle is annotated
+        // inline on edges and no standalone Cycles section is rendered.
+        let out = render(vec![
+            file("main.ts", &["a.ts"]),
+            file("a.ts", &["b.ts"]),
+            file("b.ts", &["a.ts"]),
+        ]);
+        assert!(
+            out.contains("main.ts  [entry]"),
+            "missing root entry:\n{out}"
+        );
+        assert!(
+            !out.contains("Cycles:"),
+            "unexpected Cycles section:\n{out}"
+        );
+    }
 }

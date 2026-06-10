@@ -135,3 +135,37 @@ impl Default for ParserRegistry {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_registered_parser_exposes_ts_language() {
+        let registry = ParserRegistry::new();
+        for (lang, parser) in &registry.parsers {
+            assert!(
+                parser.ts_language().is_some(),
+                "parser for {lang:?} must override ts_language() so --syntax works"
+            );
+        }
+    }
+
+    #[test]
+    fn registry_parsers_detect_syntax_errors() {
+        let registry = ParserRegistry::new();
+        let cases: &[(Lang, &[u8], &str)] = &[
+            (Lang::Python, b"def broken(:", "broken.py"),
+            (Lang::TypeScript, b"function broken(:", "broken.ts"),
+            (Lang::Rust, b"fn broken(:", "broken.rs"),
+        ];
+        for (lang, source, name) in cases {
+            let parser = registry.get(*lang).expect("parser registered");
+            let errors = parser.parse_errors(source, Path::new(name));
+            assert!(
+                !errors.is_empty(),
+                "expected parse_errors to flag malformed {lang:?} source"
+            );
+        }
+    }
+}

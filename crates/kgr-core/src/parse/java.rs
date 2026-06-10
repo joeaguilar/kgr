@@ -35,6 +35,10 @@ const JAVA_SYMBOL_QUERY_SRC: &str = r#"
 (enum_declaration
   name: (identifier) @class.name)
 
+;; Record declaration (Java 16+)
+(record_declaration
+  name: (identifier) @class.name)
+
 ;; Method declaration
 (method_declaration
   name: (identifier) @method.name)
@@ -87,6 +91,10 @@ impl super::Parser for JavaParser {
         Lang::Java
     }
 
+    fn ts_language(&self) -> Option<tree_sitter::Language> {
+        Some(tree_sitter_java::LANGUAGE.into())
+    }
+
     fn extract_symbols(&self, source: &[u8], path: &Path) -> Vec<Symbol> {
         let tree = match self.parse_tree(source, path) {
             Some(t) => t,
@@ -117,16 +125,30 @@ impl super::Parser for JavaParser {
                 };
 
                 // Check if the declaration (parent of the name identifier) has a
-                // "modifiers" child containing "public"
+                // "modifiers" child containing the given modifier keyword
                 let decl_node = node.parent().unwrap();
-                let exported = (0..decl_node.child_count()).any(|i| {
-                    let child = decl_node.child(i).unwrap();
-                    child.kind() == "modifiers"
-                        && child
-                            .utf8_text(source)
-                            .map(|t| t.contains("public"))
-                            .unwrap_or(false)
-                });
+                let has_modifier = |needle: &str| {
+                    (0..decl_node.child_count()).any(|i| {
+                        let child = decl_node.child(i).unwrap();
+                        child.kind() == "modifiers"
+                            && child
+                                .utf8_text(source)
+                                .map(|t| t.contains(needle))
+                                .unwrap_or(false)
+                    })
+                };
+
+                // Interface members are implicitly public unless explicitly
+                // private (Java 9+ allows private interface methods).
+                let in_interface_body = decl_node
+                    .parent()
+                    .is_some_and(|p| p.kind() == "interface_body");
+
+                let exported = if in_interface_body {
+                    !has_modifier("private")
+                } else {
+                    has_modifier("public")
+                };
 
                 let start = node.start_position();
                 let end = node.end_position();
@@ -313,6 +335,48 @@ import com.example.MyClass;
         let priv_class = syms.iter().find(|s| s.name == "Priv").unwrap();
         assert!(pub_class.exported);
         assert!(!priv_class.exported);
+    }
+
+    #[test]
+    fn symbols_finds_records() {
+        let syms = symbols("public record Point(int x, int y) {} record Pair(int a, int b) {}");
+        let point = syms.iter().find(|s| s.name == "Point").unwrap();
+        let pair = syms.iter().find(|s| s.name == "Pair").unwrap();
+        assert_eq!(point.kind, SymbolKind::Class);
+        assert!(point.exported);
+        assert_eq!(pair.kind, SymbolKind::Class);
+        assert!(!pair.exported);
+    }
+
+    #[test]
+    fn interface_members_implicitly_public() {
+        let syms = symbols(
+            "interface D { void draw(); default void d() {} static void s() {} private void p() {} }",
+        );
+        let exported_of = |name: &str| syms.iter().find(|s| s.name == name).unwrap().exported;
+        assert!(exported_of("draw"));
+        assert!(exported_of("d"));
+        assert!(exported_of("s"));
+        assert!(!exported_of("p"));
+        // The interface itself has no `public` modifier, so it stays
+        // package-private.
+        assert!(!exported_of("D"));
+    }
+
+    #[test]
+    fn interface_members_no_duplicates() {
+        let syms = symbols("interface D { void draw(); }");
+        let draws = syms.iter().filter(|s| s.name == "draw").count();
+        assert_eq!(draws, 1);
+    }
+
+    #[test]
+    fn class_methods_still_require_public() {
+        let syms = symbols("class C { void hidden() {} public void shown() {} }");
+        let hidden = syms.iter().find(|s| s.name == "hidden").unwrap();
+        let shown = syms.iter().find(|s| s.name == "shown").unwrap();
+        assert!(!hidden.exported);
+        assert!(shown.exported);
     }
 
     // ── Call extraction tests ────────────────────────────────────────────

@@ -38,6 +38,30 @@ const JS_SYMBOL_QUERY_SRC: &str = r#"
   (function_declaration
     name: (identifier) @fn.name))
 
+;; Exported generator function
+(export_statement
+  declaration: (generator_function_declaration
+    name: (identifier) @fn.exported))
+
+;; Non-exported generator function
+(program
+  (generator_function_declaration
+    name: (identifier) @fn.name))
+
+;; Exported const/let arrow or function expression
+(export_statement
+  declaration: (lexical_declaration
+    (variable_declarator
+      name: (identifier) @fn.exported
+      value: [(arrow_function) (function_expression) (generator_function)])))
+
+;; Non-exported const/let arrow or function expression
+(program
+  (lexical_declaration
+    (variable_declarator
+      name: (identifier) @fn.name
+      value: [(arrow_function) (function_expression) (generator_function)])))
+
 ;; Exported class
 (export_statement
   declaration: (class_declaration
@@ -109,6 +133,10 @@ fn parse_tree(source: &[u8], path: &Path) -> Option<tree_sitter::Tree> {
 impl super::Parser for JavaScriptParser {
     fn lang(&self) -> Lang {
         Lang::JavaScript
+    }
+
+    fn ts_language(&self) -> Option<tree_sitter::Language> {
+        Some(tree_sitter_javascript::LANGUAGE.into())
     }
 
     fn extract_symbols(&self, source: &[u8], path: &Path) -> Vec<Symbol> {
@@ -405,6 +433,56 @@ mod tests {
         let helper = syms.iter().find(|s| s.name == "helper").unwrap();
         assert!(main.exported);
         assert!(!helper.exported);
+    }
+
+    #[test]
+    fn symbols_const_arrow_function() {
+        let syms = symbols("const handler = () => {};\n");
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "handler");
+        assert_eq!(syms[0].kind, SymbolKind::Function);
+        assert!(!syms[0].exported);
+    }
+
+    #[test]
+    fn symbols_const_function_expression() {
+        let syms = symbols("const legacy = function () {};\n");
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "legacy");
+        assert_eq!(syms[0].kind, SymbolKind::Function);
+        assert!(!syms[0].exported);
+    }
+
+    #[test]
+    fn symbols_exported_const_arrow() {
+        let syms = symbols("export const arrowExported = () => {};\n");
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "arrowExported");
+        assert_eq!(syms[0].kind, SymbolKind::Function);
+        assert!(syms[0].exported);
+    }
+
+    #[test]
+    fn symbols_generator_function() {
+        let syms = symbols("function* genFn() { yield 1; }\n");
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "genFn");
+        assert_eq!(syms[0].kind, SymbolKind::Function);
+        assert!(!syms[0].exported);
+    }
+
+    #[test]
+    fn symbols_exported_generator_function() {
+        let syms = symbols("export function* genExported() { yield 1; }\n");
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "genExported");
+        assert!(syms[0].exported);
+    }
+
+    #[test]
+    fn symbols_ignores_data_constants() {
+        let syms = symbols("const x = 5;\nconst s = 'hi';\nexport const arr = [1, 2];\n");
+        assert!(syms.is_empty());
     }
 
     // ── Call extraction tests ────────────────────────────────────────────

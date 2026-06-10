@@ -41,17 +41,32 @@ const CPP_SYMBOL_QUERY_SRC: &str = r#"
     declarator: (qualified_identifier
       name: (identifier) @method.name)))
 
-;; Class definition
+;; Inline method defined in a class body (declarator is a field_identifier)
+(function_definition
+  declarator: (function_declarator
+    declarator: (field_identifier) @method.name))
+
+;; Inline method returning a pointer
+(function_definition
+  declarator: (pointer_declarator
+    declarator: (function_declarator
+      declarator: (field_identifier) @method.name)))
+
+;; Class definition — body required so forward declarations and
+;; usage sites (e.g. `class Fwd;`, `struct Point p;`) don't register symbols
 (class_specifier
-  name: (type_identifier) @class.name)
+  name: (type_identifier) @class.name
+  body: (field_declaration_list))
 
-;; Struct definition
+;; Struct definition — body required, same as class
 (struct_specifier
-  name: (type_identifier) @class.name)
+  name: (type_identifier) @class.name
+  body: (field_declaration_list))
 
-;; Enum definition
+;; Enum definition — body required, same as class
 (enum_specifier
-  name: (type_identifier) @class.name)
+  name: (type_identifier) @class.name
+  body: (enumerator_list))
 
 ;; Namespace definition
 (namespace_definition
@@ -78,9 +93,39 @@ const CPP_CALL_QUERY_SRC: &str = r#"
   function: (qualified_identifier
     name: (identifier) @call.scoped))
 
+;; Template function call: make_shared<int>() — capture the inner identifier.
+;; Template arguments are stripped (CallRef is `make_shared`, not
+;; `make_shared<int>`), consistent with the C# generic_name choice.
+(call_expression
+  function: (template_function
+    name: (identifier) @call.name))
+
+;; Scoped template call: std::make_unique<Widget>() — inner identifier,
+;; scope and template arguments stripped
+(call_expression
+  function: (qualified_identifier
+    name: (template_function
+      name: (identifier) @call.scoped)))
+
 ;; new expression: new Foo()
 (new_expression
   type: (type_identifier) @call.new)
+
+;; Qualified new: new ns::Foo() — unqualified type name captured
+(new_expression
+  type: (qualified_identifier
+    name: (type_identifier) @call.new))
+
+;; Template new: new Bar<int>() — base type name, template args stripped
+(new_expression
+  type: (template_type
+    name: (type_identifier) @call.new))
+
+;; Qualified template new: new ns::Baz<int>()
+(new_expression
+  type: (qualified_identifier
+    name: (template_type
+      name: (type_identifier) @call.new)))
 "#;
 
 static CPP_CALL_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -139,6 +184,10 @@ impl CppParser {
 impl super::Parser for CppParser {
     fn lang(&self) -> Lang {
         Lang::Cpp
+    }
+
+    fn ts_language(&self) -> Option<tree_sitter::Language> {
+        Some(tree_sitter_cpp::LANGUAGE.into())
     }
 
     fn parse(&self, source: &[u8], path: &Path) -> Vec<Import> {
@@ -350,12 +399,58 @@ mod tests {
     }
 
     #[test]
+    fn symbols_finds_inline_methods() {
+        let syms = symbols("class Foo {\npublic:\n  void inlineMethod() {}\n};\n");
+        assert!(syms
+            .iter()
+            .any(|s| s.name == "inlineMethod" && s.kind == SymbolKind::Method));
+    }
+
+    #[test]
+    fn symbols_finds_inline_pointer_methods() {
+        let syms = symbols("class Foo {\npublic:\n  int* getPtr() { return nullptr; }\n};\n");
+        assert!(syms
+            .iter()
+            .any(|s| s.name == "getPtr" && s.kind == SymbolKind::Method));
+    }
+
+    #[test]
     fn symbols_static_not_exported() {
         let syms = symbols("static int helper() { return 0; }\nint public_fn() { return 1; }\n");
         let helper = syms.iter().find(|s| s.name == "helper").unwrap();
         let public_fn = syms.iter().find(|s| s.name == "public_fn").unwrap();
         assert!(!helper.exported);
         assert!(public_fn.exported);
+    }
+
+    #[test]
+    fn symbols_finds_enums_with_body() {
+        let syms = symbols("enum Color { RED, GREEN };\nenum class Mode { A, B };\n");
+        assert!(syms
+            .iter()
+            .any(|s| s.name == "Color" && s.kind == SymbolKind::Class));
+        assert!(syms
+            .iter()
+            .any(|s| s.name == "Mode" && s.kind == SymbolKind::Class));
+    }
+
+    #[test]
+    fn symbols_ignores_forward_declarations() {
+        let syms = symbols("class Fwd;\nstruct Point;\nenum Color : int;\n");
+        assert!(!syms.iter().any(|s| s.kind == SymbolKind::Class));
+    }
+
+    #[test]
+    fn symbols_definition_not_duplicated_by_usage() {
+        let syms = symbols(
+            "struct Point { int x; };\nvoid f(struct Point *p) { struct Point q; (void)q; }\n",
+        );
+        let points: Vec<_> = syms
+            .iter()
+            .filter(|s| s.name == "Point" && s.kind == SymbolKind::Class)
+            .collect();
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].span.start_line, 1);
     }
 
     // ── Call extraction tests ────────────────────────────────────────────
@@ -386,5 +481,48 @@ mod tests {
     fn calls_scoped() {
         let c = calls("int main() { std::sort(v.begin(), v.end()); return 0; }\n");
         assert!(c.iter().any(|c| c.callee_raw == "sort"));
+    }
+
+    #[test]
+    fn calls_scoped_template_function() {
+        // std::make_unique<Widget>() — template args stripped: `make_unique`
+        let c = calls("int main() { auto p = std::make_unique<Widget>(); return 0; }\n");
+        assert!(c.iter().any(|c| c.callee_raw == "make_unique"));
+    }
+
+    #[test]
+    fn calls_plain_template_function() {
+        // make_shared<int>() — template args stripped: `make_shared`
+        let c = calls("int main() { auto p = make_shared<int>(); return 0; }\n");
+        assert!(c.iter().any(|c| c.callee_raw == "make_shared"));
+    }
+
+    #[test]
+    fn calls_new_qualified() {
+        let c = calls("int main() { auto p = new ns::Foo(); return 0; }\n");
+        assert!(c.iter().any(|c| c.callee_raw == "Foo"));
+    }
+
+    #[test]
+    fn calls_new_template_type() {
+        let c = calls("int main() { auto p = new Bar<int>(); return 0; }\n");
+        assert!(c.iter().any(|c| c.callee_raw == "Bar"));
+    }
+
+    #[test]
+    fn calls_new_qualified_template_type() {
+        let c = calls("int main() { auto p = new ns::Baz<int>(); return 0; }\n");
+        assert!(c.iter().any(|c| c.callee_raw == "Baz"));
+    }
+
+    #[test]
+    fn calls_template_args_always_stripped() {
+        // Decision: template arguments are never part of callee_raw,
+        // consistent with the C# parser's generic_name handling.
+        let c = calls(
+            "int main() { auto a = std::make_unique<Widget>(); auto b = new Bar<int>(); return 0; }\n",
+        );
+        assert!(!c.is_empty());
+        assert!(c.iter().all(|c| !c.callee_raw.contains('<')));
     }
 }

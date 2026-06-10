@@ -31,6 +31,27 @@ const ELIXIR_SYMBOL_QUERY_SRC: &str = r#"
   target: (identifier) @_kw2
   (arguments
     (call target: (identifier) @fn.name)))
+
+;; Paren-less definition: def foo do ... end
+(call
+  target: (identifier) @_kw2
+  (arguments (identifier) @fn.name))
+
+;; Guarded definition: def foo(...) when ... do ... end
+(call
+  target: (identifier) @_kw2
+  (arguments
+    (binary_operator
+      left: (call target: (identifier) @fn.name)
+      operator: "when")))
+
+;; Paren-less guarded definition: def foo when ... do ... end
+(call
+  target: (identifier) @_kw2
+  (arguments
+    (binary_operator
+      left: (identifier) @fn.name
+      operator: "when")))
 "#;
 
 static ELIXIR_SYMBOL_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -53,6 +74,73 @@ static ELIXIR_CALL_QUERY: LazyLock<Query> = LazyLock::new(|| {
     let language: Language = tree_sitter_elixir::LANGUAGE.into();
     Query::new(&language, ELIXIR_CALL_QUERY_SRC).expect("Failed to compile Elixir call query")
 });
+
+/// Definition/import keywords that parse as identifier-target calls in the
+/// Elixir grammar but are not function calls for our purposes.
+const ELIXIR_DEF_KEYWORDS: &[&str] = &[
+    "def",
+    "defp",
+    "defmodule",
+    "defmacro",
+    "defmacrop",
+    "use",
+    "import",
+    "alias",
+    "require",
+];
+
+/// Keywords whose call argument position holds a definition head
+/// (`def foo(x) do` — the inner `foo(x)` call is the head, not a call site).
+const ELIXIR_DEF_HEAD_KEYWORDS: &[&str] = &["def", "defp", "defmacro", "defmacrop"];
+
+/// Returns true when `ident` (the target identifier of a call node) belongs to
+/// the head of a function definition, i.e. the `foo` in `def foo(x) do` or in
+/// `def foo(x) when guard do`. Mirrors the shapes matched by the symbol query:
+///
+/// - plain head: `(call target: def (arguments (call target: @ident ...)))`
+/// - guarded head: `(call target: def (arguments (binary_operator
+///   left: (call target: @ident ...) operator: "when" ...)))`
+///
+/// Paren-less heads (`def foo do`) are bare identifiers, not call nodes, so
+/// they never reach the call query and need no exclusion here.
+fn is_def_head(ident: tree_sitter::Node, source: &[u8]) -> bool {
+    // `ident` is the target of its enclosing call node.
+    let head_call = match ident.parent() {
+        Some(n) => n,
+        None => return false,
+    };
+    let parent = match head_call.parent() {
+        Some(n) => n,
+        None => return false,
+    };
+
+    let arguments = if parent.kind() == "arguments" {
+        parent
+    } else if parent.kind() == "binary_operator" {
+        // Guarded head: the head call must be the *left* operand. Calls in the
+        // guard expression itself (right side) are real call sites.
+        match parent.child_by_field_name("left") {
+            Some(left) if left.id() == head_call.id() => {}
+            _ => return false,
+        }
+        match parent.parent() {
+            Some(n) if n.kind() == "arguments" => n,
+            _ => return false,
+        }
+    } else {
+        return false;
+    };
+
+    let def_call = match arguments.parent() {
+        Some(n) if n.kind() == "call" => n,
+        _ => return false,
+    };
+    let target = match def_call.child_by_field_name("target") {
+        Some(n) => n,
+        None => return false,
+    };
+    matches!(target.utf8_text(source), Ok(kw) if ELIXIR_DEF_HEAD_KEYWORDS.contains(&kw))
+}
 
 thread_local! {
     static ELIXIR_PARSER: RefCell<tree_sitter::Parser> = RefCell::new({
@@ -80,6 +168,10 @@ impl ElixirParser {
 impl super::Parser for ElixirParser {
     fn lang(&self) -> Lang {
         Lang::Elixir
+    }
+
+    fn ts_language(&self) -> Option<tree_sitter::Language> {
+        Some(tree_sitter_elixir::LANGUAGE.into())
     }
 
     fn extract_symbols(&self, source: &[u8], path: &Path) -> Vec<Symbol> {
@@ -143,8 +235,8 @@ impl super::Parser for ElixirParser {
                     Err(_) => continue,
                 };
                 let exported = match kw_name {
-                    "def" => true,
-                    "defp" => false,
+                    "def" | "defmacro" => true,
+                    "defp" | "defmacrop" => false,
                     _ => continue,
                 };
                 if let Some(name_capture) = m.captures.iter().find(|c| c.index == fn_idx) {
@@ -195,10 +287,19 @@ impl super::Parser for ElixirParser {
                 let node = capture.node;
 
                 let callee_raw = if capture.index == name_idx {
-                    match node.utf8_text(source) {
-                        Ok(s) => s.to_string(),
+                    let text = match node.utf8_text(source) {
+                        Ok(s) => s,
                         Err(_) => continue,
+                    };
+                    // Definition keywords parse as calls but are not call sites.
+                    if ELIXIR_DEF_KEYWORDS.contains(&text) {
+                        continue;
                     }
+                    // The function's own name in a def head is not a call site.
+                    if is_def_head(node, source) {
+                        continue;
+                    }
+                    text.to_string()
                 } else if capture.index == method_idx {
                     // Dot call: get the full `Module.function` text from parent dot node
                     let dot_node = node.parent().unwrap();
@@ -429,6 +530,153 @@ end
         assert!(!fns[0].exported);
     }
 
+    #[test]
+    fn symbols_parenless_def() {
+        let syms = symbols(
+            r#"
+defmodule MyApp do
+  def no_parens do
+    :ok
+  end
+end
+"#,
+        );
+        let fns: Vec<_> = syms
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Function)
+            .collect();
+        assert_eq!(fns.len(), 1);
+        assert_eq!(fns[0].name, "no_parens");
+        assert!(fns[0].exported);
+    }
+
+    #[test]
+    fn symbols_guarded_def() {
+        let syms = symbols(
+            r#"
+defmodule MyApp do
+  def guarded(x) when x > 0 do
+    x
+  end
+end
+"#,
+        );
+        let fns: Vec<_> = syms
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Function)
+            .collect();
+        assert_eq!(fns.len(), 1);
+        assert_eq!(fns[0].name, "guarded");
+        assert!(fns[0].exported);
+    }
+
+    #[test]
+    fn symbols_guarded_defp_keyword_do() {
+        let syms = symbols(
+            r#"
+defmodule MyApp do
+  defp guarded_priv(x) when is_integer(x), do: x
+end
+"#,
+        );
+        let fns: Vec<_> = syms
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Function)
+            .collect();
+        assert_eq!(fns.len(), 1);
+        assert_eq!(fns[0].name, "guarded_priv");
+        assert!(!fns[0].exported);
+    }
+
+    #[test]
+    fn symbols_parenless_guarded_def() {
+        let syms = symbols(
+            r#"
+defmodule MyApp do
+  def maybe when true do
+    :ok
+  end
+end
+"#,
+        );
+        let fns: Vec<_> = syms
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Function)
+            .collect();
+        assert_eq!(fns.len(), 1);
+        assert_eq!(fns[0].name, "maybe");
+        assert!(fns[0].exported);
+    }
+
+    #[test]
+    fn symbols_defmacro_exported() {
+        let syms = symbols(
+            r#"
+defmodule MyApp do
+  defmacro my_macro(x) do
+    x
+  end
+end
+"#,
+        );
+        let fns: Vec<_> = syms
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Function)
+            .collect();
+        assert_eq!(fns.len(), 1);
+        assert_eq!(fns[0].name, "my_macro");
+        assert!(fns[0].exported);
+    }
+
+    #[test]
+    fn symbols_defmacrop_not_exported() {
+        let syms = symbols(
+            r#"
+defmodule MyApp do
+  defmacrop priv_macro do
+    :ok
+  end
+end
+"#,
+        );
+        let fns: Vec<_> = syms
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Function)
+            .collect();
+        assert_eq!(fns.len(), 1);
+        assert_eq!(fns[0].name, "priv_macro");
+        assert!(!fns[0].exported);
+    }
+
+    #[test]
+    fn symbols_no_duplicates_across_def_forms() {
+        let syms = symbols(
+            r#"
+defmodule MyApp do
+  def plain(x) do
+    x
+  end
+  def no_parens do
+    :ok
+  end
+  def guarded(x) when x > 0 do
+    x
+  end
+  defmacro mac(x) do
+    x
+  end
+end
+"#,
+        );
+        let fns: Vec<_> = syms
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Function)
+            .collect();
+        assert_eq!(fns.len(), 4);
+        let names: Vec<&str> = fns.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["plain", "no_parens", "guarded", "mac"]);
+    }
+
     // ── Call extraction tests ────────────────────────────────────────────
 
     fn calls(src: &str) -> Vec<CallRef> {
@@ -445,5 +693,138 @@ end
     fn calls_dot_call() {
         let c = calls("String.upcase(\"hello\")\n");
         assert!(c.iter().any(|call| call.callee_raw == "String.upcase"));
+    }
+
+    #[test]
+    fn calls_exclude_definition_keywords() {
+        let c = calls(
+            r#"
+defmodule MyApp do
+  use GenServer
+  import Enum
+  alias MyApp.Repo
+  require Logger
+
+  def pub(x) do
+    x
+  end
+
+  defp priv(x) do
+    x
+  end
+
+  defmacro mac(x) do
+    x
+  end
+
+  defmacrop macp(x) do
+    x
+  end
+end
+"#,
+        );
+        let names: Vec<&str> = c.iter().map(|call| call.callee_raw.as_str()).collect();
+        for kw in super::ELIXIR_DEF_KEYWORDS {
+            assert!(
+                !names.contains(kw),
+                "keyword {kw:?} must not be emitted as a call, got {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn calls_exclude_def_head() {
+        let c = calls(
+            r#"
+defmodule MyApp do
+  def hello(name) do
+    String.upcase(name)
+  end
+
+  defp internal(x) do
+    x
+  end
+end
+"#,
+        );
+        let names: Vec<&str> = c.iter().map(|call| call.callee_raw.as_str()).collect();
+        assert!(
+            !names.contains(&"hello"),
+            "def head must not be a call, got {names:?}"
+        );
+        assert!(
+            !names.contains(&"internal"),
+            "defp head must not be a call, got {names:?}"
+        );
+        assert!(names.contains(&"String.upcase"));
+    }
+
+    #[test]
+    fn calls_exclude_guarded_def_head_but_keep_guard_calls() {
+        let c = calls(
+            r#"
+defmodule MyApp do
+  def guarded(x) when is_integer(x) do
+    helper(x)
+  end
+end
+"#,
+        );
+        let names: Vec<&str> = c.iter().map(|call| call.callee_raw.as_str()).collect();
+        assert!(
+            !names.contains(&"guarded"),
+            "guarded def head must not be a call, got {names:?}"
+        );
+        assert!(names.contains(&"is_integer"), "guard call must survive");
+        assert!(names.contains(&"helper"), "body call must survive");
+    }
+
+    #[test]
+    fn calls_in_body_survive_including_recursion() {
+        let c = calls(
+            r#"
+defmodule MyApp do
+  def fact(n) do
+    fact(n - 1)
+  end
+
+  def run do
+    foo(1)
+    String.upcase("hi")
+  end
+end
+"#,
+        );
+        let names: Vec<&str> = c.iter().map(|call| call.callee_raw.as_str()).collect();
+        // The recursive call site in the body is real, only the def head is not.
+        assert_eq!(
+            names.iter().filter(|n| **n == "fact").count(),
+            1,
+            "exactly the recursive body call should remain, got {names:?}"
+        );
+        assert!(names.contains(&"foo"));
+        assert!(names.contains(&"String.upcase"));
+        assert!(!names.contains(&"run"));
+        assert!(!names.contains(&"def"));
+    }
+
+    #[test]
+    fn calls_keyword_do_def_body_survives() {
+        let c = calls(
+            r#"
+defmodule MyApp do
+  defp short(x) when x > 0, do: helper(x)
+end
+"#,
+        );
+        let names: Vec<&str> = c.iter().map(|call| call.callee_raw.as_str()).collect();
+        assert!(
+            !names.contains(&"short"),
+            "guarded keyword-do def head must not be a call, got {names:?}"
+        );
+        assert!(
+            names.contains(&"helper"),
+            "keyword-do body call must survive"
+        );
     }
 }

@@ -11,13 +11,19 @@ const GO_QUERY_SRC: &str = r#"
 ;; Single import
 (import_declaration
   (import_spec
-    path: (interpreted_string_literal) @import.path))
+    path: [
+      (interpreted_string_literal)
+      (raw_string_literal)
+    ] @import.path))
 
 ;; Import block
 (import_declaration
   (import_spec_list
     (import_spec
-      path: (interpreted_string_literal) @import.path)))
+      path: [
+        (interpreted_string_literal)
+        (raw_string_literal)
+      ] @import.path)))
 "#;
 
 static GO_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -87,6 +93,10 @@ impl GoParser {
 impl super::Parser for GoParser {
     fn lang(&self) -> Lang {
         Lang::Go
+    }
+
+    fn ts_language(&self) -> Option<tree_sitter::Language> {
+        Some(tree_sitter_go::LANGUAGE.into())
     }
 
     fn extract_symbols(&self, source: &[u8], path: &Path) -> Vec<Symbol> {
@@ -217,10 +227,10 @@ impl super::Parser for GoParser {
                         Err(_) => continue,
                     };
 
-                    // Strip surrounding quotes
+                    // Strip surrounding quotes (interpreted) or backquotes (raw)
                     let raw = full_text
-                        .trim_start_matches('"')
-                        .trim_end_matches('"')
+                        .trim_start_matches(['"', '`'])
+                        .trim_end_matches(['"', '`'])
                         .to_string();
 
                     if !seen.insert(raw.clone()) {
@@ -228,7 +238,9 @@ impl super::Parser for GoParser {
                     }
 
                     // Go imports: relative paths (starting with ./) are local,
-                    // everything else is external (module paths)
+                    // everything else is external at parse time. Module-path
+                    // imports (github.com/user/repo/pkg) are flipped to Local
+                    // by the resolver on a confirmed go.mod + known-file hit.
                     let kind = if raw.starts_with("./") || raw.starts_with("../") {
                         ImportKind::Local
                     } else {
@@ -304,6 +316,26 @@ import (
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].raw, "github.com/user/repo/pkg");
         assert_eq!(imports[0].kind, ImportKind::External);
+    }
+
+    #[test]
+    fn raw_string_single_import() {
+        // Backquoted import path: import `strings`
+        let imports = parse("package main\nimport `strings`\n");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].raw, "strings");
+        assert_eq!(imports[0].kind, ImportKind::External);
+    }
+
+    #[test]
+    fn raw_string_in_import_block() {
+        let imports = parse(
+            "package main\nimport (\n    \"fmt\"\n    `github.com/user/repo/internal/x`\n)\n",
+        );
+        assert_eq!(imports.len(), 2);
+        assert_eq!(imports[0].raw, "fmt");
+        assert_eq!(imports[1].raw, "github.com/user/repo/internal/x");
+        assert_eq!(imports[1].kind, ImportKind::External);
     }
 
     // ── Symbol extraction tests ──────────────────────────────────────────

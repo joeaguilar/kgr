@@ -1,6 +1,6 @@
 # kgr — Handoff
 
-_Last updated: 2026-05-29_
+_Last updated: 2026-06-10 (blitz session)_
 
 A continuity note bridging sessions. The **`itr` tracker is the source of truth** for task
 detail — this doc is the narrative: where things stand, what's next, and the context you
@@ -10,114 +10,153 @@ can't get from code or the tracker alone. Issue IDs (`#N`) link to `itr get N`.
 
 ## TL;DR
 
-A multi-agent **triple-audit** (comedy diff roast + architecture audit + adversarially
-verified bug hunt) of `kgr` ran and produced **32 confirmed findings**. They're filed as a
-deduped backlog under epic **#6** (`itr get 6`). The headline finding — kgr's Rust resolver
-misclassifying a crate's own modules as external packages — has been **fixed and merged to
-`main`**. Everything else is open and prioritized.
+This session ran a **full six-reviewer code review** of kgr (69 new issues filed, #46–#114,
+plus #116 found mid-run) and then an **8-wave parallel agent blitz** that closed **47 of
+them** with a green `just verify` gate after every wave. The work — 38 files,
+**+6424/−494** — is sitting **uncommitted on `main`**. First order of business: review and
+commit it. Then 4 more planned waves (below) clear the remaining 23 review-batch issues.
+
+Wave log with full per-wave outcomes and all 12 interventions:
+`sprint/_unscoped/blitz-2026-06-09T22-25-41Z.md`. Blitz epic: **#115**.
 
 ---
 
 ## Repo / branch state
 
-- **`main`** — has the resolver fix (`12e0462 fix(resolve): resolve crate-local Rust imports in all layouts`). `just verify` is green here.
-- **`fix/rust-import-resolution`** — the resolver fix branch, already fast-forward-merged into `main`. Safe to delete (`git branch -d fix/rust-import-resolution`).
-- **`chore/comedy-code-roaster-agent`** — adds `.claude/agents/comedy-code-roaster.md`. **NOT yet merged.** To land:
-  ```sh
-  git checkout main && git merge --ff-only chore/comedy-code-roaster-agent
-  ```
-- `HANDOFF.md` (this file) is currently **untracked** — commit it if you want it versioned.
-- `.claude/settings.local.json` is gitignored (local config) — leave it alone.
+- **`main` @ `c643d14`** — clean baseline the blitz started from.
+- **Working tree** — 38 files changed, +6424/−494, **all gates green** (`just verify` exit 0:
+  check, clippy `-D warnings`, 44+59+21+35+428 tests, fmt). **Not committed** — review and
+  commit before launching more waves. One commit is defensible (it's one campaign); if
+  splitting, natural seams are: parsers (kgr-core/src/parse/), resolver (resolve.rs),
+  CLI/config (main.rs, config.rs, walk.rs, pipeline.rs, cache.rs), renderers (render/),
+  tests (tests/).
+- `.claude/settings.local.json` — gitignored; gained allowlist entries this session (see
+  playbook below). Leave them; waves depend on them.
+- `tests/fixtures/**/.kgr-cache.json` litter — eliminated (tests now run `KGR_NO_CACHE=1`).
+
+## What shipped (waves 1–8, 47 issues)
+
+- **W1** #49 single-file PATH support, #50 dotted-specifier resolution, #51 py decorated
+  symbols, #52 ts/js arrow/generator symbols, #57 cpp inline methods
+- **W2** #48 rust `::` calls in refs/dead/impact, #54 Ruby/PHP/Lua/Bash resolver arms,
+  #53 php import capture, #58 c/cpp phantom-Class fix, #59 elixir def forms
+- **W3** #47 init overwrite guard (`--force`), #55 zig imports, #60 cache-hermetic tests +
+  build-fingerprint CACHE_VERSION + `KGR_NO_CACHE`, #89 csharp records/generics, #90 java
+  records/interface visibility
+- **W4** #46 config fields wired (languages/format/no_progress; dead fields removed),
+  #56 go.mod resolution, #61 query/flag test coverage, #85 ruby singleton/scoped symbols,
+  #93 scala grouped imports
+- **W5** #77 rust mod child-dir-before-sibling, #72 DOT escaping, #75 table LOCAL-OUT
+  degree fix, #76 cyclic tree rendering, #87 lua module-table symbols
+- **W6** #116 `check --syntax` un-no-op'd (all 19 parsers), #66 `--format` validation
+  everywhere, #78 tsconfig alias semantics, #71/#73 mermaid IDs/escaping/determinism,
+  #102 vacuous-test hardening
+- **W7** #81/#82 ts require-imports + abstract classes, #83/#84 php static refs +
+  trait/enum symbols, #86/#111 ruby receivers + load/autoload, #91/#92 cpp template refs +
+  c typedef structs, #94 elixir pseudo-call exclusion
+- **W8** #62/#105 dead/impact `found:false` + multi-definition contracts, #79 angle-include
+  System-kind fix, #95 haskell binds + export lists, #96/#113 objc `@import` + selector fix,
+  #97 rust type/union/macro/trait-sig symbols
 
 ---
 
-## What shipped this session
+## Remaining waves (the plan — 23 review-batch issues, 4 waves)
 
-1. **Resolver fix** (#8, #9 — closed). `resolve_rust` rewritten in `crates/kgr-core/src/resolve.rs`:
-   anchors `crate::` at the owning crate's `src/` (works in workspaces), resolves bare
-   `use foo::Bar;` against crate-local modules, handles `self::`/`super::`, and shortens
-   trailing item segments. Parser (`parse/rust_lang.rs`) now expands grouped `use a::{b,c};`.
-   `graph.rs` dedups parallel edges. Replaced the fragile `../itr` snapshot tests with a
-   deterministic in-repo fixture (`tests/fixtures/rust/local_modules/`). +16 unit tests.
-2. **Backlog filed** — 30 issues under epic #6, plus follow-ups #32–#36 (see below).
-3. **`comedy-code-roaster` agent** — a meme-fluent code-review subagent (`.claude/agents/`),
-   committed on its own branch (unmerged). It did a live roast of the resolver branch that
-   surfaced four real findings (#33–#36).
+Bundling convention: same-file sibling issues share one agent slot (they can't parallelize
+anyway); that agent closes all its issue IDs. Within a wave no two slots share a file.
+
+### Wave 9 (7 issues, 5 slots)
+| Slot | Issues | Owns |
+|---|---|---|
+| 1 | #64 + #65 + #107 | main.rs, tests/integration.rs — query JSON-on-empty, target validation, selector ArgGroup |
+| 2 | #80 | detect.rs, resolve.rs — .mts/.cts/.mm detection |
+| 3 | #88 | parse/bash.rs — source extra-arg imports |
+| 4 | #98 | parse/zig.rs — const/var symbol flood |
+| 5 | #112 | parse/python.rs — `__import__`/`import_module` literals |
+
+### Wave 10 (7 issues, 5 slots)
+| Slot | Issues | Owns |
+|---|---|---|
+| 1 | #63 + #74 + #106 | main.rs, agent_docs.rs, tests/integration.rs — who-imports semantics/labels, synopsis fix, heaviest `--top` |
+| 2 | #109 | resolve.rs — go nested-subpackage pick |
+| 3 | #67 | walk.rs — invalid exclude globs surfaced |
+| 4 | #104 | cache.rs, pipeline.rs — prune deleted-file entries |
+| 5 | #101 | tests/snapshots.rs + new json .snaps — close the json snapshot hole |
+
+### Wave 11 (6 issues, 4 slots)
+| Slot | Issues | Owns |
+|---|---|---|
+| 1 | #68 + #69 + #70 | main.rs, baseline.rs, tests/integration.rs — corrupted-baseline error, upgrade self-copy, zero-files exit |
+| 2 | #114 | parse/rust_lang.rs, resolve.rs — `#[path]` attribute |
+| 3 | #108 | types.rs, walk.rs — objc serde/Display alignment (JSON value may change → snapshot touch-ups possible) |
+| 4 | #100 | tests/fixtures/** + NEW tests/e2e_languages.rs + detect.rs round-trip test (new test file avoids integration.rs conflict) |
+
+### Wave 12 (3 issues, 3 slots)
+| Slot | Issues | Owns |
+|---|---|---|
+| 1 | #99 | tests/integration.rs, tests/symbols.rs, tests/snapshots.rs — KGR_* env sanitization |
+| 2 | #110 | detect.rs, walk.rs — shebang detection |
+| 3 | #103 | .github/workflows/ci.yml, Cargo.toml — mac/windows + MSRV CI matrix |
+
+Conflict notes baked into the ordering: #99 must come after every wave that edits the three
+test files; #110 after #100/#80 (detect.rs) and #67/#108 (walk.rs); #114 after #109
+(resolve.rs); #101 before #99 (snapshots.rs).
+
+## Remaining backlog beyond the review batch (~34 issues)
+
+Not scoped into these waves — run `itr ready` for the live list:
+- **Triple-audit findings** under epic #6 (~26 open): resolver semantics (#16/#17/#18/#19,
+  #33/#34/#35, #23), rules anchoring (#11), cache key (#12), `--no-external` (#20), objc
+  calls (#21), parse failures surfaced (#22), parser drops (#25/#26), cycles/orphans
+  (#27/#28/#32), refs/dead features (#37/#38/#41/#42), entry-point modeling (#39/#40),
+  product features (#43/#44/#45).
+- **Release/install epic #1** (#2–#5): CI versioning, cargo-deny, release smoke tests,
+  install.ps1 parity.
+- Epics #6, #115 stay open until their children close.
 
 ---
 
-## What's next (prioritized)
+## Blitz process playbook (hard-won — read before running waves 9–12)
 
-Run `itr ready` for the live, urgency-sorted list. Current top of queue:
-
-### Do first
-- **#7 — CRITICAL** — silent glob-drop in `rules.rs`: a typo'd rule pattern is silently
-  dropped and `kgr check` still passes. A guardrail that disarms itself. High value, contained.
-- **#33 — high** — phantom-edge regression from the resolver fix: a bare import colliding
-  with a local module name (e.g. `use time::Duration;` when `src/time.rs` exists) draws a
-  fake Local edge. **Bug in code we just shipped** — worth closing the loop.
-
-### Then the highs (mostly silent-failure footguns)
-- **#10** `.kgr.toml` parse error silently wipes the entire config.
-- **#11** rule globs anchored to full path → common patterns silently never match (dead rules).
-- **#12** parse cache: whole-second mtime + size key misses same-second / same-length edits.
-- **#13** `kgr graph --format json --symbols` omits `external_deps` (JSON contract violation).
-- **#14** four wired commands (`orient`/`impact`/`hotspots`/`skeleton`) undocumented in AGENT_DOCS.
-
-### Mediums / lows
-~20 issues spanning determinism (#15), Python resolution (#16/#17), `--no-external` no-op
-(#20), parser correctness (#21, #25, #26), portability (#24), and the resolver follow-ups
-below. See epic #6 children.
-
-### Resolver follow-ups (from the roaster)
-- **#33** high — phantom edges (above).
-- **#34** medium — `external_packages` lists item-level paths + duplicates (`std` ×3), not
-  package names. This is the unfinished half of #8's acceptance.
-- **#35** low — `crate_src_base` silently falls back to repo root when no `src/` ancestor.
-- **#36** low — add a test pinning glob imports (`super::*`) to intentional-`None`.
-
-### Separate epic
-- **#1** — release & install pipeline parity with `itr` (#2–#5). Independent of the audit work.
-
----
-
-## Key context & decisions (the stuff you'd otherwise have to rediscover)
-
-- **The resolver fix uses heuristics, knowingly.** `crate_src_base` finds the nearest
-  ancestor dir literally named `src`; `module_dir` special-cases `mod`/`lib`/`main`;
-  `try_module` pops trailing segments. These are correct for normal layouts but have the
-  documented gaps in #33/#35. Don't "clean them up" without reading those issues first.
-- **kgr now detects a real cycle in its own `parse/` module (#32).** Every parser does
-  `use crate::parse::Parser;` while `parse/mod.rs` declares `pub mod <lang>;` — a genuine
-  20-node SCC. The *old* resolver was blind to it; the fix exposes it. So **`kgr check` on
-  kgr itself will now report this cycle** — decide whether to break it (extract the `Parser`
-  trait to a leaf module) or baseline it. Not a regression; better detection.
-- **Newer clippy is stricter.** The toolchain here (rust-1.95.0) flags `unnecessary_sort_by`,
-  which tripped pre-existing code. Two were fixed in the resolver commit. If CI used an older
-  clippy, expect divergence.
-- **`comedy-code-roaster` agent doesn't hot-reload mid-session.** A freshly created
-  `.claude/agents/*.md` isn't picked up by the `Agent` tool / workflow `agentType` in the
-  same session that created it. Workarounds: start a new session, or run a `general-purpose`
-  agent with the roaster persona inlined (that's how the live roast was done).
-- **Snapshots:** `cargo-insta` is not installed. Use `INSTA_UPDATE=new cargo test -p kgr
-  --test snapshots` then rename `.snap.new` → `.snap` (strip the `assertion_line:` field to
-  match repo style). The fixture writes a gitignored `.kgr-cache.json` on each run — ignore it.
+1. **Permissions.** `.claude/settings.local.json` allows `just verify`, `cargo
+   check/test/clippy`, `cargo fmt --check`, `itr *` so background wave agents can
+   self-verify and self-close. The matcher denies compound forms (`cmd; echo $?`), pipes
+   around allowed commands, and env-prefixed commands (`ITR_AGENT=x itr ...`) — wave prompts
+   must say "plain commands only, plain `itr close`".
+2. **Formatter rules.** Wave agents NEVER run `cargo fmt` (crate-wide; wipes neighbors) or
+   `just update-snapshots`/`cargo insta accept` (bakes in neighbors' breakage). Agents
+   hand-fix drift in their OWN files **before their final gate** — this rule (added in W8)
+   eliminated the W7 wedges. Orchestrator may run `cargo fmt --all` only when ALL agents
+   are terminal.
+3. **Stranded agents.** Agents that "wait for a notification" die with their turn —
+   sleep-watchers never fire. Prompts must say "retry the gate IN THIS TURN". When an agent
+   dies with work done but task open: `git diff -- <its files>` to verify, run the gate
+   yourself, close with attribution. If a DEAD agent left fmt drift, hand-fix it
+   immediately — it will never self-clear and wedges every live agent.
+4. **Snapshots.** Hand-edit only the `.snap` files a change provably affects, derived from
+   verified runs. `cargo-insta` is not installed; `INSTA_UPDATE=new` + rename works for
+   solo sessions but is forbidden mid-wave.
+5. **Test-writing traps.** Python fixtures' edges are distorted by open #16/#17 — write
+   edge-dependent tests against TS fixtures or tempdirs. Use the `kgr()` helper in
+   integration.rs (sets `KGR_NO_CACHE=1`). Don't bake open bugs (#20 `--no-external`) into
+   assertions; reference issue numbers in comments instead.
+6. **Gate.** `just verify` exit 0 between waves, no exceptions, even when every agent
+   reported green.
 
 ---
 
 ## How to resume
 
 ```sh
-itr ready -f json --fields id,title,urgency,status   # what's next
-itr get 7 -f json                                    # read full detail before starting
-itr update <ID> --assigned-to <you> --status in-progress
-# ... work ...
-cargo check --workspace && cargo clippy --workspace --all-targets -- -D warnings \
-  && cargo test --workspace && cargo fmt --all -- --check   # the verify gate (just verify, if `just` is installed)
-itr note <ID> "what changed" && itr close <ID> "reason"
+just verify                      # confirm still green
+git add -A && git commit ...     # land waves 1–8 first (branch if you prefer)
+itr ready -f json --fields id,title,urgency,status
+# then run /blitz and point it at Wave 9 above, or work issues solo
 ```
 
-- **Verify gate must be green** (zero warnings/errors) before committing.
-- **Branch before committing** if you're on `main`; merge with `--ff-only`.
-- To roast more code: see the agent persona in `.claude/agents/comedy-code-roaster.md`;
-  run it via `general-purpose` with the persona inlined until a fresh session loads it natively.
+- Wave log: `sprint/_unscoped/blitz-2026-06-09T22-25-41Z.md` (config, conflicts, all
+  interventions, per-wave outcomes).
+- Carried-over context still true from the last session: the resolver is knowingly
+  heuristic (`crate_src_base`, `module_dir` — see #33/#35 before "cleaning up"); kgr
+  detects a real 20-node cycle in its own `parse/` module (#32) — break or baseline it;
+  clippy 1.95 is stricter than older toolchains.

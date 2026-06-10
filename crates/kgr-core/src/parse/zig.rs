@@ -77,6 +77,10 @@ impl super::Parser for ZigParser {
         Lang::Zig
     }
 
+    fn ts_language(&self) -> Option<tree_sitter::Language> {
+        Some(tree_sitter_zig::LANGUAGE.into())
+    }
+
     fn extract_symbols(&self, source: &[u8], path: &Path) -> Vec<Symbol> {
         let tree = match self.parse_tree(source, path) {
             Some(t) => t,
@@ -243,7 +247,15 @@ impl super::Parser for ZigParser {
                     continue;
                 }
 
-                let kind = if raw.starts_with("./") || raw.starts_with("../") {
+                // Idiomatic Zig imports sibling files without a ./ prefix:
+                // any path ending in `.zig` or containing `/` is a file
+                // import (Local). Bare names without either (`std`, package
+                // names from build.zig.zon) are package imports (External).
+                // The ./ and ../ forms are covered by the `/` check.
+                let has_zig_ext = Path::new(&raw)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("zig"));
+                let kind = if has_zig_ext || raw.contains('/') {
                     ImportKind::Local
                 } else {
                     ImportKind::External
@@ -301,6 +313,32 @@ mod tests {
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].raw, "../lib.zig");
         assert_eq!(imports[0].kind, ImportKind::Local);
+    }
+
+    #[test]
+    fn import_sibling_without_prefix_is_local() {
+        // Idiomatic Zig: no ./ prefix on sibling file imports.
+        let imports = parse(r#"const utils = @import("utils.zig");"#);
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].raw, "utils.zig");
+        assert_eq!(imports[0].kind, ImportKind::Local);
+    }
+
+    #[test]
+    fn import_subdir_without_prefix_is_local() {
+        let imports = parse(r#"const mod = @import("sub/mod.zig");"#);
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].raw, "sub/mod.zig");
+        assert_eq!(imports[0].kind, ImportKind::Local);
+    }
+
+    #[test]
+    fn import_bare_package_name_stays_external() {
+        // Package names from build.zig.zon: no .zig suffix, no slash.
+        let imports = parse(r#"const zap = @import("zap");"#);
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].raw, "zap");
+        assert_eq!(imports[0].kind, ImportKind::External);
     }
 
     #[test]

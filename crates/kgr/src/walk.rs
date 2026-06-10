@@ -67,33 +67,8 @@ pub fn discover(
         }
 
         // Filter by requested languages.
-        if let Some(ref lang_filter) = langs {
-            let lang_str = lang.to_string();
-            let short = match lang {
-                Lang::Python => "py",
-                Lang::TypeScript => "ts",
-                Lang::JavaScript => "js",
-                Lang::Java => "java",
-                Lang::C => "c",
-                Lang::Cpp => "cpp",
-                Lang::Rust => "rs",
-                Lang::Go => "go",
-                Lang::Zig => "zig",
-                Lang::CSharp => "cs",
-                Lang::ObjectiveC => "objc",
-                Lang::Swift => "swift",
-                Lang::Ruby => "rb",
-                Lang::Php => "php",
-                Lang::Scala => "scala",
-                Lang::Lua => "lua",
-                Lang::Elixir => "ex",
-                Lang::Haskell => "hs",
-                Lang::Bash => "sh",
-                Lang::Unknown => continue,
-            };
-            if !lang_filter.iter().any(|l| l == &lang_str || l == short) {
-                continue;
-            }
+        if !lang_matches(lang, langs) {
+            continue;
         }
 
         // Make path relative to root.
@@ -109,6 +84,83 @@ pub fn discover(
 
     files.sort_by(|a, b| a.path.cmp(&b.path));
     files
+}
+
+/// Discover a single explicitly-named file. `root` is the directory used as
+/// the scan root (typically the file's parent directory); the returned path
+/// is relative to it so the rest of the pipeline (parsing, import
+/// resolution) works exactly as it does for directory scans.
+///
+/// Explicitly named files intentionally bypass config `exclude` globs — the
+/// user asked for this file by name. Returns a human-readable reason when
+/// the file cannot be analyzed.
+pub fn discover_single_file(
+    root: &Path,
+    file: &Path,
+    langs: &Option<Vec<String>>,
+    max_file_size: Option<u64>,
+) -> Result<DiscoveredFile, String> {
+    let lang = detect_lang(file);
+    if lang == Lang::Unknown {
+        return Err("unsupported file type (unknown language)".to_string());
+    }
+    if !lang_matches(lang, langs) {
+        return Err(format!("language '{}' excluded by --lang filter", lang));
+    }
+
+    let meta = std::fs::metadata(file).ok();
+    let mtime = meta.as_ref().and_then(|m| m.modified().ok());
+    let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+
+    if let Some(max) = max_file_size {
+        if size > max {
+            return Err(format!(
+                "file size {} exceeds the max file size limit of {} bytes",
+                size, max
+            ));
+        }
+    }
+
+    let rel_path = file.strip_prefix(root).unwrap_or(file).to_path_buf();
+
+    Ok(DiscoveredFile {
+        path: rel_path,
+        lang,
+        mtime,
+        size,
+    })
+}
+
+/// True when `lang` passes the optional `--lang` filter (matched by full
+/// name, e.g. "python", or short name, e.g. "py").
+fn lang_matches(lang: Lang, langs: &Option<Vec<String>>) -> bool {
+    let Some(filter) = langs else {
+        return true;
+    };
+    let short = match lang {
+        Lang::Python => "py",
+        Lang::TypeScript => "ts",
+        Lang::JavaScript => "js",
+        Lang::Java => "java",
+        Lang::C => "c",
+        Lang::Cpp => "cpp",
+        Lang::Rust => "rs",
+        Lang::Go => "go",
+        Lang::Zig => "zig",
+        Lang::CSharp => "cs",
+        Lang::ObjectiveC => "objc",
+        Lang::Swift => "swift",
+        Lang::Ruby => "rb",
+        Lang::Php => "php",
+        Lang::Scala => "scala",
+        Lang::Lua => "lua",
+        Lang::Elixir => "ex",
+        Lang::Haskell => "hs",
+        Lang::Bash => "sh",
+        Lang::Unknown => return false,
+    };
+    let lang_str = lang.to_string();
+    filter.iter().any(|l| l == &lang_str || l == short)
 }
 
 fn build_glob_set(patterns: &[String]) -> GlobSet {

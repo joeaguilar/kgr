@@ -12,6 +12,11 @@ const TS_QUERY_SRC: &str = r#"
 (import_statement
   source: (string (string_fragment) @import.path))
 
+;; TS CommonJS interop: import x = require('./y')
+(import_statement
+  (import_require_clause
+    source: (string (string_fragment) @import.path)))
+
 ;; Re-export
 (export_statement
   source: (string (string_fragment) @import.path))
@@ -19,6 +24,11 @@ const TS_QUERY_SRC: &str = r#"
 ;; Dynamic import (bare call_expression, not wrapped in await)
 (call_expression
   function: (import)
+  arguments: (arguments (string (string_fragment) @import.path)))
+
+;; CommonJS require — we filter for "require" manually
+(call_expression
+  function: (identifier) @_fn
   arguments: (arguments (string (string_fragment) @import.path)))
 "#;
 
@@ -33,6 +43,30 @@ const TS_SYMBOL_QUERY_SRC: &str = r#"
   (function_declaration
     name: (identifier) @fn.name))
 
+;; Exported generator function
+(export_statement
+  declaration: (generator_function_declaration
+    name: (identifier) @fn.exported))
+
+;; Non-exported generator function
+(program
+  (generator_function_declaration
+    name: (identifier) @fn.name))
+
+;; Exported const/let arrow or function expression
+(export_statement
+  declaration: (lexical_declaration
+    (variable_declarator
+      name: (identifier) @fn.exported
+      value: [(arrow_function) (function_expression) (generator_function)])))
+
+;; Non-exported const/let arrow or function expression
+(program
+  (lexical_declaration
+    (variable_declarator
+      name: (identifier) @fn.name
+      value: [(arrow_function) (function_expression) (generator_function)])))
+
 ;; Exported class
 (export_statement
   declaration: (class_declaration
@@ -43,8 +77,24 @@ const TS_SYMBOL_QUERY_SRC: &str = r#"
   (class_declaration
     name: (type_identifier) @class.name))
 
+;; Exported abstract class
+(export_statement
+  declaration: (abstract_class_declaration
+    name: (type_identifier) @class.exported))
+
+;; Non-exported abstract class
+(program
+  (abstract_class_declaration
+    name: (type_identifier) @class.name))
+
 ;; Method inside class
 (class_declaration
+  body: (class_body
+    (method_definition
+      name: (property_identifier) @method.name)))
+
+;; Method inside abstract class
+(abstract_class_declaration
   body: (class_body
     (method_definition
       name: (property_identifier) @method.name)))
@@ -146,6 +196,20 @@ fn parse_tree(source: &[u8], path: &Path) -> Option<tree_sitter::Tree> {
 impl super::Parser for TypeScriptParser {
     fn lang(&self) -> Lang {
         Lang::TypeScript
+    }
+
+    fn ts_language(&self) -> Option<tree_sitter::Language> {
+        Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+    }
+
+    /// Override the default so `.tsx` files are checked with the TSX grammar
+    /// instead of the plain TypeScript grammar (valid JSX would otherwise be
+    /// flagged as a syntax error).
+    fn parse_errors(&self, source: &[u8], path: &Path) -> Vec<crate::types::ParseError> {
+        match parse_tree(source, path) {
+            Some(tree) => super::collect_parse_errors(&tree),
+            None => Vec::new(),
+        }
     }
 
     fn extract_symbols(&self, source: &[u8], path: &Path) -> Vec<Symbol> {
@@ -309,6 +373,13 @@ fn parse_with(
         }
     };
 
+    let fn_capture_idx = query
+        .capture_index_for_name("_fn")
+        .expect("_fn capture must exist");
+    let path_capture_idx = query
+        .capture_index_for_name("import.path")
+        .expect("import.path capture must exist");
+
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(query, tree.root_node(), source);
 
@@ -316,8 +387,25 @@ fn parse_with(
     let mut seen = std::collections::HashSet::new();
 
     while let Some(m) = matches.next() {
-        for capture in m.captures {
-            let node = capture.node;
+        // Check if this match has a _fn capture (require pattern)
+        let fn_capture = m.captures.iter().find(|c| c.index == fn_capture_idx);
+
+        if let Some(fc) = fn_capture {
+            // This is the require() pattern — verify function name is "require"
+            let fn_name = match fc.node.utf8_text(source) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            if fn_name != "require" {
+                continue;
+            }
+        }
+
+        // Extract the import path
+        let path_capture = m.captures.iter().find(|c| c.index == path_capture_idx);
+
+        if let Some(pc) = path_capture {
+            let node = pc.node;
             let raw = match node.utf8_text(source) {
                 Ok(s) => s.to_string(),
                 Err(_) => continue,
@@ -367,6 +455,25 @@ mod tests {
     }
 
     #[test]
+    fn parse_errors_flags_malformed_source() {
+        let errors = TypeScriptParser.parse_errors(b"function broken(:", Path::new("broken.ts"));
+        assert!(
+            !errors.is_empty(),
+            "expected syntax errors for malformed typescript source"
+        );
+    }
+
+    #[test]
+    fn parse_errors_uses_tsx_grammar_for_tsx_paths() {
+        let src = b"const x = <div>hello</div>;\n";
+        let errors = TypeScriptParser.parse_errors(src, Path::new("comp.tsx"));
+        assert!(
+            errors.is_empty(),
+            "valid JSX in a .tsx file should not be flagged as a syntax error"
+        );
+    }
+
+    #[test]
     fn named_import() {
         let imports = parse_ts(r#"import { foo, bar } from './utils';"#);
         assert_eq!(imports.len(), 1);
@@ -405,6 +512,53 @@ mod tests {
     }
 
     #[test]
+    fn import_equals_require() {
+        let imports = parse_ts(r#"import legacy = require('./legacy');"#);
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].raw, "./legacy");
+        assert_eq!(imports[0].kind, ImportKind::Local);
+    }
+
+    #[test]
+    fn import_equals_require_external() {
+        let imports = parse_ts(r#"import express = require('express');"#);
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].raw, "express");
+        assert_eq!(imports[0].kind, ImportKind::External);
+    }
+
+    #[test]
+    fn require_call() {
+        let imports = parse_ts(r#"const utils = require('./utils');"#);
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].raw, "./utils");
+        assert_eq!(imports[0].kind, ImportKind::Local);
+    }
+
+    #[test]
+    fn require_call_external() {
+        let imports = parse_ts(r#"const express = require('express');"#);
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].raw, "express");
+        assert_eq!(imports[0].kind, ImportKind::External);
+    }
+
+    #[test]
+    fn require_call_tsx() {
+        let imports = parse_tsx(r#"const utils = require('./utils');"#);
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].raw, "./utils");
+        assert_eq!(imports[0].kind, ImportKind::Local);
+    }
+
+    #[test]
+    fn ignores_non_require_calls() {
+        let imports = parse_ts(r#"const x = someFunc('./path');"#);
+        // someFunc is not "require", so ./path should not be captured
+        assert!(imports.is_empty());
+    }
+
+    #[test]
     fn multiple_imports() {
         let imports = parse_ts(
             r#"
@@ -415,6 +569,106 @@ export * from './c';
 "#,
         );
         assert_eq!(imports.len(), 4);
+    }
+
+    // ── Symbol extraction tests ──────────────────────────────────────────
+
+    fn symbols(src: &str) -> Vec<Symbol> {
+        TypeScriptParser.extract_symbols(src.as_bytes(), Path::new("test.ts"))
+    }
+
+    #[test]
+    fn symbols_const_arrow_function() {
+        let syms = symbols("const handler = () => {};\n");
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "handler");
+        assert_eq!(syms[0].kind, SymbolKind::Function);
+        assert!(!syms[0].exported);
+    }
+
+    #[test]
+    fn symbols_const_function_expression() {
+        let syms = symbols("const legacy = function () {};\n");
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "legacy");
+        assert_eq!(syms[0].kind, SymbolKind::Function);
+        assert!(!syms[0].exported);
+    }
+
+    #[test]
+    fn symbols_exported_const_arrow() {
+        let syms = symbols("export const arrowExported = () => {};\n");
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "arrowExported");
+        assert_eq!(syms[0].kind, SymbolKind::Function);
+        assert!(syms[0].exported);
+    }
+
+    #[test]
+    fn symbols_generator_function() {
+        let syms = symbols("function* genFn() { yield 1; }\n");
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "genFn");
+        assert_eq!(syms[0].kind, SymbolKind::Function);
+        assert!(!syms[0].exported);
+    }
+
+    #[test]
+    fn symbols_exported_generator_function() {
+        let syms = symbols("export function* genExported() { yield 1; }\n");
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "genExported");
+        assert!(syms[0].exported);
+    }
+
+    #[test]
+    fn symbols_ignores_data_constants() {
+        let syms = symbols("const x = 5;\nconst s = 'hi';\nexport const arr = [1, 2];\n");
+        assert!(syms.is_empty());
+    }
+
+    #[test]
+    fn symbols_abstract_class() {
+        let syms = symbols("abstract class A {}\n");
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "A");
+        assert_eq!(syms[0].kind, SymbolKind::Class);
+        assert!(!syms[0].exported);
+    }
+
+    #[test]
+    fn symbols_exported_abstract_class() {
+        let syms = symbols("export abstract class A {}\n");
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "A");
+        assert_eq!(syms[0].kind, SymbolKind::Class);
+        assert!(syms[0].exported);
+    }
+
+    #[test]
+    fn symbols_abstract_class_methods() {
+        let syms = symbols("export abstract class Svc {\n  run(): void {}\n  stop(): void {}\n}\n");
+        let class = syms.iter().find(|s| s.name == "Svc").unwrap();
+        assert_eq!(class.kind, SymbolKind::Class);
+        assert!(class.exported);
+        let methods: Vec<_> = syms
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Method)
+            .collect();
+        assert_eq!(methods.len(), 2);
+        assert_eq!(methods[0].name, "run");
+        assert_eq!(methods[1].name, "stop");
+    }
+
+    #[test]
+    fn symbols_tsx_const_arrow() {
+        let syms = TypeScriptParser.extract_symbols(
+            b"export const App = () => <div />;\n",
+            Path::new("test.tsx"),
+        );
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "App");
+        assert!(syms[0].exported);
     }
 
     // ── Call / type-ref extraction tests ──────────────────────────────────

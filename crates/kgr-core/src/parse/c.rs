@@ -34,13 +34,38 @@ const C_SYMBOL_QUERY_SRC: &str = r#"
     declarator: (function_declarator
       declarator: (identifier) @fn.name)))
 
-;; Struct definition
+;; Struct definition — body required so forward declarations and
+;; usage sites (e.g. `struct Point p;`) don't register symbols
 (struct_specifier
-  name: (type_identifier) @class.name)
+  name: (type_identifier) @class.name
+  body: (field_declaration_list))
 
-;; Enum definition
+;; Enum definition — body required, same as struct
 (enum_specifier
-  name: (type_identifier) @class.name)
+  name: (type_identifier) @class.name
+  body: (enumerator_list))
+
+;; typedef struct { ... } Name — the dominant C struct-declaration idiom.
+;; Body required so forward typedefs (`typedef struct Foo Foo;`) don't
+;; register symbols. When the specifier also has a tag equal to the typedef
+;; name (`typedef struct Bar { } Bar;`), extract_symbols skips the
+;; declarator capture to avoid duplicates.
+(type_definition
+  type: (struct_specifier
+    body: (field_declaration_list))
+  declarator: (type_identifier) @class.name)
+
+;; typedef enum { ... } Name
+(type_definition
+  type: (enum_specifier
+    body: (enumerator_list))
+  declarator: (type_identifier) @class.name)
+
+;; typedef union { ... } Name
+(type_definition
+  type: (union_specifier
+    body: (field_declaration_list))
+  declarator: (type_identifier) @class.name)
 "#;
 
 static C_SYMBOL_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -92,6 +117,10 @@ impl super::Parser for CParser {
         Lang::C
     }
 
+    fn ts_language(&self) -> Option<tree_sitter::Language> {
+        Some(tree_sitter_c::LANGUAGE.into())
+    }
+
     fn extract_symbols(&self, source: &[u8], path: &Path) -> Vec<Symbol> {
         let tree = match self.parse_tree(source, path) {
             Some(t) => t,
@@ -113,6 +142,23 @@ impl super::Parser for CParser {
                     Ok(s) => s.to_string(),
                     Err(_) => continue,
                 };
+
+                // typedef declarator that merely repeats the specifier tag
+                // (`typedef struct Bar { ... } Bar;`) — the tag pattern
+                // already captured it; skip so multi-line forms don't emit
+                // duplicates (line-based dedup only covers single-line ones).
+                if let Some(parent) = node.parent() {
+                    if parent.kind() == "type_definition" {
+                        if let Some(tag) = parent
+                            .child_by_field_name("type")
+                            .and_then(|spec| spec.child_by_field_name("name"))
+                        {
+                            if tag.utf8_text(source) == Ok(name.as_str()) {
+                                continue;
+                            }
+                        }
+                    }
+                }
 
                 let start = node.start_position();
 
@@ -387,6 +433,88 @@ mod tests {
         let public = syms.iter().find(|s| s.name == "public_fn").unwrap();
         assert!(!helper.exported);
         assert!(public.exported);
+    }
+
+    #[test]
+    fn symbols_ignores_bodyless_specifiers() {
+        let syms =
+            symbols("struct Point;\nstruct Point p;\nenum Color c;\nvoid f(struct Point *q) {}\n");
+        assert!(!syms.iter().any(|s| s.kind == SymbolKind::Class));
+        assert!(syms
+            .iter()
+            .any(|s| s.name == "f" && s.kind == SymbolKind::Function));
+    }
+
+    #[test]
+    fn symbols_definition_not_duplicated_by_usage() {
+        let syms = symbols("struct Point { int x; };\nvoid f(struct Point *p) {}\n");
+        let points: Vec<_> = syms
+            .iter()
+            .filter(|s| s.name == "Point" && s.kind == SymbolKind::Class)
+            .collect();
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].span.start_line, 1);
+    }
+
+    #[test]
+    fn symbols_finds_anonymous_typedef_struct() {
+        let syms = symbols("typedef struct { int a; } Foo;\n");
+        assert!(syms
+            .iter()
+            .any(|s| s.name == "Foo" && s.kind == SymbolKind::Class));
+    }
+
+    #[test]
+    fn symbols_finds_typedef_enum_and_union() {
+        let syms = symbols(
+            "typedef enum { RED, GREEN } Color;\ntypedef union { int i; float f; } Value;\n",
+        );
+        assert!(syms
+            .iter()
+            .any(|s| s.name == "Color" && s.kind == SymbolKind::Class));
+        assert!(syms
+            .iter()
+            .any(|s| s.name == "Value" && s.kind == SymbolKind::Class));
+    }
+
+    #[test]
+    fn symbols_named_typedef_struct_no_duplicates() {
+        let syms = symbols("typedef struct Bar { int b; } Bar;\n");
+        let bars: Vec<_> = syms
+            .iter()
+            .filter(|s| s.name == "Bar" && s.kind == SymbolKind::Class)
+            .collect();
+        assert_eq!(bars.len(), 1);
+    }
+
+    #[test]
+    fn symbols_named_multiline_typedef_struct_no_duplicates() {
+        // Tag and declarator land on different lines, so line-based dedup
+        // alone can't catch this — the tag-repeat guard must.
+        let syms = symbols("typedef struct Node {\n  struct Node *next;\n} Node;\n");
+        let nodes: Vec<_> = syms
+            .iter()
+            .filter(|s| s.name == "Node" && s.kind == SymbolKind::Class)
+            .collect();
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[test]
+    fn symbols_typedef_with_distinct_tag_keeps_both() {
+        // `struct BarTag` and `Bar` are both real type names.
+        let syms = symbols("typedef struct BarTag { int b; } Bar;\n");
+        assert!(syms
+            .iter()
+            .any(|s| s.name == "BarTag" && s.kind == SymbolKind::Class));
+        assert!(syms
+            .iter()
+            .any(|s| s.name == "Bar" && s.kind == SymbolKind::Class));
+    }
+
+    #[test]
+    fn symbols_forward_typedef_not_captured() {
+        let syms = symbols("typedef struct Opaque Opaque;\n");
+        assert!(!syms.iter().any(|s| s.kind == SymbolKind::Class));
     }
 
     // ── Call extraction tests ────────────────────────────────────────────

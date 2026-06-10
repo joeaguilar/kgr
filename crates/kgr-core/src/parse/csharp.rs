@@ -44,6 +44,11 @@ const CSHARP_SYMBOL_QUERY_SRC: &str = r#"
 (enum_declaration
   name: (identifier) @class.name)
 
+;; Record declaration: covers both `record Person(...)` and `record struct Point(...)`
+;; (this grammar version uses record_declaration for both)
+(record_declaration
+  name: (identifier) @class.name)
+
 ;; Method declaration
 (method_declaration
   name: (identifier) @method.name)
@@ -63,14 +68,41 @@ const CSHARP_CALL_QUERY_SRC: &str = r#"
 (invocation_expression
   function: (identifier) @call.name)
 
+;; Generic method invocation: Foo<int>() -- capture the inner identifier (Foo)
+(invocation_expression
+  function: (generic_name
+    (identifier) @call.name))
+
 ;; Member access call: obj.Method()
 (invocation_expression
   function: (member_access_expression
     name: (identifier) @call.method))
 
+;; Generic member access call: obj.Select<int>()
+(invocation_expression
+  function: (member_access_expression
+    name: (generic_name
+      (identifier) @call.method)))
+
 ;; Object creation: new ClassName()
 (object_creation_expression
   type: (identifier) @call.new)
+
+;; Generic object creation: new List<int>() -- capture the inner identifier (List)
+(object_creation_expression
+  type: (generic_name
+    (identifier) @call.new))
+
+;; Qualified object creation: new System.Text.StringBuilder()
+(object_creation_expression
+  type: (qualified_name
+    name: (identifier) @call.new))
+
+;; Qualified generic object creation: new System.Collections.Generic.List<int>()
+(object_creation_expression
+  type: (qualified_name
+    name: (generic_name
+      (identifier) @call.new)))
 "#;
 
 thread_local! {
@@ -99,6 +131,10 @@ impl CSharpParser {
 impl super::Parser for CSharpParser {
     fn lang(&self) -> Lang {
         Lang::CSharp
+    }
+
+    fn ts_language(&self) -> Option<tree_sitter::Language> {
+        Some(tree_sitter_c_sharp::LANGUAGE.into())
     }
 
     fn extract_symbols(&self, source: &[u8], path: &Path) -> Vec<Symbol> {
@@ -350,6 +386,41 @@ using Newtonsoft.Json;
             .any(|s| s.name == "Color" && s.kind == SymbolKind::Class));
     }
 
+    #[test]
+    fn csharp_symbols_finds_records() {
+        let syms = symbols("public record Person(string Name);");
+        let person = syms.iter().find(|s| s.name == "Person").unwrap();
+        assert_eq!(person.kind, SymbolKind::Class);
+        assert!(person.exported);
+    }
+
+    #[test]
+    fn csharp_symbols_finds_record_structs() {
+        let syms = symbols("public record struct Point(int X, int Y);");
+        let point = syms.iter().find(|s| s.name == "Point").unwrap();
+        assert_eq!(point.kind, SymbolKind::Class);
+        assert!(point.exported);
+    }
+
+    #[test]
+    fn csharp_symbols_record_not_exported_without_public() {
+        let syms = symbols("record Internal(string Id);");
+        let rec = syms.iter().find(|s| s.name == "Internal").unwrap();
+        assert_eq!(rec.kind, SymbolKind::Class);
+        assert!(!rec.exported);
+    }
+
+    #[test]
+    fn csharp_symbols_record_with_body_finds_methods() {
+        let syms = symbols("public record Person(string Name) { public string Greet() => Name; }");
+        assert!(syms
+            .iter()
+            .any(|s| s.name == "Person" && s.kind == SymbolKind::Class));
+        assert!(syms
+            .iter()
+            .any(|s| s.name == "Greet" && s.kind == SymbolKind::Method && s.exported));
+    }
+
     // -- Call extraction tests --
 
     fn calls(src: &str) -> Vec<CallRef> {
@@ -372,5 +443,39 @@ using Newtonsoft.Json;
     fn csharp_calls_object_creation() {
         let c = calls("class T { void F() { new List(); } }");
         assert!(c.iter().any(|c| c.callee_raw == "List"));
+    }
+
+    #[test]
+    fn csharp_calls_generic_object_creation() {
+        let c = calls("class T { void F() { new List<int>(); } }");
+        // The inner identifier is captured, not the full generic name.
+        assert!(c.iter().any(|c| c.callee_raw == "List"));
+        assert!(!c.iter().any(|c| c.callee_raw.contains('<')));
+    }
+
+    #[test]
+    fn csharp_calls_generic_invocation() {
+        let c = calls("class T { void F() { Foo<int>(); } }");
+        assert!(c.iter().any(|c| c.callee_raw == "Foo"));
+        assert!(!c.iter().any(|c| c.callee_raw.contains('<')));
+    }
+
+    #[test]
+    fn csharp_calls_generic_member_access() {
+        let c = calls("class T { void F() { obj.Select<int>(); } }");
+        assert!(c.iter().any(|c| c.callee_raw == "Select"));
+    }
+
+    #[test]
+    fn csharp_calls_qualified_object_creation() {
+        let c = calls("class T { void F() { new System.Text.StringBuilder(); } }");
+        assert!(c.iter().any(|c| c.callee_raw == "StringBuilder"));
+    }
+
+    #[test]
+    fn csharp_calls_qualified_generic_object_creation() {
+        let c = calls("class T { void F() { new System.Collections.Generic.List<int>(); } }");
+        assert!(c.iter().any(|c| c.callee_raw == "List"));
+        assert!(!c.iter().any(|c| c.callee_raw.contains('<')));
     }
 }

@@ -19,10 +19,28 @@ static LUA_QUERY: LazyLock<Query> = LazyLock::new(|| {
     Query::new(&language, LUA_QUERY_SRC).expect("Failed to compile Lua import query")
 });
 
+// Symbol naming convention: for table-attached functions (`function M.foo()`,
+// `function M:bar()`) we emit the *trailing identifier* (`foo`, `bar`), not the
+// full dotted text. Consumers alias module tables (`local mod = require("m");
+// mod.foo()`), so the table half of the name is caller-specific; the trailing
+// identifier is what `callee_matches` suffix-matching can connect to call sites.
 const LUA_SYMBOL_QUERY_SRC: &str = r#"
 ;; Function declaration (both global and local)
 (function_declaration
   name: (identifier) @fn.name)
+
+;; Module-table function: function M.foo() end
+(function_declaration
+  name: (dot_index_expression field: (identifier) @fn.dotted))
+
+;; Method on a table: function M:bar() end
+(function_declaration
+  name: (method_index_expression method: (identifier) @fn.method))
+
+;; Function assigned to a variable: local f = function() end / g = function() end
+(assignment_statement
+  (variable_list name: (identifier) @fn.assigned)
+  (expression_list value: (function_definition)))
 "#;
 
 static LUA_SYMBOL_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -79,6 +97,10 @@ impl super::Parser for LuaParser {
         Lang::Lua
     }
 
+    fn ts_language(&self) -> Option<tree_sitter::Language> {
+        Some(tree_sitter_lua::LANGUAGE.into())
+    }
+
     fn extract_symbols(&self, source: &[u8], path: &Path) -> Vec<Symbol> {
         let tree = match self.parse_tree(source, path) {
             Some(t) => t,
@@ -87,26 +109,49 @@ impl super::Parser for LuaParser {
 
         let query = &*LUA_SYMBOL_QUERY;
         let fn_idx = query.capture_index_for_name("fn.name").unwrap();
+        let dotted_idx = query.capture_index_for_name("fn.dotted").unwrap();
+        let method_idx = query.capture_index_for_name("fn.method").unwrap();
+        let assigned_idx = query.capture_index_for_name("fn.assigned").unwrap();
 
         let mut cursor = QueryCursor::new();
         let mut symbols = Vec::new();
         let mut matches = cursor.matches(query, tree.root_node(), source);
         while let Some(m) = matches.next() {
             for capture in m.captures {
-                if capture.index != fn_idx {
-                    continue;
-                }
                 let node = capture.node;
+
+                let (kind, exported) = if capture.index == fn_idx {
+                    // `function foo()` is global (exported); `local function foo()`
+                    // is file-private. The `local` keyword is part of the
+                    // function_declaration node's source text.
+                    let fn_node = node.parent().unwrap();
+                    let fn_src = fn_node.utf8_text(source).unwrap_or("");
+                    (SymbolKind::Function, !fn_src.starts_with("local"))
+                } else if capture.index == dotted_idx {
+                    // `function M.foo()` attaches to a table — the module-table
+                    // pattern. Cannot be declared local, so always exported.
+                    (SymbolKind::Function, true)
+                } else if capture.index == method_idx {
+                    // `function M:bar()` — a method on a table; always exported.
+                    (SymbolKind::Method, true)
+                } else if capture.index == assigned_idx {
+                    // `f = function() end` is a global assignment; the `local`
+                    // form wraps the assignment_statement in a
+                    // variable_declaration node.
+                    let is_local = node
+                        .parent() // variable_list
+                        .and_then(|n| n.parent()) // assignment_statement
+                        .and_then(|n| n.parent()) // variable_declaration | block | chunk
+                        .is_some_and(|n| n.kind() == "variable_declaration");
+                    (SymbolKind::Function, !is_local)
+                } else {
+                    continue;
+                };
+
                 let name = match node.utf8_text(source) {
                     Ok(s) => s.to_string(),
                     Err(_) => continue,
                 };
-
-                // Check if the function is local (not exported).
-                // Walk up to the function_declaration node and check its source text.
-                let fn_node = node.parent().unwrap();
-                let fn_src = fn_node.utf8_text(source).unwrap_or("");
-                let exported = !fn_src.starts_with("local");
 
                 let start = node.start_position();
                 let end = node.end_position();
@@ -114,7 +159,7 @@ impl super::Parser for LuaParser {
                 symbols.push(Symbol {
                     exported,
                     name,
-                    kind: SymbolKind::Function,
+                    kind,
                     span: Span {
                         start_line: start.row + 1,
                         start_col: start.column,
@@ -333,6 +378,65 @@ local m = require("./helpers")
         let private = syms.iter().find(|s| s.name == "private_fn").unwrap();
         assert!(public.exported);
         assert!(!private.exported);
+    }
+
+    #[test]
+    fn symbols_module_table_function() {
+        // `function M.foo()` — module-table pattern; symbol is the trailing
+        // identifier `foo` (documented naming convention) and is exported.
+        let syms = symbols("local M = {}\n\nfunction M.foo()\nend\n\nreturn M\n");
+        let foo = syms.iter().find(|s| s.name == "foo").unwrap();
+        assert_eq!(foo.kind, SymbolKind::Function);
+        assert!(foo.exported);
+    }
+
+    #[test]
+    fn symbols_module_table_method() {
+        // `function M:bar()` — Method kind, trailing identifier, exported.
+        let syms = symbols("local M = {}\n\nfunction M:bar()\nend\n\nreturn M\n");
+        let bar = syms.iter().find(|s| s.name == "bar").unwrap();
+        assert_eq!(bar.kind, SymbolKind::Method);
+        assert!(bar.exported);
+    }
+
+    #[test]
+    fn symbols_assigned_function() {
+        // `local f = function() end` is file-private; `g = function() end`
+        // assigns a global and is exported.
+        let syms = symbols("local f = function()\nend\n\ng = function()\nend\n");
+        let f = syms.iter().find(|s| s.name == "f").unwrap();
+        assert_eq!(f.kind, SymbolKind::Function);
+        assert!(!f.exported);
+        let g = syms.iter().find(|s| s.name == "g").unwrap();
+        assert_eq!(g.kind, SymbolKind::Function);
+        assert!(g.exported);
+    }
+
+    #[test]
+    fn symbols_non_function_assignment_ignored() {
+        let syms = symbols("local M = {}\nlocal x = 1\ny = 'str'\n");
+        assert!(syms.is_empty());
+    }
+
+    #[test]
+    fn symbols_idiomatic_module_full() {
+        // The standard Lua module shape yields all four symbols.
+        let syms = symbols(
+            "local M = {}\n\nfunction globalfn()\nend\n\nfunction M.dotted()\nend\n\nfunction M:colonmeth()\nend\n\nlocal helper = function()\nend\n\nreturn M\n",
+        );
+        assert_eq!(syms.len(), 4);
+        assert!(syms
+            .iter()
+            .any(|s| s.name == "globalfn" && s.kind == SymbolKind::Function && s.exported));
+        assert!(syms
+            .iter()
+            .any(|s| s.name == "dotted" && s.kind == SymbolKind::Function && s.exported));
+        assert!(syms
+            .iter()
+            .any(|s| s.name == "colonmeth" && s.kind == SymbolKind::Method && s.exported));
+        assert!(syms
+            .iter()
+            .any(|s| s.name == "helper" && s.kind == SymbolKind::Function && !s.exported));
     }
 
     // ── Call extraction tests ────────────────────────────────────────────

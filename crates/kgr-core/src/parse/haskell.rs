@@ -24,6 +24,13 @@ const HASKELL_SYMBOL_QUERY_SRC: &str = r#"
 (function
   name: (variable) @fn.name)
 
+;; Zero-argument top-level binding: main = ..., point-free defs, constants.
+;; Anchored to the top-level (declarations ...) node so that where/let-bound
+;; locals (which live under local_binds) don't flood the symbol list.
+(declarations
+  (bind
+    name: (variable) @fn.name))
+
 ;; Type synonym: type Foo = Bar
 (type_synomym
   name: (name) @class.name)
@@ -80,9 +87,73 @@ impl HaskellParser {
     }
 }
 
+/// Parse the module header's export list, if any.
+///
+/// Returns `None` when the module has no header or the header has no export
+/// list (`module M where` / headerless file), meaning every top-level binding
+/// is exported. Returns `Some(names)` with the exported identifiers otherwise.
+///
+/// Entries are handled conservatively: value exports (`foo`), type/class
+/// exports (`Color`, `Color(..)`), and operator exports (`(<+>)`) contribute
+/// their head name; a `module M` self re-export means everything is exported,
+/// so it collapses back to `None`. Other module re-exports are ignored.
+fn export_list(
+    tree: &tree_sitter::Tree,
+    source: &[u8],
+) -> Option<std::collections::HashSet<String>> {
+    let root = tree.root_node();
+    let mut root_cursor = root.walk();
+    let header = root
+        .named_children(&mut root_cursor)
+        .find(|n| n.kind() == "header")?;
+    let exports = header.child_by_field_name("exports")?;
+
+    let module_name = header
+        .child_by_field_name("module")
+        .and_then(|m| m.utf8_text(source).ok());
+
+    let mut names = std::collections::HashSet::new();
+    let mut cursor = exports.walk();
+    for entry in exports.named_children(&mut cursor) {
+        match entry.kind() {
+            "export" => {
+                let name_node = entry
+                    .child_by_field_name("variable")
+                    .or_else(|| entry.child_by_field_name("type"))
+                    .or_else(|| entry.child_by_field_name("operator"));
+                if let Some(node) = name_node {
+                    if let Ok(text) = node.utf8_text(source) {
+                        // Operators render as `(<+>)`; strip the parens so the
+                        // stored name matches the bare identifier.
+                        let trimmed = text.trim_matches(|c| c == '(' || c == ')');
+                        names.insert(trimmed.to_string());
+                    }
+                }
+            }
+            "module_export" => {
+                // `module M` re-export of the module itself exports every
+                // top-level binding: behave as if there were no export list.
+                let re_exported = entry
+                    .child_by_field_name("module")
+                    .and_then(|m| m.utf8_text(source).ok());
+                if module_name.is_some() && re_exported == module_name {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Some(names)
+}
+
 impl super::Parser for HaskellParser {
     fn lang(&self) -> Lang {
         Lang::Haskell
+    }
+
+    fn ts_language(&self) -> Option<tree_sitter::Language> {
+        Some(tree_sitter_haskell::LANGUAGE.into())
     }
 
     fn extract_symbols(&self, source: &[u8], path: &Path) -> Vec<Symbol> {
@@ -90,6 +161,8 @@ impl super::Parser for HaskellParser {
             Some(t) => t,
             None => return Vec::new(),
         };
+
+        let exports = export_list(&tree, source);
 
         let query = &*HASKELL_SYMBOL_QUERY;
         let fn_idx = query.capture_index_for_name("fn.name").unwrap();
@@ -114,8 +187,9 @@ impl super::Parser for HaskellParser {
                     continue;
                 };
 
-                // In Haskell, all top-level bindings are exported by default
-                let exported = true;
+                // Without an export list every top-level binding is exported;
+                // with one, only the names it lists are.
+                let exported = exports.as_ref().map_or(true, |names| names.contains(&name));
 
                 let start = node.start_position();
                 let end = node.end_position();
@@ -308,6 +382,53 @@ import Control.Monad
 
     fn calls(src: &str) -> Vec<CallRef> {
         HaskellParser.extract_calls(src.as_bytes(), Path::new("Main.hs"))
+    }
+
+    #[test]
+    fn symbols_finds_zero_arg_bindings() {
+        // main = ..., point-free definitions, and constants are bind nodes.
+        let syms = symbols("main = putStrLn \"hello\"\n\nanswer = 42\n");
+        let names: Vec<_> = syms
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Function)
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["main", "answer"]);
+    }
+
+    #[test]
+    fn symbols_skips_local_binds() {
+        // where/let-bound locals must not appear as top-level symbols.
+        let syms = symbols("c = let inner = 2 in inner\n\nd = e\n  where\n    e = 3\n");
+        let names: Vec<_> = syms.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["c", "d"]);
+    }
+
+    #[test]
+    fn symbols_export_list_filters_exported() {
+        let syms = symbols("module M (foo, Color (..)) where\n\nfoo = 1\n\nbar x = x\n\ndata Color = Red | Green\n");
+        let foo = syms.iter().find(|s| s.name == "foo").unwrap();
+        let bar = syms.iter().find(|s| s.name == "bar").unwrap();
+        let color = syms.iter().find(|s| s.name == "Color").unwrap();
+        assert!(foo.exported);
+        assert!(!bar.exported);
+        assert!(color.exported);
+    }
+
+    #[test]
+    fn symbols_no_export_list_all_exported() {
+        // `module M where` (no export list) keeps the all-exported default.
+        let syms = symbols("module M where\n\nfoo = 1\n\nbar x = x\n");
+        assert_eq!(syms.len(), 2);
+        assert!(syms.iter().all(|s| s.exported));
+    }
+
+    #[test]
+    fn symbols_self_module_reexport_all_exported() {
+        // `module M (module M) where` re-exports everything in the module.
+        let syms = symbols("module M (module M) where\n\nfoo = 1\n");
+        let foo = syms.iter().find(|s| s.name == "foo").unwrap();
+        assert!(foo.exported);
     }
 
     #[test]
