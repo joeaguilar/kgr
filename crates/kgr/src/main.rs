@@ -7,6 +7,57 @@ mod render;
 mod rules;
 mod walk;
 
+#[cfg(test)]
+pub(crate) mod test_env {
+    use std::ffi::OsString;
+    use std::sync::Mutex;
+
+    pub(crate) static KGR_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    pub(crate) struct CleanKgrEnv {
+        saved: Vec<(OsString, OsString)>,
+    }
+
+    impl CleanKgrEnv {
+        pub(crate) fn new() -> Self {
+            let saved = std::env::vars_os()
+                .filter(|(key, _)| is_kgr_key(key))
+                .collect();
+            clear_current_kgr_env();
+            Self { saved }
+        }
+    }
+
+    impl Default for CleanKgrEnv {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl Drop for CleanKgrEnv {
+        fn drop(&mut self) {
+            clear_current_kgr_env();
+            for (key, value) in &self.saved {
+                std::env::set_var(key, value);
+            }
+        }
+    }
+
+    fn clear_current_kgr_env() {
+        let keys: Vec<_> = std::env::vars_os()
+            .map(|(key, _)| key)
+            .filter(is_kgr_key)
+            .collect();
+        for key in keys {
+            std::env::remove_var(key);
+        }
+    }
+
+    fn is_kgr_key(key: &OsString) -> bool {
+        key.to_string_lossy().starts_with("KGR_")
+    }
+}
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process;
@@ -2402,6 +2453,8 @@ fn run_hotspots(
 
 #[cfg(test)]
 mod tests {
+    use crate::test_env::{CleanKgrEnv, KGR_ENV_LOCK};
+
     use super::{callee_matches, replace_executable_atomically, UpgradeReplacement};
 
     #[test]
@@ -2465,6 +2518,8 @@ mod tests {
     /// change the outcome.)
     #[test]
     fn config_defaults_drive_run_graph_when_flags_absent() {
+        let _env_lock = KGR_ENV_LOCK.lock().unwrap();
+        let _env = CleanKgrEnv::new();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("app.py"), "import helper\n").unwrap();
         std::fs::write(dir.path().join("helper.py"), "x = 1\n").unwrap();
@@ -2504,6 +2559,8 @@ mod tests {
     /// override config format/languages.
     #[test]
     fn cli_flags_beat_config_defaults_in_run_graph() {
+        let _env_lock = KGR_ENV_LOCK.lock().unwrap();
+        let _env = CleanKgrEnv::new();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("app.py"), "import helper\n").unwrap();
         std::fs::write(dir.path().join("helper.py"), "x = 1\n").unwrap();

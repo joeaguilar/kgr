@@ -200,6 +200,8 @@ exclude = []
 
 #[cfg(test)]
 mod tests {
+    use crate::test_env::{CleanKgrEnv, KGR_ENV_LOCK};
+
     use super::*;
 
     #[test]
@@ -249,8 +251,9 @@ mod tests {
     /// never consume `format`.)
     #[test]
     fn load_config_layers_defaults_toml_and_env() {
+        let _env_lock = KGR_ENV_LOCK.lock().unwrap();
+        let _env = CleanKgrEnv::new();
         let dir = tempfile::tempdir().unwrap();
-        std::env::remove_var("KGR_FORMAT");
 
         // Built-in defaults: optional fields stay unset.
         let cfg = load_config(dir.path()).unwrap();
@@ -271,15 +274,16 @@ mod tests {
 
         // Env layer (KGR_FORMAT) wins over the toml value.
         std::env::set_var("KGR_FORMAT", "json");
-        let cfg = load_config(dir.path());
-        std::env::remove_var("KGR_FORMAT");
-        assert_eq!(cfg.unwrap().format.as_deref(), Some("json"));
+        let cfg = load_config(dir.path()).unwrap();
+        assert_eq!(cfg.format.as_deref(), Some("json"));
     }
 
     /// `depth`, `entry`, and `no_color` were removed from Config (never
     /// consumed); old config files that still set them must load fine.
     #[test]
     fn load_config_ignores_removed_legacy_keys() {
+        let _env_lock = KGR_ENV_LOCK.lock().unwrap();
+        let _env = CleanKgrEnv::new();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join(".kgr.toml"),

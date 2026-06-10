@@ -9,6 +9,22 @@ fn fixtures_dir() -> PathBuf {
         .join("tests/fixtures")
 }
 
+fn kgr() -> assert_cmd::Command {
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("kgr");
+    strip_host_kgr_env(&mut cmd);
+    cmd.env("KGR_NO_CACHE", "1");
+    cmd
+}
+
+fn strip_host_kgr_env(cmd: &mut assert_cmd::Command) {
+    for key in std::env::vars_os()
+        .map(|(key, _)| key)
+        .filter(|key| key.to_string_lossy().starts_with("KGR_"))
+    {
+        cmd.env_remove(key);
+    }
+}
+
 fn kgr_output(fixture: &str, format: &str) -> String {
     let fixture_path = fixtures_dir().join(fixture);
     kgr_output_path(&fixture_path, format)
@@ -20,8 +36,7 @@ fn kgr_output(fixture: &str, format: &str) -> String {
 // regression in snapshot output.
 
 fn kgr_output_path(path: &Path, format: &str) -> String {
-    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    let output = kgr()
         .args(["graph", "--format", format, "--no-progress"])
         .arg(path)
         .assert()
@@ -33,8 +48,7 @@ fn kgr_output_path(path: &Path, format: &str) -> String {
 }
 
 fn kgr_orient_json_path(path: &Path) -> String {
-    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    let output = kgr()
         .args(["orient", "--format", "json", "--no-progress"])
         .arg(path)
         .assert()
@@ -47,8 +61,7 @@ fn kgr_orient_json_path(path: &Path) -> String {
 
 fn kgr_check_stderr(fixture: &str) -> String {
     let fixture_path = fixtures_dir().join(fixture);
-    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    let output = kgr()
         .args(["check", "--no-progress"])
         .arg(&fixture_path)
         .output()

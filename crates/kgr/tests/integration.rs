@@ -15,11 +15,31 @@ fn fixtures_dir() -> PathBuf {
 /// `.kgr-cache.json`. This keeps fixture-driven tests hermetic: a stale warm
 /// cache under tests/fixtures/ can never mask a parser regression, and test
 /// runs leave no cache files behind. Tests that exercise the cache itself
-/// build their command with `cargo_bin_cmd!` directly.
+/// build from `kgr_without_host_kgr_env()` and opt in to cache behavior.
 fn kgr() -> assert_cmd::Command {
-    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("kgr");
+    let mut cmd = kgr_without_host_kgr_env();
     cmd.env("KGR_NO_CACHE", "1");
     cmd
+}
+
+/// Build a `kgr` command that is insulated from host-level `KGR_*` config.
+///
+/// Tests may set the `KGR_*` variables they are explicitly exercising after
+/// calling this helper. `KGR_NO_CACHE` is handled by `kgr()` above or by
+/// cache-specific tests below.
+fn kgr_without_host_kgr_env() -> assert_cmd::Command {
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("kgr");
+    strip_host_kgr_env(&mut cmd);
+    cmd
+}
+
+fn strip_host_kgr_env(cmd: &mut assert_cmd::Command) {
+    for key in std::env::vars_os()
+        .map(|(key, _)| key)
+        .filter(|key| key.to_string_lossy().starts_with("KGR_"))
+    {
+        cmd.env_remove(key);
+    }
 }
 
 #[test]
@@ -236,6 +256,27 @@ fn malformed_config_exits_nonzero_and_reports_path() {
         .stderr(predicate::str::contains("failed to load config"))
         .stderr(predicate::str::contains(".kgr.toml"))
         .stderr(predicate::str::contains("max_file_size_kb"));
+}
+
+#[test]
+fn explicit_kgr_env_layer_still_applies() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("main.py"), "import helper\n").unwrap();
+    std::fs::write(tmp.path().join("helper.py"), "VALUE = 1\n").unwrap();
+
+    let output = kgr()
+        .env("KGR_FORMAT", "json")
+        .args(["graph", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert!(json["files"].is_array());
+    assert!(json["edges"].is_array());
 }
 
 // ── Rule system ──────────────────────────────────────────────────────────────
@@ -732,10 +773,8 @@ fn poisoned_warm_cache_cannot_mask_parser_regression_when_cache_disabled() {
         json["edges"].as_array().unwrap().len()
     };
     let graph_json = |cache_enabled: bool| -> Vec<u8> {
-        let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("kgr");
-        if cache_enabled {
-            cmd.env_remove("KGR_NO_CACHE");
-        } else {
+        let mut cmd = kgr_without_host_kgr_env();
+        if !cache_enabled {
             cmd.env("KGR_NO_CACHE", "1");
         }
         cmd.args(["graph", "--format", "json", "--no-progress"])
@@ -799,8 +838,7 @@ fn stale_build_cache_is_discarded_even_with_cache_enabled() {
     std::fs::write(tmp.path().join("helper.py"), "x = 1\n").unwrap();
 
     let graph_edges = || -> usize {
-        let out = assert_cmd::cargo::cargo_bin_cmd!("kgr")
-            .env_remove("KGR_NO_CACHE")
+        let out = kgr_without_host_kgr_env()
             .args(["graph", "--format", "json", "--no-progress"])
             .arg(tmp.path())
             .assert()

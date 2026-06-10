@@ -27,6 +27,22 @@ fn fixtures_dir() -> PathBuf {
         .join("tests/fixtures")
 }
 
+fn kgr() -> assert_cmd::Command {
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("kgr");
+    strip_host_kgr_env(&mut cmd);
+    cmd.env("KGR_NO_CACHE", "1");
+    cmd
+}
+
+fn strip_host_kgr_env(cmd: &mut assert_cmd::Command) {
+    for key in std::env::vars_os()
+        .map(|(key, _)| key)
+        .filter(|key| key.to_string_lossy().starts_with("KGR_"))
+    {
+        cmd.env_remove(key);
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // kgr symbols — "What's defined here?"
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -34,8 +50,7 @@ fn fixtures_dir() -> PathBuf {
 #[test]
 fn symbols_python_json_returns_all_definitions() {
     let fixture = fixtures_dir().join("python/calls");
-    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    let output = kgr()
         .args(["symbols", "--format", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -82,8 +97,7 @@ fn symbols_python_json_returns_all_definitions() {
 #[test]
 fn symbols_python_json_includes_classes() {
     let fixture = fixtures_dir().join("python/calls");
-    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    let output = kgr()
         .args(["symbols", "--format", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -108,8 +122,7 @@ fn symbols_python_json_includes_classes() {
 #[test]
 fn symbols_python_json_has_correct_shape() {
     let fixture = fixtures_dir().join("python/calls");
-    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    let output = kgr()
         .args(["symbols", "--format", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -153,8 +166,7 @@ fn symbols_python_json_has_correct_shape() {
 #[test]
 fn symbols_typescript_json_marks_exported() {
     let fixture = fixtures_dir().join("typescript/calls");
-    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    let output = kgr()
         .args(["symbols", "--format", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -201,8 +213,7 @@ fn symbols_typescript_json_marks_exported() {
 #[test]
 fn symbols_table_output() {
     let fixture = fixtures_dir().join("python/calls");
-    assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    kgr()
         .args(["symbols", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -219,8 +230,7 @@ fn symbols_table_output() {
 #[test]
 fn refs_finds_function_definition_and_calls() {
     let fixture = fixtures_dir().join("python/calls");
-    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    let output = kgr()
         .args(["refs", "normalize", "--format", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -252,8 +262,7 @@ fn refs_finds_function_definition_and_calls() {
 #[test]
 fn refs_finds_class_references() {
     let fixture = fixtures_dir().join("python/calls");
-    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    let output = kgr()
         .args(["refs", "UserService", "--format", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -282,8 +291,7 @@ fn refs_finds_class_references() {
 #[test]
 fn refs_includes_context_line() {
     let fixture = fixtures_dir().join("python/calls");
-    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    let output = kgr()
         .args(["refs", "query", "--format", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -315,8 +323,7 @@ fn refs_no_results_exits_cleanly() {
     let fixture = fixtures_dir().join("python/calls");
 
     // Should succeed but with empty results (not crash)
-    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    let output = kgr()
         .args([
             "refs",
             "nonexistent_symbol",
@@ -338,8 +345,7 @@ fn refs_no_results_exits_cleanly() {
 #[test]
 fn refs_typescript_exported_function() {
     let fixture = fixtures_dir().join("typescript/calls");
-    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    let output = kgr()
         .args(["refs", "fetchUsers", "--format", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -367,8 +373,7 @@ fn refs_typescript_exported_function() {
 #[test]
 fn refs_table_output() {
     let fixture = fixtures_dir().join("python/calls");
-    assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    kgr()
         .args(["refs", "normalize", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -386,8 +391,7 @@ fn refs_table_output() {
 fn dead_reports_unused_function() {
     let fixture = fixtures_dir().join("python/calls");
     // deprecated_helper is defined in utils.py but never called
-    assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    kgr()
         .args(["dead", "deprecated_helper", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -400,8 +404,7 @@ fn dead_reports_unused_function() {
 fn dead_confirms_used_function_is_alive() {
     let fixture = fixtures_dir().join("python/calls");
     // normalize is called in app.py — not dead
-    assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    kgr()
         .args(["dead", "normalize", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -412,8 +415,7 @@ fn dead_confirms_used_function_is_alive() {
 #[test]
 fn dead_json_shape() {
     let fixture = fixtures_dir().join("python/calls");
-    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    let output = kgr()
         .args([
             "dead",
             "deprecated_helper",
@@ -448,8 +450,7 @@ fn dead_json_shape() {
 #[test]
 fn dead_json_alive_includes_references() {
     let fixture = fixtures_dir().join("python/calls");
-    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    let output = kgr()
         .args(["dead", "query", "--format", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -473,8 +474,7 @@ fn dead_json_alive_includes_references() {
 fn dead_private_python_function() {
     let fixture = fixtures_dir().join("python/calls");
     // _internal_reset is private (leading _) and never called
-    assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    kgr()
         .args(["dead", "_internal_reset", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -486,8 +486,7 @@ fn dead_private_python_function() {
 fn dead_typescript_unexported_function() {
     let fixture = fixtures_dir().join("typescript/calls");
     // internalReset is not exported and never called
-    assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    kgr()
         .args(["dead", "internalReset", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -499,8 +498,7 @@ fn dead_typescript_unexported_function() {
 fn dead_typescript_exported_unused() {
     let fixture = fixtures_dir().join("typescript/calls");
     // deprecatedHelper is exported but never called anywhere
-    assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    kgr()
         .args(["dead", "deprecatedHelper", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -512,8 +510,7 @@ fn dead_typescript_exported_unused() {
 fn dead_nonexistent_symbol() {
     let fixture = fixtures_dir().join("python/calls");
     // Symbol that doesn't exist at all — should report not found, not crash
-    assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    kgr()
         .args(["dead", "no_such_thing", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -528,8 +525,7 @@ fn dead_nonexistent_symbol() {
 #[test]
 fn graph_json_with_symbols_flag_enriches_file_nodes() {
     let fixture = fixtures_dir().join("python/calls");
-    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    let output = kgr()
         .args(["graph", "--format", "json", "--symbols", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -570,8 +566,7 @@ fn graph_json_with_symbols_flag_enriches_file_nodes() {
 #[test]
 fn skeleton_text_output() {
     let fixture = fixtures_dir().join("python/calls");
-    assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    kgr()
         .args(["skeleton", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -583,8 +578,7 @@ fn skeleton_text_output() {
 #[test]
 fn skeleton_json_output() {
     let fixture = fixtures_dir().join("python/calls");
-    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    let output = kgr()
         .args(["skeleton", "--format", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -626,8 +620,7 @@ fn skeleton_json_output() {
 #[test]
 fn skeleton_table_output() {
     let fixture = fixtures_dir().join("python/calls");
-    assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    kgr()
         .args(["skeleton", "--format", "table", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -644,8 +637,7 @@ fn skeleton_table_output() {
 #[test]
 fn orient_text_output() {
     let fixture = fixtures_dir().join("python/simple");
-    assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    kgr()
         .args(["orient", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -656,8 +648,7 @@ fn orient_text_output() {
 #[test]
 fn orient_json_output() {
     let fixture = fixtures_dir().join("python/simple");
-    assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    kgr()
         .args(["orient", "--format", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -672,8 +663,7 @@ fn orient_json_output() {
 #[test]
 fn impact_text_output() {
     let fixture = fixtures_dir().join("typescript/calls");
-    assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    kgr()
         .args(["impact", "query", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -686,8 +676,7 @@ fn impact_text_output() {
 #[test]
 fn impact_json_output() {
     let fixture = fixtures_dir().join("typescript/calls");
-    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    let output = kgr()
         .args(["impact", "query", "-f", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -716,8 +705,7 @@ fn impact_json_output() {
 #[test]
 fn impact_json_shows_calls_symbol() {
     let fixture = fixtures_dir().join("typescript/calls");
-    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    let output = kgr()
         .args(["impact", "query", "-f", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -768,8 +756,7 @@ fn impact_json_shows_calls_symbol() {
 #[test]
 fn impact_not_found_text() {
     let fixture = fixtures_dir().join("python/calls");
-    assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    kgr()
         .args(["impact", "nonexistent_symbol", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -782,8 +769,7 @@ fn impact_not_found_text() {
 #[test]
 fn impact_not_found_json() {
     let fixture = fixtures_dir().join("python/calls");
-    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    let output = kgr()
         .args([
             "impact",
             "nonexistent_symbol",
@@ -813,8 +799,7 @@ fn impact_not_found_json() {
 #[test]
 fn hotspots_table_output() {
     let fixture = fixtures_dir().join("python/simple");
-    assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    kgr()
         .args(["hotspots", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -825,8 +810,7 @@ fn hotspots_table_output() {
 #[test]
 fn hotspots_json_output() {
     let fixture = fixtures_dir().join("python/simple");
-    assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    kgr()
         .args(["hotspots", "-f", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -837,8 +821,7 @@ fn hotspots_json_output() {
 #[test]
 fn hotspots_text_output() {
     let fixture = fixtures_dir().join("python/calls");
-    assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    kgr()
         .args(["hotspots", "-f", "text", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -850,8 +833,7 @@ fn hotspots_text_output() {
 #[test]
 fn hotspots_json_shape() {
     let fixture = fixtures_dir().join("python/calls");
-    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    let output = kgr()
         .args(["hotspots", "-f", "json", "--no-progress"])
         .arg(&fixture)
         .assert()
@@ -885,8 +867,7 @@ fn hotspots_json_shape() {
 #[test]
 fn hotspots_sorted_descending() {
     let fixture = fixtures_dir().join("python/calls");
-    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
-        .env("KGR_NO_CACHE", "1")
+    let output = kgr()
         .args(["hotspots", "-f", "json", "--no-progress"])
         .arg(&fixture)
         .assert()

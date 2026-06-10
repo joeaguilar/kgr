@@ -27,6 +27,64 @@ pub fn detect_lang(path: &Path) -> Lang {
     }
 }
 
+pub fn detect_lang_from_shebang(first_line: &str) -> Lang {
+    let Some(shebang) = first_line.strip_prefix("#!") else {
+        return Lang::Unknown;
+    };
+
+    let mut parts = shebang.split_whitespace();
+    let Some(interpreter) = parts.next() else {
+        return Lang::Unknown;
+    };
+
+    if command_name(interpreter) == "env" {
+        return parts
+            .filter(|part| !part.starts_with('-') && !part.contains('='))
+            .find_map(|part| {
+                let lang = detect_shebang_command(part);
+                (lang != Lang::Unknown).then_some(lang)
+            })
+            .unwrap_or(Lang::Unknown);
+    }
+
+    detect_shebang_command(interpreter)
+}
+
+fn detect_shebang_command(command: &str) -> Lang {
+    let command = command_name(command);
+    match command {
+        "python" | "python2" | "python3" | "pypy" | "pypy3" => Lang::Python,
+        "node" | "nodejs" => Lang::JavaScript,
+        "ts-node" | "ts-node-esm" | "tsx" => Lang::TypeScript,
+        "bash" | "dash" | "ksh" | "sh" | "zsh" => Lang::Bash,
+        "ruby" | "jruby" => Lang::Ruby,
+        "php" => Lang::Php,
+        "lua" | "luajit" => Lang::Lua,
+        "elixir" => Lang::Elixir,
+        "runghc" | "runhaskell" => Lang::Haskell,
+        "scala" | "scala-cli" => Lang::Scala,
+        "swift" => Lang::Swift,
+        command if has_version_suffix(command, "python") => Lang::Python,
+        command if has_version_suffix(command, "pypy") => Lang::Python,
+        command if has_version_suffix(command, "node") => Lang::JavaScript,
+        command if has_version_suffix(command, "bash") => Lang::Bash,
+        command if has_version_suffix(command, "ruby") => Lang::Ruby,
+        command if has_version_suffix(command, "php") => Lang::Php,
+        command if has_version_suffix(command, "lua") => Lang::Lua,
+        _ => Lang::Unknown,
+    }
+}
+
+fn command_name(command: &str) -> &str {
+    command.rsplit('/').next().unwrap_or(command)
+}
+
+fn has_version_suffix(command: &str, prefix: &str) -> bool {
+    command.strip_prefix(prefix).is_some_and(|suffix| {
+        !suffix.is_empty() && suffix.chars().all(|ch| ch == '.' || ch.is_ascii_digit())
+    })
+}
+
 pub fn lang_extensions(lang: Lang) -> &'static [&'static str] {
     match lang {
         Lang::Python => &["py", "pyi"],
@@ -95,6 +153,32 @@ mod tests {
         assert!(lang_extensions(Lang::TypeScript).contains(&"mts"));
         assert!(lang_extensions(Lang::TypeScript).contains(&"cts"));
         assert!(lang_extensions(Lang::ObjectiveC).contains(&"mm"));
+    }
+
+    #[test]
+    fn detects_lang_from_common_shebangs() {
+        assert_eq!(
+            detect_lang_from_shebang("#!/usr/bin/env python3\n"),
+            Lang::Python
+        );
+        assert_eq!(
+            detect_lang_from_shebang("#!/usr/bin/node\n"),
+            Lang::JavaScript
+        );
+        assert_eq!(
+            detect_lang_from_shebang("#!/usr/bin/env -S ts-node --files\n"),
+            Lang::TypeScript
+        );
+        assert_eq!(detect_lang_from_shebang("#!/bin/bash -e\n"), Lang::Bash);
+    }
+
+    #[test]
+    fn ignores_lines_without_recognized_shebangs() {
+        assert_eq!(detect_lang_from_shebang("print('hello')\n"), Lang::Unknown);
+        assert_eq!(
+            detect_lang_from_shebang("#!/usr/bin/env perl\n"),
+            Lang::Unknown
+        );
     }
 
     #[test]

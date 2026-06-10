@@ -1,9 +1,11 @@
+use std::fs::File;
+use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use ignore::WalkBuilder;
-use kgr_core::detect::detect_lang;
+use kgr_core::detect::{detect_lang, detect_lang_from_shebang};
 use kgr_core::types::Lang;
 
 pub struct DiscoveredFile {
@@ -64,7 +66,7 @@ pub fn discover(
         }
 
         let path = entry.into_path();
-        let lang = detect_lang(&path);
+        let lang = detect_lang_for_file(&path);
 
         if lang == Lang::Unknown {
             continue;
@@ -104,7 +106,7 @@ pub fn discover_single_file(
     langs: &Option<Vec<String>>,
     max_file_size: Option<u64>,
 ) -> Result<DiscoveredFile, String> {
-    let lang = detect_lang(file);
+    let lang = detect_lang_for_file(file);
     if lang == Lang::Unknown {
         return Err("unsupported file type (unknown language)".to_string());
     }
@@ -133,6 +135,25 @@ pub fn discover_single_file(
         mtime,
         size,
     })
+}
+
+fn detect_lang_for_file(path: &Path) -> Lang {
+    let lang = detect_lang(path);
+    if lang != Lang::Unknown || path.extension().is_some() {
+        return lang;
+    }
+
+    read_first_line(path)
+        .map(|line| detect_lang_from_shebang(&line))
+        .unwrap_or(Lang::Unknown)
+}
+
+fn read_first_line(path: &Path) -> io::Result<String> {
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+    Ok(line)
 }
 
 /// True when `lang` passes the optional `--lang` filter (matched by full
@@ -247,6 +268,46 @@ mod tests {
         assert_eq!(compiled.diagnostics.len(), 1);
         assert!(compiled.set.is_match("vendor/generated.py"));
         assert!(!compiled.set.is_match("src/main.py"));
+    }
+
+    #[test]
+    fn discovers_extensionless_script_from_shebang() {
+        let tmp = tempfile::tempdir().unwrap();
+        let script = tmp.path().join("deploy");
+        std::fs::write(&script, "#!/usr/bin/env python3\nimport os\n").unwrap();
+
+        let files = discover(tmp.path(), &None, &[], None);
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, PathBuf::from("deploy"));
+        assert_eq!(files[0].lang, Lang::Python);
+    }
+
+    #[test]
+    fn extensionless_files_without_first_line_shebang_stay_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("notes"), "import os\n").unwrap();
+        std::fs::write(
+            tmp.path().join("late-shebang"),
+            "\n#!/usr/bin/env python3\nimport os\n",
+        )
+        .unwrap();
+
+        let files = discover(tmp.path(), &None, &[], None);
+
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn discovers_explicit_extensionless_file_from_shebang() {
+        let tmp = tempfile::tempdir().unwrap();
+        let script = tmp.path().join("run-node");
+        std::fs::write(&script, "#!/usr/bin/env node\nrequire('./lib')\n").unwrap();
+
+        let file = discover_single_file(tmp.path(), &script, &None, None).unwrap();
+
+        assert_eq!(file.path, PathBuf::from("run-node"));
+        assert_eq!(file.lang, Lang::JavaScript);
     }
 
     #[test]

@@ -15,8 +15,18 @@ struct LanguageCase {
 
 fn kgr() -> assert_cmd::Command {
     let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("kgr");
+    strip_host_kgr_env(&mut cmd);
     cmd.env("KGR_NO_CACHE", "1");
     cmd
+}
+
+fn strip_host_kgr_env(cmd: &mut assert_cmd::Command) {
+    for key in std::env::vars_os()
+        .map(|(key, _)| key)
+        .filter(|key| key.to_string_lossy().starts_with("KGR_"))
+    {
+        cmd.env_remove(key);
+    }
 }
 
 fn write_fixture(root: &Path, files: &[(&str, &str)]) {

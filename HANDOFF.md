@@ -11,30 +11,30 @@ can't get from code or the tracker alone. Issue IDs (`#N`) link to `itr get N`.
 ## TL;DR
 
 This session ran a **full six-reviewer code review** of kgr (69 new issues filed, #46–#114,
-plus #116 found mid-run), then an **8-wave parallel agent blitz** that closed **47 of
-them**, a follow-on **Wave 9** that closed **7 more**, **Wave 10** that closed another
-**7**, and **Wave 11** that closed **6**. `just verify` is green after Wave 11. Waves
-1–10 are committed through `af89c2b`; Wave 11 is sitting uncommitted on `main` as 8
-tracked files plus 1 new integration test file. First order of business: review and
-commit Wave 11. Then Wave 12 (below) clears the remaining 3 review-batch issues.
+plus #116 found mid-run), then a **12-wave parallel agent blitz** that closed the full
+review-batch backlog: 47 issues in Waves 1–8, 7 in Wave 9, 7 in Wave 10, 6 in Wave 11,
+and the final 3 in Wave 12. `just verify` is green after Wave 12; hostile env checks
+`KGR_EXCLUDE='["**"]' cargo test --workspace` and `KGR_MAX_FILE_SIZE_KB=abc cargo test
+--workspace` are also green. Waves 1–11 are committed through `16aa368`; Wave 12 is
+sitting uncommitted on `main`. First order of business: review and commit Wave 12.
 
-Wave log with full per-wave outcomes and all 15 interventions:
-`sprint/_unscoped/blitz-2026-06-09T22-25-41Z.md`. Blitz epic: **#115**.
+Wave log with full per-wave outcomes and all 17 interventions:
+`sprint/_unscoped/blitz-2026-06-09T22-25-41Z.md`. Blitz epic **#115** is closed.
 
 ---
 
 ## Repo / branch state
 
-- **`main` @ `af89c2b`** — waves 1–10 committed (`fix: close wave 10 review-batch issues`).
-- **Working tree** — Wave 11 changed 8 tracked files plus 1 new integration test file,
-  **all gates green** (`just verify` exit 0: check, clippy `-D warnings`,
-  51+1+71+26+35+448 tests, fmt). **Not committed** — review and commit before launching
-  Wave 12.
+- **`main` @ `16aa368`** — waves 1–11 committed (`fix: close wave 11 review-batch issues`).
+- **Working tree** — Wave 12 changed 9 tracked source/test/CI files plus the wave log and
+  this handoff, **all gates green** (`just verify` exit 0: check, clippy `-D warnings`,
+  54+1+72+26+35+450 tests, fmt). Hostile env checks for `KGR_EXCLUDE` and invalid
+  `KGR_MAX_FILE_SIZE_KB` also pass. **Not committed** — review and commit Wave 12.
 - `.claude/settings.local.json` — gitignored; gained allowlist entries this session (see
   playbook below). Leave them; waves depend on them.
 - `tests/fixtures/**/.kgr-cache.json` litter — eliminated (tests now run `KGR_NO_CACHE=1`).
 
-## What shipped (waves 1–10, 61 issues)
+## What shipped (waves 1–12, 70 issues)
 
 - **W1** #49 single-file PATH support, #50 dotted-specifier resolution, #51 py decorated
   symbols, #52 ts/js arrow/generator symbols, #57 cpp inline methods
@@ -66,26 +66,22 @@ Wave log with full per-wave outcomes and all 15 interventions:
 - **W11** #68 malformed-baseline error, #69 safe upgrade replacement, #70 zero-file check
   errors, #114 Rust `#[path]` mod resolution, #108 Objective-C `--lang` JSON round-trip,
   #100 all-language e2e coverage + detect round-trip
+- **W12** #99 KGR_* test env sanitization, #110 extensionless shebang language detection,
+  #103 Linux/macOS/Windows + MSRV CI matrix
 
 ---
 
-## Remaining wave (the plan — 3 review-batch issues, 1 wave)
+## Review-batch status
 
-Bundling convention: same-file sibling issues share one agent slot (they can't parallelize
-anyway); that agent closes all its issue IDs. Within a wave no two slots share a file.
+The review-batch blitz is complete. Wave 12 closed the final three issues:
 
-### Wave 12 (3 issues, 3 slots)
-| Slot | Issues | Owns |
-|---|---|---|
-| 1 | #99 | tests/integration.rs, tests/symbols.rs, tests/snapshots.rs — KGR_* env sanitization |
-| 2 | #110 | detect.rs, walk.rs — shebang detection |
-| 3 | #103 | .github/workflows/ci.yml, Cargo.toml — mac/windows + MSRV CI matrix |
+| Issues | Outcome |
+|---|---|
+| #99 | Host `KGR_*` env is stripped from CLI test subprocesses; config-loading unit tests use a shared clean-env guard; explicit env layering still has coverage |
+| #110 | Extensionless files with recognized first-line shebangs are detected and parsed |
+| #103 | CI tests stable Rust on Linux/macOS/Windows and checks MSRV 1.81.0 |
 
-Conflict notes baked into the ordering: #99 must come after every wave that edits the three
-test files; #110 after #100/#80 (detect.rs) and #67/#108 (walk.rs). #101 and #100 are now
-closed, so #99's snapshot-file dependency and #110's detect/walk dependency are clear.
-
-## Remaining backlog beyond the review batch (~34 issues)
+## Remaining backlog beyond the review batch (~33 issues)
 
 Not scoped into these waves — run `itr ready` for the live list:
 - **Triple-audit findings** under epic #6 (~26 open): resolver semantics (#16/#17/#18/#19,
@@ -95,7 +91,7 @@ Not scoped into these waves — run `itr ready` for the live list:
   product features (#43/#44/#45).
 - **Release/install epic #1** (#2–#5): CI versioning, cargo-deny, release smoke tests,
   install.ps1 parity.
-- Epics #6, #115 stay open until their children close.
+- Epics #1 and #6 stay open for release/install and triple-audit work. Epic #115 is closed.
 
 ---
 
@@ -132,9 +128,10 @@ Not scoped into these waves — run `itr ready` for the live list:
 
 ```sh
 just verify                      # confirm still green
-git add -A && git commit ...     # land Wave 11 first (branch if you prefer)
+git diff --stat                  # review Wave 12
+git add -A && git commit -m "fix: close wave 12 review-batch issues"
 itr ready -f json --fields id,title,urgency,status
-# then run /blitz and point it at Wave 12 above, or work issues solo
+# review-batch blitz is done; next ready work is outside #115
 ```
 
 - Wave log: `sprint/_unscoped/blitz-2026-06-09T22-25-41Z.md` (config, conflicts, all
