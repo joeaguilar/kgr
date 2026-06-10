@@ -1,0 +1,81 @@
+---
+source: crates/kgr/tests/snapshots.rs
+assertion_line: 84
+expression: stdout
+---
+{
+  "cycles": [],
+  "edges": [
+    {
+      "from": "main.ts",
+      "kind": "local",
+      "to": "utils.ts"
+    }
+  ],
+  "external_deps": {},
+  "files": [
+    {
+      "calls": [
+        {
+          "callee_raw": "console.log",
+          "span": {
+            "end_col": 11,
+            "end_line": 3,
+            "start_col": 8,
+            "start_line": 3
+          }
+        },
+        {
+          "callee_raw": "greet",
+          "span": {
+            "end_col": 17,
+            "end_line": 3,
+            "start_col": 12,
+            "start_line": 3
+          }
+        }
+      ],
+      "imports": [
+        {
+          "kind": "local",
+          "raw": "./utils",
+          "resolved": "utils.ts",
+          "span": {
+            "end_col": 30,
+            "end_line": 1,
+            "start_col": 23,
+            "start_line": 1
+          }
+        }
+      ],
+      "lang": "typescript",
+      "path": "main.ts",
+      "symbols": []
+    },
+    {
+      "calls": [],
+      "imports": [],
+      "lang": "typescript",
+      "path": "utils.ts",
+      "symbols": [
+        {
+          "exported": true,
+          "kind": "function",
+          "name": "greet",
+          "span": {
+            "end_col": 21,
+            "end_line": 1,
+            "start_col": 16,
+            "start_line": 1
+          }
+        }
+      ]
+    }
+  ],
+  "orphans": [],
+  "root": "[FIXTURES]/typescript/simple",
+  "roots": [
+    "main.ts"
+  ],
+  "test_entries": []
+}

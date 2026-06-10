@@ -16,6 +16,8 @@ pub fn parse_all(
     cache: &mut ParseCache,
     show_progress: bool,
 ) -> Vec<FileNode> {
+    cache.retain_paths(files.iter().map(|f| f.path.as_path()));
+
     // ── Phase 1: split into cache hits and misses ───────────────────────────
     let mut ordered: Vec<Option<FileNode>> = vec![None; files.len()];
     let mut misses: Vec<(usize, &DiscoveredFile)> = Vec::new();
@@ -102,4 +104,69 @@ pub fn parse_all(
     }
 
     ordered.into_iter().flatten().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use kgr_core::types::Lang;
+
+    use super::*;
+
+    fn mtime(secs: u64) -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    #[test]
+    fn parse_all_prunes_cache_entries_missing_from_current_walk_before_early_return() {
+        let root = tempfile::tempdir().unwrap();
+        let live = PathBuf::from("src/live.py");
+        let stale = PathBuf::from("src/deleted.py");
+        let mut cache = ParseCache::load(&root.path().join(".kgr-cache.json"));
+
+        cache.insert(
+            live.clone(),
+            Some(mtime(100)),
+            42,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        cache.insert(
+            stale.clone(),
+            Some(mtime(100)),
+            42,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let before_len = serde_json::to_vec(&cache).unwrap().len();
+
+        let nodes = parse_all(
+            root.path(),
+            vec![DiscoveredFile {
+                path: live.clone(),
+                lang: Lang::Python,
+                mtime: Some(mtime(100)),
+                size: 42,
+            }],
+            &ParserRegistry::new(),
+            &mut cache,
+            false,
+        );
+        let after_len = serde_json::to_vec(&cache).unwrap().len();
+
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].path, live);
+        assert!(
+            cache.get(&stale, Some(mtime(100)), 42).is_none(),
+            "entries for files missing from the current walk must be pruned"
+        );
+        assert!(
+            after_len < before_len,
+            "serialized cache should shrink after pruning a deleted source"
+        );
+    }
 }

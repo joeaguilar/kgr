@@ -148,6 +148,10 @@ enum Commands {
         #[arg(long)]
         heaviest: bool,
 
+        /// Show top N files for --heaviest (default: 20)
+        #[arg(short, long, requires = "heaviest")]
+        top: Option<usize>,
+
         /// List the largest cycle
         #[arg(long)]
         largest_cycle: bool,
@@ -425,6 +429,7 @@ fn main() {
             cycles,
             orphans,
             heaviest,
+            top,
             largest_cycle,
             format,
             lang,
@@ -440,6 +445,7 @@ fn main() {
                 cycles,
                 orphans,
                 heaviest,
+                top,
                 largest_cycle,
                 format.as_deref(),
                 &lang,
@@ -1087,6 +1093,7 @@ fn run_query(
     cycles: bool,
     orphans: bool,
     heaviest: bool,
+    top: Option<usize>,
     largest_cycle: bool,
     format: Option<&str>,
     lang: &Option<Vec<String>>,
@@ -1125,7 +1132,13 @@ fn run_query(
         let target = normalize_query_target(&root, target, &dep_graph.files).unwrap_or_else(|| {
             exit_unknown_query_target(format, "who-imports", target, &root, &mut stdout)
         });
-        let dependents = kgraph.transitive_dependents(&target);
+        let mut dependents: Vec<PathBuf> = dep_graph
+            .edges
+            .iter()
+            .filter(|edge| edge.to == target)
+            .map(|edge| edge.from.clone())
+            .collect();
+        dependents.sort();
         if format == "json" {
             write_json_line(&mut stdout, &dependents);
         } else if dependents.is_empty() {
@@ -1227,10 +1240,11 @@ fn run_query(
         }
     } else if heaviest {
         let ranked = kgraph.heaviest();
+        let limit = top.unwrap_or(20);
         if format == "json" {
             let items: Vec<serde_json::Value> = ranked
                 .iter()
-                .take(20)
+                .take(limit)
                 .map(|(p, c)| {
                     serde_json::json!({
                         "path": p,
@@ -1242,7 +1256,7 @@ fn run_query(
         } else {
             writeln!(stdout, "{:<50} {:>10}", "FILE", "DEPENDENTS").ok();
             writeln!(stdout, "{}", "-".repeat(62)).ok();
-            for (path, count) in ranked.iter().take(20) {
+            for (path, count) in ranked.iter().take(limit) {
                 writeln!(stdout, "{:<50} {:>10}", path.display(), count).ok();
             }
         }

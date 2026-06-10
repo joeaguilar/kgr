@@ -1,0 +1,90 @@
+---
+source: crates/kgr/tests/snapshots.rs
+assertion_line: 91
+expression: stdout
+---
+{
+  "cycles": [],
+  "edges": [
+    {
+      "from": "index.js",
+      "kind": "local",
+      "to": "utils.js"
+    }
+  ],
+  "external_deps": {},
+  "files": [
+    {
+      "calls": [
+        {
+          "callee_raw": "require",
+          "span": {
+            "end_col": 21,
+            "end_line": 1,
+            "start_col": 14,
+            "start_line": 1
+          }
+        },
+        {
+          "callee_raw": "console.log",
+          "span": {
+            "end_col": 11,
+            "end_line": 3,
+            "start_col": 8,
+            "start_line": 3
+          }
+        },
+        {
+          "callee_raw": "utils.greet",
+          "span": {
+            "end_col": 23,
+            "end_line": 3,
+            "start_col": 18,
+            "start_line": 3
+          }
+        }
+      ],
+      "imports": [
+        {
+          "kind": "local",
+          "raw": "./utils",
+          "resolved": "utils.js",
+          "span": {
+            "end_col": 30,
+            "end_line": 1,
+            "start_col": 23,
+            "start_line": 1
+          }
+        }
+      ],
+      "lang": "javascript",
+      "path": "index.js",
+      "symbols": []
+    },
+    {
+      "calls": [],
+      "imports": [],
+      "lang": "javascript",
+      "path": "utils.js",
+      "symbols": [
+        {
+          "exported": false,
+          "kind": "function",
+          "name": "greet",
+          "span": {
+            "end_col": 14,
+            "end_line": 1,
+            "start_col": 9,
+            "start_line": 1
+          }
+        }
+      ]
+    }
+  ],
+  "orphans": [],
+  "root": "[FIXTURES]/javascript/simple",
+  "roots": [
+    "index.js"
+  ],
+  "test_entries": []
+}

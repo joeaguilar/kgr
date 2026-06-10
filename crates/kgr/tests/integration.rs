@@ -787,21 +787,18 @@ fn agent_info_json() {
         .clone();
 
     let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
-    assert!(json["guide"].as_str().unwrap().contains("SUBCOMMANDS"));
+    let guide = json["guide"].as_str().unwrap();
+    assert!(guide.contains("SUBCOMMANDS"));
+    assert!(guide.contains("kgr graph [PATH] [FLAGS]"));
+    assert!(guide.contains("Bare `kgr` is equivalent to `kgr graph .`"));
+    assert!(!guide.contains("kgr [graph] [PATH] [FLAGS]"));
 }
 
 // ── query subcommand ──────────────────────────────────────────────────────────
-//
-// Known open bugs deliberately NOT baked into these assertions:
-// - #63: `query --who-imports` returns TRANSITIVE dependents under a "direct
-//   importers" label. Tests only assert facts that hold under either
-//   semantics (the direct importer IS listed).
 
 #[test]
 fn query_who_imports_lists_direct_importer() {
-    // typescript/simple: main.ts is the only importer of utils.ts, so the
-    // direct-importer set and the transitive-dependent set coincide and this
-    // assertion stays stable whichever way #63 is resolved.
+    // typescript/simple: main.ts is the only direct importer of utils.ts.
     let fixture = fixtures_dir().join("typescript/simple");
     kgr()
         .args([
@@ -817,6 +814,47 @@ fn query_who_imports_lists_direct_importer() {
         .success()
         .stdout(predicate::str::contains("Files that import utils.ts"))
         .stdout(predicate::str::contains("main.ts"));
+}
+
+#[test]
+fn query_who_imports_excludes_transitive_dependents() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("a.ts"),
+        "import { b } from './b';\nexport const a = b;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("b.ts"),
+        "import { c } from './c';\nexport const b = c;\n",
+    )
+    .unwrap();
+    std::fs::write(tmp.path().join("c.ts"), "export const c = 1;\n").unwrap();
+
+    let output = kgr()
+        .args([
+            "query",
+            "--who-imports",
+            "c.ts",
+            "-f",
+            "json",
+            "--no-progress",
+        ])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    let importers: Vec<&str> = json
+        .as_array()
+        .expect("who-imports JSON should be an array")
+        .iter()
+        .map(|entry| entry.as_str().unwrap())
+        .collect();
+    assert_eq!(importers, vec!["b.ts"]);
 }
 
 #[test]
@@ -1059,6 +1097,31 @@ fn query_heaviest_json_ranks_files_by_dependents() {
     };
     assert_eq!(dependents_of("utils.ts"), 1, "main.ts imports utils.ts");
     assert_eq!(dependents_of("main.ts"), 0, "nothing imports main.ts");
+}
+
+#[test]
+fn query_heaviest_top_flag_limits_json_entries() {
+    let tmp = tempfile::tempdir().unwrap();
+    for i in 0..25 {
+        std::fs::write(
+            tmp.path().join(format!("file{i:02}.ts")),
+            format!("export const value{i} = {i};\n"),
+        )
+        .unwrap();
+    }
+
+    let entries = |extra_args: &[&str]| -> Vec<serde_json::Value> {
+        let mut cmd = kgr();
+        cmd.args(["query", "--heaviest", "-f", "json", "--no-progress"]);
+        cmd.args(extra_args);
+        cmd.arg(tmp.path());
+        let output = cmd.assert().success().get_output().stdout.clone();
+
+        serde_json::from_slice(&output).unwrap()
+    };
+
+    assert_eq!(entries(&[]).len(), 20, "default heaviest limit is 20");
+    assert_eq!(entries(&["--top", "3"]).len(), 3);
 }
 
 #[test]

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use globset::{GlobSet, GlobSetBuilder};
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use ignore::WalkBuilder;
 use kgr_core::detect::detect_lang;
 use kgr_core::types::Lang;
@@ -19,7 +19,11 @@ pub fn discover(
     exclude: &[String],
     max_file_size: Option<u64>,
 ) -> Vec<DiscoveredFile> {
-    let exclude_set = build_glob_set(exclude);
+    let compiled_excludes = build_glob_set(exclude);
+    for diagnostic in &compiled_excludes.diagnostics {
+        diagnostic.emit();
+    }
+    let exclude_set = compiled_excludes.set;
     let root_buf = root.to_path_buf();
 
     let walker = WalkBuilder::new(root)
@@ -163,15 +167,83 @@ fn lang_matches(lang: Lang, langs: &Option<Vec<String>>) -> bool {
     filter.iter().any(|l| l == &lang_str || l == short)
 }
 
-fn build_glob_set(patterns: &[String]) -> GlobSet {
+struct CompiledExcludes {
+    set: GlobSet,
+    diagnostics: Vec<ExcludeGlobDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExcludeGlobDiagnostic {
+    pattern: String,
+    message: String,
+}
+
+impl ExcludeGlobDiagnostic {
+    fn warning(&self) -> String {
+        format!(
+            "warning[kgr::exclude-config]: invalid exclude glob '{}': {}",
+            self.pattern, self.message
+        )
+    }
+
+    fn emit(&self) {
+        eprintln!("{}", self.warning());
+    }
+}
+
+fn build_glob_set(patterns: &[String]) -> CompiledExcludes {
     let mut builder = GlobSetBuilder::new();
+    let mut diagnostics = Vec::new();
+
     for pat in patterns {
-        if let Ok(g) = globset::Glob::new(pat) {
-            builder.add(g);
+        match Glob::new(pat) {
+            Ok(g) => {
+                builder.add(g);
+            }
+            Err(error) => diagnostics.push(ExcludeGlobDiagnostic {
+                pattern: pat.clone(),
+                message: error.to_string(),
+            }),
         }
     }
+
     // Building a GlobSet from valid globs is infallible.
-    builder
+    let set = builder
         .build()
-        .unwrap_or_else(|_| GlobSetBuilder::new().build().unwrap())
+        .unwrap_or_else(|_| GlobSetBuilder::new().build().unwrap());
+
+    CompiledExcludes { set, diagnostics }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_exclude_glob_diagnostic_names_bad_pattern() {
+        let patterns = vec!["src/[oops".to_string()];
+
+        let compiled = build_glob_set(&patterns);
+
+        assert_eq!(compiled.diagnostics.len(), 1);
+        let warning = compiled.diagnostics[0].warning();
+        assert!(
+            warning.starts_with("warning[kgr::exclude-config]: invalid exclude glob 'src/[oops': ")
+        );
+        assert!(
+            warning.len()
+                > "warning[kgr::exclude-config]: invalid exclude glob 'src/[oops': ".len()
+        );
+    }
+
+    #[test]
+    fn valid_exclude_globs_still_apply_when_another_pattern_is_invalid() {
+        let patterns = vec!["vendor/**".to_string(), "src/[oops".to_string()];
+
+        let compiled = build_glob_set(&patterns);
+
+        assert_eq!(compiled.diagnostics.len(), 1);
+        assert!(compiled.set.is_match("vendor/generated.py"));
+        assert!(!compiled.set.is_match("src/main.py"));
+    }
 }

@@ -74,24 +74,28 @@ macro_rules! snapshot_format {
 
 // python/simple × formats
 snapshot_format!(snap_python_simple_tree, "python/simple", "tree");
+snapshot_format!(snap_python_simple_json, "python/simple", "json");
 snapshot_format!(snap_python_simple_dot, "python/simple", "dot");
 snapshot_format!(snap_python_simple_mermaid, "python/simple", "mermaid");
 snapshot_format!(snap_python_simple_table, "python/simple", "table");
 
 // typescript/simple × formats
 snapshot_format!(snap_ts_simple_tree, "typescript/simple", "tree");
+snapshot_format!(snap_ts_simple_json, "typescript/simple", "json");
 snapshot_format!(snap_ts_simple_dot, "typescript/simple", "dot");
 snapshot_format!(snap_ts_simple_mermaid, "typescript/simple", "mermaid");
 snapshot_format!(snap_ts_simple_table, "typescript/simple", "table");
 
 // javascript/simple × formats
 snapshot_format!(snap_js_simple_tree, "javascript/simple", "tree");
+snapshot_format!(snap_js_simple_json, "javascript/simple", "json");
 snapshot_format!(snap_js_simple_dot, "javascript/simple", "dot");
 snapshot_format!(snap_js_simple_mermaid, "javascript/simple", "mermaid");
 snapshot_format!(snap_js_simple_table, "javascript/simple", "table");
 
 // javascript/mixed × formats
 snapshot_format!(snap_js_mixed_tree, "javascript/mixed", "tree");
+snapshot_format!(snap_js_mixed_json, "javascript/mixed", "json");
 snapshot_format!(snap_js_mixed_dot, "javascript/mixed", "dot");
 snapshot_format!(snap_js_mixed_mermaid, "javascript/mixed", "mermaid");
 snapshot_format!(snap_js_mixed_table, "javascript/mixed", "table");
@@ -135,6 +139,8 @@ fn snap_rust_local_modules_tree() {
     let stdout = kgr_output("rust/local_modules", "tree");
     insta::assert_snapshot!(stdout);
 }
+
+snapshot_format!(snap_rust_local_modules_json, "rust/local_modules", "json");
 
 #[test]
 fn snap_rust_local_modules_orient_json() {

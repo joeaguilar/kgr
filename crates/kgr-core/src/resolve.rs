@@ -396,7 +396,7 @@ impl Resolver {
                 .known_files
                 .iter()
                 .filter(|known| {
-                    known.starts_with(&target)
+                    known.parent().unwrap_or(Path::new("")) == target.as_path()
                         && known.extension().and_then(|e| e.to_str()) == Some("go")
                 })
                 .min()
@@ -860,6 +860,16 @@ mod tests {
             "pkg/main.go",
         );
         assert_eq!(got, Some(PathBuf::from("pkg/service/alpha.go")));
+    }
+
+    #[test]
+    fn go_relative_package_resolution_ignores_nested_packages() {
+        let got = resolve_go(
+            &["pkg/service/zeta.go", "pkg/service/internal/aaa.go"],
+            "./service",
+            "pkg/main.go",
+        );
+        assert_eq!(got, Some(PathBuf::from("pkg/service/zeta.go")));
     }
 
     #[test]

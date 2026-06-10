@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -142,6 +142,18 @@ impl ParseCache {
             },
         );
     }
+
+    /// Drop cache entries for paths that were not discovered in the current walk.
+    pub fn retain_paths<P>(&mut self, paths: impl IntoIterator<Item = P>)
+    where
+        P: AsRef<Path>,
+    {
+        let live_paths: HashSet<String> = paths
+            .into_iter()
+            .map(|path| path.as_ref().to_string_lossy().into_owned())
+            .collect();
+        self.entries.retain(|path, _| live_paths.contains(path));
+    }
 }
 
 #[cfg(test)]
@@ -222,6 +234,32 @@ mod tests {
         assert!(
             cache.get(&path, None, 42).is_none(),
             "an unavailable mtime must never produce a hit"
+        );
+    }
+
+    #[test]
+    fn retain_paths_drops_entries_not_seen_in_current_walk() {
+        let live = PathBuf::from("src/main.py");
+        let stale = PathBuf::from("src/deleted.py");
+        let mut cache = warm_cache(&live);
+        cache.insert(
+            stale.clone(),
+            Some(mtime(100)),
+            42,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+
+        cache.retain_paths(std::iter::once(live.as_path()));
+
+        assert!(
+            cache.get(&live, Some(mtime(100)), 42).is_some(),
+            "a path discovered in the current walk must stay cached"
+        );
+        assert!(
+            cache.get(&stale, Some(mtime(100)), 42).is_none(),
+            "a path missing from the current walk must be pruned"
         );
     }
 

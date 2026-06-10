@@ -6,8 +6,9 @@ kgr — polyglot source dependency knowledge graph
 SUBCOMMANDS
 -----------
 
-kgr [graph] [PATH] [FLAGS]
+kgr graph [PATH] [FLAGS]
   Scan PATH (default: .) and emit the full dependency graph.
+  Bare `kgr` is equivalent to `kgr graph .` with default flags.
   Flags:
     -f, --format <fmt>     Output format: tree (default), json, table, dot, mermaid
     -l, --lang <lang>      Filter by language: py, ts, js, rs, java, c, cpp, go,
@@ -48,6 +49,7 @@ kgr query [PATH] [FLAGS]
     --cycles               List all cycles
     --orphans              List orphaned files
     --heaviest             List files ranked by number of dependents
+    -t, --top <n>          Show top N files for --heaviest (default: 20)
     --largest-cycle        Show the largest cycle
     -f, --format <fmt>     Output format: table (default), json
     -l, --lang <lang>      Filter by language

@@ -1,0 +1,81 @@
+---
+source: crates/kgr/tests/snapshots.rs
+assertion_line: 98
+expression: stdout
+---
+{
+  "cycles": [],
+  "edges": [
+    {
+      "from": "app.mjs",
+      "kind": "local",
+      "to": "helper.js"
+    }
+  ],
+  "external_deps": {},
+  "files": [
+    {
+      "calls": [
+        {
+          "callee_raw": "console.log",
+          "span": {
+            "end_col": 11,
+            "end_line": 3,
+            "start_col": 8,
+            "start_line": 3
+          }
+        },
+        {
+          "callee_raw": "helper",
+          "span": {
+            "end_col": 18,
+            "end_line": 3,
+            "start_col": 12,
+            "start_line": 3
+          }
+        }
+      ],
+      "imports": [
+        {
+          "kind": "local",
+          "raw": "./helper.js",
+          "resolved": "helper.js",
+          "span": {
+            "end_col": 35,
+            "end_line": 1,
+            "start_col": 24,
+            "start_line": 1
+          }
+        }
+      ],
+      "lang": "javascript",
+      "path": "app.mjs",
+      "symbols": []
+    },
+    {
+      "calls": [],
+      "imports": [],
+      "lang": "javascript",
+      "path": "helper.js",
+      "symbols": [
+        {
+          "exported": true,
+          "kind": "function",
+          "name": "helper",
+          "span": {
+            "end_col": 22,
+            "end_line": 1,
+            "start_col": 16,
+            "start_line": 1
+          }
+        }
+      ]
+    }
+  ],
+  "orphans": [],
+  "root": "[FIXTURES]/javascript/mixed",
+  "roots": [
+    "app.mjs"
+  ],
+  "test_entries": []
+}
