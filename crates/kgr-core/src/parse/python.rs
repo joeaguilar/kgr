@@ -29,6 +29,23 @@ const PYTHON_QUERY_SRC: &str = r#"
 ;; Relative from import: from . import bar, from ..foo import bar
 (import_from_statement
   module_name: (relative_import) @import.path)
+
+;; Dynamic import: __import__("foo")
+(call
+  function: (identifier) @dynamic.builtin
+  arguments: (argument_list
+    . (string (string_content) @import.path))
+  (#eq? @dynamic.builtin "__import__"))
+
+;; Dynamic import: importlib.import_module("foo")
+(call
+  function: (attribute
+    object: (identifier) @dynamic.module
+    attribute: (identifier) @dynamic.method)
+  arguments: (argument_list
+    . (string (string_content) @import.path))
+  (#eq? @dynamic.module "importlib")
+  (#eq? @dynamic.method "import_module"))
 "#;
 
 static PYTHON_SYMBOL_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -241,12 +258,17 @@ impl super::Parser for PythonParser {
 
         {
             let query = &*PYTHON_QUERY;
+            let path_idx = query.capture_index_for_name("import.path").unwrap();
             let mut cursor = QueryCursor::new();
 
             let mut imports = Vec::new();
             let mut matches = cursor.matches(query, tree.root_node(), source);
             while let Some(m) = matches.next() {
                 for capture in m.captures {
+                    if capture.index != path_idx {
+                        continue;
+                    }
+
                     let node = capture.node;
                     let raw = match node.utf8_text(source) {
                         Ok(s) => s.to_string(),
@@ -346,6 +368,34 @@ mod tests {
         let imports = parse("import numpy as np");
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].raw, "numpy");
+    }
+
+    #[test]
+    fn dynamic_builtin_import_with_literal_first_argument() {
+        let imports = parse("__import__('json')\n__import__(\"pkg.plugins\", globals())");
+        let raw: Vec<&str> = imports.iter().map(|i| i.raw.as_str()).collect();
+        assert_eq!(raw, vec!["json", "pkg.plugins"]);
+        assert!(imports.iter().all(|i| i.kind == ImportKind::External));
+    }
+
+    #[test]
+    fn dynamic_importlib_import_module_with_literal_first_argument() {
+        let imports = parse("importlib.import_module('os.path')\n");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].raw, "os.path");
+        assert_eq!(imports[0].kind, ImportKind::External);
+    }
+
+    #[test]
+    fn dynamic_imports_ignore_non_literal_arguments() {
+        let imports = parse(
+            r#"
+__import__(module_name)
+importlib.import_module(name)
+importlib.import_module(factory(), "fallback")
+"#,
+        );
+        assert!(imports.is_empty());
     }
 
     #[test]

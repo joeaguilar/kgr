@@ -11,7 +11,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process;
 
-use clap::{Parser, Subcommand};
+use clap::{ArgGroup, Parser, Subcommand};
 
 use kgr_core::graph::KGraph;
 use kgr_core::parse::ParserRegistry;
@@ -105,6 +105,20 @@ enum Commands {
     },
 
     /// Query the dependency graph
+    #[command(group(
+        ArgGroup::new("query_selector")
+            .required(true)
+            .multiple(false)
+            .args([
+                "who_imports",
+                "deps_of",
+                "path_between",
+                "cycles",
+                "orphans",
+                "heaviest",
+                "largest_cycle",
+            ])
+    ))]
     Query {
         /// Root directory to scan
         #[arg(default_value = ".")]
@@ -968,6 +982,99 @@ fn run_check(
     }
 }
 
+fn write_json_line<T: serde::Serialize + ?Sized>(stdout: &mut impl Write, value: &T) {
+    serde_json::to_writer_pretty(&mut *stdout, value).ok();
+    writeln!(stdout).ok();
+}
+
+fn normalize_query_target(
+    root: &Path,
+    target: &Path,
+    files: &[kgr_core::types::FileNode],
+) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if target.is_absolute() {
+        if let Ok(rel) = target.strip_prefix(root) {
+            push_query_target_candidate(&mut candidates, rel);
+        }
+    } else {
+        push_query_target_candidate(&mut candidates, target);
+    }
+
+    let from_root = if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        root.join(target)
+    };
+    if let Ok(canon) = std::fs::canonicalize(&from_root) {
+        if let Ok(rel) = canon.strip_prefix(root) {
+            push_query_target_candidate(&mut candidates, rel);
+        }
+    }
+
+    if let Ok(canon) = std::fs::canonicalize(target) {
+        if let Ok(rel) = canon.strip_prefix(root) {
+            push_query_target_candidate(&mut candidates, rel);
+        }
+    }
+
+    candidates.into_iter().find(|candidate| {
+        files
+            .iter()
+            .any(|file| file.path.as_path() == candidate.as_path())
+    })
+}
+
+fn push_query_target_candidate(candidates: &mut Vec<PathBuf>, candidate: &Path) {
+    let candidate = normalize_query_target_path(candidate);
+    if !candidates.iter().any(|existing| existing == &candidate) {
+        candidates.push(candidate);
+    }
+}
+
+fn normalize_query_target_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(part) => normalized.push(part),
+            std::path::Component::ParentDir => normalized.push(".."),
+            std::path::Component::Prefix(prefix) => {
+                normalized.push(Path::new(prefix.as_os_str()));
+            }
+            std::path::Component::RootDir => {}
+        }
+    }
+    normalized
+}
+
+fn exit_unknown_query_target(
+    format: &str,
+    selector: &str,
+    target: &Path,
+    root: &Path,
+    stdout: &mut impl Write,
+) -> ! {
+    eprintln!(
+        "Error: unknown query target for --{}: {} (not found in scanned files under {})",
+        selector,
+        target.display(),
+        root.display()
+    );
+    if format == "json" {
+        let payload = serde_json::json!({
+            "found": false,
+            "selector": selector,
+            "target": target.to_string_lossy(),
+            "root": root.to_string_lossy(),
+            "error": "unknown query target",
+        });
+        write_json_line(stdout, &payload);
+    }
+    process::exit(2);
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "CLI dispatch passes through all flags"
@@ -1010,17 +1117,19 @@ fn run_query(
     resolver.resolve_all(&mut file_nodes);
 
     let kgraph = KGraph::from_files(&file_nodes);
-    let dep_graph = kgraph.to_dep_graph(root, file_nodes);
+    let dep_graph = kgraph.to_dep_graph(root.clone(), file_nodes);
 
     let mut stdout = std::io::stdout().lock();
 
     if let Some(target) = who_imports {
-        let dependents = kgraph.transitive_dependents(target);
-        if dependents.is_empty() {
+        let target = normalize_query_target(&root, target, &dep_graph.files).unwrap_or_else(|| {
+            exit_unknown_query_target(format, "who-imports", target, &root, &mut stdout)
+        });
+        let dependents = kgraph.transitive_dependents(&target);
+        if format == "json" {
+            write_json_line(&mut stdout, &dependents);
+        } else if dependents.is_empty() {
             eprintln!("No files import {}", target.display());
-        } else if format == "json" {
-            serde_json::to_writer_pretty(&mut stdout, &dependents).ok();
-            writeln!(stdout).ok();
         } else {
             writeln!(stdout, "Files that import {}:", target.display()).ok();
             for dep in &dependents {
@@ -1028,12 +1137,14 @@ fn run_query(
             }
         }
     } else if let Some(target) = deps_of {
-        let deps = kgraph.transitive_deps(target, None);
-        if deps.is_empty() {
+        let target = normalize_query_target(&root, target, &dep_graph.files).unwrap_or_else(|| {
+            exit_unknown_query_target(format, "deps-of", target, &root, &mut stdout)
+        });
+        let deps = kgraph.transitive_deps(&target, None);
+        if format == "json" {
+            write_json_line(&mut stdout, &deps);
+        } else if deps.is_empty() {
             eprintln!("{} has no dependencies", target.display());
-        } else if format == "json" {
-            serde_json::to_writer_pretty(&mut stdout, &deps).ok();
-            writeln!(stdout).ok();
         } else {
             writeln!(stdout, "Dependencies of {}:", target.display()).ok();
             for dep in &deps {
@@ -1042,40 +1153,54 @@ fn run_query(
         }
     } else if let Some(endpoints) = path_between {
         if endpoints.len() == 2 {
-            if let Some(path) = kgraph.shortest_path(&endpoints[0], &endpoints[1]) {
-                if format == "json" {
-                    serde_json::to_writer_pretty(&mut stdout, &path).ok();
-                    writeln!(stdout).ok();
-                } else {
-                    writeln!(
-                        stdout,
-                        "Shortest path from {} to {}:",
-                        endpoints[0].display(),
-                        endpoints[1].display()
+            let from = normalize_query_target(&root, &endpoints[0], &dep_graph.files)
+                .unwrap_or_else(|| {
+                    exit_unknown_query_target(
+                        format,
+                        "path-between",
+                        &endpoints[0],
+                        &root,
+                        &mut stdout,
                     )
-                    .ok();
-                    for (i, node) in path.iter().enumerate() {
-                        if i > 0 {
-                            write!(stdout, " -> ").ok();
-                        }
-                        write!(stdout, "{}", node.display()).ok();
+                });
+            let to = normalize_query_target(&root, &endpoints[1], &dep_graph.files).unwrap_or_else(
+                || {
+                    exit_unknown_query_target(
+                        format,
+                        "path-between",
+                        &endpoints[1],
+                        &root,
+                        &mut stdout,
+                    )
+                },
+            );
+            let query_path = kgraph.shortest_path(&from, &to);
+            if format == "json" {
+                write_json_line(&mut stdout, &query_path);
+            } else if let Some(path) = query_path {
+                writeln!(
+                    stdout,
+                    "Shortest path from {} to {}:",
+                    from.display(),
+                    to.display()
+                )
+                .ok();
+                for (i, node) in path.iter().enumerate() {
+                    if i > 0 {
+                        write!(stdout, " -> ").ok();
                     }
-                    writeln!(stdout).ok();
+                    write!(stdout, "{}", node.display()).ok();
                 }
+                writeln!(stdout).ok();
             } else {
-                eprintln!(
-                    "No path found from {} to {}",
-                    endpoints[0].display(),
-                    endpoints[1].display()
-                );
+                eprintln!("No path found from {} to {}", from.display(), to.display());
             }
         }
     } else if cycles {
-        if dep_graph.cycles.is_empty() {
+        if format == "json" {
+            write_json_line(&mut stdout, &dep_graph.cycles);
+        } else if dep_graph.cycles.is_empty() {
             eprintln!("No cycles found");
-        } else if format == "json" {
-            serde_json::to_writer_pretty(&mut stdout, &dep_graph.cycles).ok();
-            writeln!(stdout).ok();
         } else {
             writeln!(stdout, "Cycles found: {}", dep_graph.cycles.len()).ok();
             for (i, cycle) in dep_graph.cycles.iter().enumerate() {
@@ -1090,11 +1215,10 @@ fn run_query(
             }
         }
     } else if orphans {
-        if dep_graph.orphans.is_empty() {
+        if format == "json" {
+            write_json_line(&mut stdout, &dep_graph.orphans);
+        } else if dep_graph.orphans.is_empty() {
             eprintln!("No orphaned files found");
-        } else if format == "json" {
-            serde_json::to_writer_pretty(&mut stdout, &dep_graph.orphans).ok();
-            writeln!(stdout).ok();
         } else {
             writeln!(stdout, "Orphaned files:").ok();
             for orphan in &dep_graph.orphans {
@@ -1114,8 +1238,7 @@ fn run_query(
                     })
                 })
                 .collect();
-            serde_json::to_writer_pretty(&mut stdout, &items).ok();
-            writeln!(stdout).ok();
+            write_json_line(&mut stdout, &items);
         } else {
             writeln!(stdout, "{:<50} {:>10}", "FILE", "DEPENDENTS").ok();
             writeln!(stdout, "{}", "-".repeat(62)).ok();
@@ -1124,15 +1247,13 @@ fn run_query(
             }
         }
     } else if largest_cycle {
-        if let Some(cycle) = dep_graph.cycles.iter().max_by_key(|c| c.len()) {
-            if format == "json" {
-                serde_json::to_writer_pretty(&mut stdout, cycle).ok();
-                writeln!(stdout).ok();
-            } else {
-                writeln!(stdout, "Largest cycle ({} files):", cycle.len()).ok();
-                for node in cycle {
-                    writeln!(stdout, "  {}", node.display()).ok();
-                }
+        let cycle = dep_graph.cycles.iter().max_by_key(|c| c.len());
+        if format == "json" {
+            write_json_line(&mut stdout, &cycle);
+        } else if let Some(cycle) = cycle {
+            writeln!(stdout, "Largest cycle ({} files):", cycle.len()).ok();
+            for node in cycle {
+                writeln!(stdout, "  {}", node.display()).ok();
             }
         } else {
             eprintln!("No cycles found");

@@ -15,16 +15,7 @@ static BASH_QUERY: LazyLock<Query> = LazyLock::new(|| {
 const BASH_QUERY_SRC: &str = r#"
 ;; source ./file.sh or . ./file.sh
 (command
-  name: (command_name) @_cmd
-  argument: (word) @import.path)
-
-(command
-  name: (command_name) @_cmd2
-  argument: (string) @import.path_str)
-
-(command
-  name: (command_name) @_cmd3
-  argument: (raw_string) @import.path_raw)
+  name: (command_name) @_cmd) @source.command
 "#;
 
 static BASH_SYMBOL_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -48,6 +39,26 @@ const BASH_CALL_QUERY_SRC: &str = r#"
 (command
   name: (command_name) @call.name)
 "#;
+
+fn source_path_text(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    if !matches!(node.kind(), "word" | "string" | "raw_string") {
+        return None;
+    }
+
+    let mut raw = node.utf8_text(source).ok()?.to_string();
+    if raw.len() >= 2
+        && ((raw.starts_with('"') && raw.ends_with('"'))
+            || (raw.starts_with('\'') && raw.ends_with('\'')))
+    {
+        raw = raw[1..raw.len() - 1].to_string();
+    }
+
+    if raw.is_empty() || raw.starts_with('$') {
+        return None;
+    }
+
+    Some(raw)
+}
 
 thread_local! {
     static BASH_PARSER: RefCell<tree_sitter::Parser> = RefCell::new({
@@ -173,12 +184,8 @@ impl super::Parser for BashParser {
         };
 
         let query = &*BASH_QUERY;
-        let cmd_idx = query.capture_index_for_name("_cmd");
-        let cmd2_idx = query.capture_index_for_name("_cmd2");
-        let cmd3_idx = query.capture_index_for_name("_cmd3");
-        let path_idx = query.capture_index_for_name("import.path");
-        let path_str_idx = query.capture_index_for_name("import.path_str");
-        let path_raw_idx = query.capture_index_for_name("import.path_raw");
+        let cmd_idx = query.capture_index_for_name("_cmd").unwrap();
+        let command_idx = query.capture_index_for_name("source.command").unwrap();
 
         let mut cursor = QueryCursor::new();
         let mut imports = Vec::new();
@@ -186,10 +193,7 @@ impl super::Parser for BashParser {
         while let Some(m) = matches.next() {
             // Check if this is a source/dot command
             let cmd_text = m.captures.iter().find_map(|c| {
-                if Some(c.index) == cmd_idx
-                    || Some(c.index) == cmd2_idx
-                    || Some(c.index) == cmd3_idx
-                {
+                if c.index == cmd_idx {
                     c.node.utf8_text(source).ok()
                 } else {
                     None
@@ -205,30 +209,25 @@ impl super::Parser for BashParser {
                 continue;
             }
 
-            // Find the path capture
-            let path_capture = m.captures.iter().find(|c| {
-                Some(c.index) == path_idx
-                    || Some(c.index) == path_str_idx
-                    || Some(c.index) == path_raw_idx
-            });
-
-            let capture = match path_capture {
+            let command = match m.captures.iter().find(|c| c.index == command_idx) {
                 Some(c) => c,
                 None => continue,
             };
 
-            let node = capture.node;
-            let mut raw = match node.utf8_text(source) {
-                Ok(s) => s.to_string(),
-                Err(_) => continue,
+            let mut arg_cursor = command.node.walk();
+            let node = match command
+                .node
+                .children_by_field_name("argument", &mut arg_cursor)
+                .next()
+            {
+                Some(n) => n,
+                None => continue,
             };
 
-            // Strip quotes from string/raw_string arguments
-            if (raw.starts_with('"') && raw.ends_with('"'))
-                || (raw.starts_with('\'') && raw.ends_with('\''))
-            {
-                raw = raw[1..raw.len() - 1].to_string();
-            }
+            let raw = match source_path_text(node, source) {
+                Some(r) => r,
+                None => continue,
+            };
 
             let kind = if raw.starts_with('.') {
                 ImportKind::Local
@@ -303,6 +302,26 @@ mod tests {
     fn multiple_sources() {
         let imports = parse("source ./a.sh\n. ./b.sh\nsource /etc/profile\n");
         assert_eq!(imports.len(), 3);
+    }
+
+    #[test]
+    fn source_uses_only_first_argument() {
+        let imports = parse("source ./lib.sh extra1 extra2");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].raw, "./lib.sh");
+    }
+
+    #[test]
+    fn dot_source_ignores_extra_expansion_arguments() {
+        let imports = parse(r#". ./util.sh "$@""#);
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].raw, "./util.sh");
+    }
+
+    #[test]
+    fn source_skips_empty_and_expansion_only_arguments() {
+        let imports = parse("source \"\"\nsource \"$@\"\nsource $CONFIG\n");
+        assert!(imports.is_empty(), "got {imports:?}");
     }
 
     // ── Symbol extraction tests ──────────────────────────────────────────

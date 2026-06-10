@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Language, Query, QueryCursor};
+use tree_sitter::{Language, Node, Query, QueryCursor};
 
 use crate::types::{CallRef, Import, ImportKind, Lang, Span, Symbol, SymbolKind};
 
@@ -24,8 +24,9 @@ const ZIG_SYMBOL_QUERY_SRC: &str = r#"
   name: (identifier) @fn.name)
 
 ;; Top-level variable/const declarations
-(variable_declaration
-  (identifier) @var.name)
+(source_file
+  (variable_declaration
+    (identifier) @var.name))
 "#;
 
 static ZIG_SYMBOL_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -72,6 +73,26 @@ impl ZigParser {
     }
 }
 
+fn zig_variable_symbol_kind(declaration: Node<'_>) -> SymbolKind {
+    let mut cursor = declaration.walk();
+    if cursor.goto_first_child() {
+        loop {
+            match cursor.node().kind() {
+                "struct_declaration" | "enum_declaration" | "union_declaration" => {
+                    return SymbolKind::Class;
+                }
+                _ => {}
+            }
+
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+
+    SymbolKind::Function
+}
+
 impl super::Parser for ZigParser {
     fn lang(&self) -> Lang {
         Lang::Zig
@@ -105,7 +126,18 @@ impl super::Parser for ZigParser {
                 if capture.index != fn_idx && capture.index != var_idx {
                     continue;
                 }
-                let kind = SymbolKind::Function;
+                if name == "_" {
+                    continue;
+                }
+
+                let kind = if capture.index == var_idx {
+                    let Some(declaration) = node.parent() else {
+                        continue;
+                    };
+                    zig_variable_symbol_kind(declaration)
+                } else {
+                    SymbolKind::Function
+                };
 
                 // Zig uses `pub` for exported symbols.
                 // Check the immediate declaration parent (function_declaration or
@@ -384,6 +416,70 @@ fn bar() void {}
         let private = syms.iter().find(|s| s.name == "private_fn").unwrap();
         assert!(public.exported);
         assert!(!private.exported);
+    }
+
+    #[test]
+    fn symbols_only_top_level_variables() {
+        let syms = symbols(
+            r#"
+const std = @import("std");
+var counter: usize = 0;
+
+fn main() void {
+    const x = 1;
+    var y = 2;
+    _ = y;
+}
+"#,
+        );
+
+        assert!(syms.iter().any(|s| s.name == "std"));
+        assert!(syms.iter().any(|s| s.name == "counter"));
+        assert!(syms.iter().any(|s| s.name == "main"));
+        assert!(!syms.iter().any(|s| s.name == "x"));
+        assert!(!syms.iter().any(|s| s.name == "y"));
+        assert!(!syms.iter().any(|s| s.name == "_"));
+    }
+
+    #[test]
+    fn symbols_skip_discard_declarations() {
+        let syms = symbols(
+            r#"
+const _ = @import("std");
+
+fn main() void {
+    const _ = 1;
+}
+"#,
+        );
+
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "main");
+    }
+
+    #[test]
+    fn symbols_classifies_top_level_container_consts_as_classes() {
+        let syms = symbols(
+            r#"
+const Point = struct {
+    x: i32,
+};
+pub const Mode = enum {
+    fast,
+};
+const Value = union {
+    int: i32,
+};
+"#,
+        );
+
+        for name in ["Point", "Mode", "Value"] {
+            let symbol = syms.iter().find(|s| s.name == name).unwrap();
+            assert_eq!(symbol.kind, SymbolKind::Class);
+        }
+
+        let mode = syms.iter().find(|s| s.name == "Mode").unwrap();
+        assert!(mode.exported);
     }
 
     // ── Call extraction tests ────────────────────────────────────────────

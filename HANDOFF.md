@@ -11,10 +11,11 @@ can't get from code or the tracker alone. Issue IDs (`#N`) link to `itr get N`.
 ## TL;DR
 
 This session ran a **full six-reviewer code review** of kgr (69 new issues filed, #46–#114,
-plus #116 found mid-run) and then an **8-wave parallel agent blitz** that closed **47 of
-them** with a green `just verify` gate after every wave. The work — 38 files,
-**+6424/−494** — is sitting **uncommitted on `main`**. First order of business: review and
-commit it. Then 4 more planned waves (below) clear the remaining 23 review-batch issues.
+plus #116 found mid-run), then an **8-wave parallel agent blitz** that closed **47 of
+them**, and a follow-on **Wave 9** that closed **7 more**. `just verify` is green after
+Wave 9. The earlier 8-wave campaign is committed at `b9446d6`; Wave 9 is sitting
+uncommitted on `main` as 7 files, **+611/-109**. First order of business: review and commit
+Wave 9. Then 3 planned waves (below) clear the remaining 16 review-batch issues.
 
 Wave log with full per-wave outcomes and all 12 interventions:
 `sprint/_unscoped/blitz-2026-06-09T22-25-41Z.md`. Blitz epic: **#115**.
@@ -23,18 +24,15 @@ Wave log with full per-wave outcomes and all 12 interventions:
 
 ## Repo / branch state
 
-- **`main` @ `c643d14`** — clean baseline the blitz started from.
-- **Working tree** — 38 files changed, +6424/−494, **all gates green** (`just verify` exit 0:
-  check, clippy `-D warnings`, 44+59+21+35+428 tests, fmt). **Not committed** — review and
-  commit before launching more waves. One commit is defensible (it's one campaign); if
-  splitting, natural seams are: parsers (kgr-core/src/parse/), resolver (resolve.rs),
-  CLI/config (main.rs, config.rs, walk.rs, pipeline.rs, cache.rs), renderers (render/),
-  tests (tests/).
+- **`main` @ `b9446d6`** — waves 1–8 committed (`fix: close 47 review-batch issues across 8 blitz waves`).
+- **Working tree** — Wave 9 changed 7 files, +611/−109, **all gates green** (`just verify`
+  exit 0: check, clippy `-D warnings`, 44+65+21+35+444 tests, fmt). **Not committed** —
+  review and commit before launching Wave 10.
 - `.claude/settings.local.json` — gitignored; gained allowlist entries this session (see
   playbook below). Leave them; waves depend on them.
 - `tests/fixtures/**/.kgr-cache.json` litter — eliminated (tests now run `KGR_NO_CACHE=1`).
 
-## What shipped (waves 1–8, 47 issues)
+## What shipped (waves 1–9, 54 issues)
 
 - **W1** #49 single-file PATH support, #50 dotted-specifier resolution, #51 py decorated
   symbols, #52 ts/js arrow/generator symbols, #57 cpp inline methods
@@ -57,22 +55,16 @@ Wave log with full per-wave outcomes and all 12 interventions:
 - **W8** #62/#105 dead/impact `found:false` + multi-definition contracts, #79 angle-include
   System-kind fix, #95 haskell binds + export lists, #96/#113 objc `@import` + selector fix,
   #97 rust type/union/macro/trait-sig symbols
+- **W9** #64/#65/#107 query empty JSON + target validation + selector ArgGroup, #80
+  `.mts`/`.cts`/`.mm` detection and TS resolution candidates, #88 bash source first-arg-only,
+  #98 zig top-level symbol filtering/classification, #112 python literal dynamic imports
 
 ---
 
-## Remaining waves (the plan — 23 review-batch issues, 4 waves)
+## Remaining waves (the plan — 16 review-batch issues, 3 waves)
 
 Bundling convention: same-file sibling issues share one agent slot (they can't parallelize
 anyway); that agent closes all its issue IDs. Within a wave no two slots share a file.
-
-### Wave 9 (7 issues, 5 slots)
-| Slot | Issues | Owns |
-|---|---|---|
-| 1 | #64 + #65 + #107 | main.rs, tests/integration.rs — query JSON-on-empty, target validation, selector ArgGroup |
-| 2 | #80 | detect.rs, resolve.rs — .mts/.cts/.mm detection |
-| 3 | #88 | parse/bash.rs — source extra-arg imports |
-| 4 | #98 | parse/zig.rs — const/var symbol flood |
-| 5 | #112 | parse/python.rs — `__import__`/`import_module` literals |
 
 ### Wave 10 (7 issues, 5 slots)
 | Slot | Issues | Owns |
@@ -149,9 +141,9 @@ Not scoped into these waves — run `itr ready` for the live list:
 
 ```sh
 just verify                      # confirm still green
-git add -A && git commit ...     # land waves 1–8 first (branch if you prefer)
+git add -A && git commit ...     # land Wave 9 first (branch if you prefer)
 itr ready -f json --fields id,title,urgency,status
-# then run /blitz and point it at Wave 9 above, or work issues solo
+# then run /blitz and point it at Wave 10 above, or work issues solo
 ```
 
 - Wave log: `sprint/_unscoped/blitz-2026-06-09T22-25-41Z.md` (config, conflicts, all

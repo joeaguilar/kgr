@@ -3,6 +3,9 @@ use std::path::{Path, PathBuf};
 
 use crate::types::{FileNode, ImportKind, Lang};
 
+const TYPESCRIPT_RESOLVE_EXTS: &[&str] = &["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"];
+const JAVASCRIPT_RESOLVE_EXTS: &[&str] = &["js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts"];
+
 /// One `compilerOptions.paths` alias: the key pattern (exact like `jquery`
 /// or single-wildcard like `@app/*`) plus ALL of its targets, already
 /// anchored to `compilerOptions.baseUrl` (root-relative).
@@ -53,8 +56,8 @@ impl Resolver {
     fn resolve(&self, raw: &str, from: &Path, lang: Lang, kind: ImportKind) -> Option<PathBuf> {
         match lang {
             Lang::Python => self.resolve_python(raw, from),
-            Lang::TypeScript => self.resolve_js_ts(raw, from, &["ts", "tsx", "js", "jsx"]),
-            Lang::JavaScript => self.resolve_js_ts(raw, from, &["js", "jsx", "mjs", "cjs", "ts"]),
+            Lang::TypeScript => self.resolve_js_ts(raw, from, TYPESCRIPT_RESOLVE_EXTS),
+            Lang::JavaScript => self.resolve_js_ts(raw, from, JAVASCRIPT_RESOLVE_EXTS),
             Lang::Java => self.resolve_java(raw),
             Lang::C | Lang::Cpp => self.resolve_c(raw, from, kind),
             Lang::Rust => self.resolve_rust(raw, from),
@@ -702,7 +705,7 @@ mod tests {
         resolver(files).resolve_go(raw, Path::new(from))
     }
 
-    const TS_EXTS: &[&str] = &["ts", "tsx", "js", "jsx"];
+    const TS_EXTS: &[&str] = TYPESCRIPT_RESOLVE_EXTS;
 
     fn resolve_ts(files: &[&str], raw: &str, from: &str) -> Option<PathBuf> {
         resolver(files).resolve_js_ts(raw, Path::new(from), TS_EXTS)
@@ -915,6 +918,29 @@ mod tests {
     }
 
     #[test]
+    fn typescript_resolves_mts_extension_candidates() {
+        let got = resolve_ts(&["src/app.mts", "src/foo.mts"], "./foo", "src/app.mts");
+        assert_eq!(got, Some(PathBuf::from("src/foo.mts")));
+    }
+
+    #[test]
+    fn typescript_resolves_cts_extension_candidates() {
+        let got = resolve_ts(&["src/app.cts", "src/foo.cts"], "./foo", "src/app.cts");
+        assert_eq!(got, Some(PathBuf::from("src/foo.cts")));
+    }
+
+    #[test]
+    fn javascript_resolution_can_find_typescript_module_files() {
+        let got = resolver(&["src/app.mjs", "src/foo.mts"]).resolve(
+            "./foo",
+            Path::new("src/app.mjs"),
+            Lang::JavaScript,
+            ImportKind::Local,
+        );
+        assert_eq!(got, Some(PathBuf::from("src/foo.mts")));
+    }
+
+    #[test]
     fn nodenext_dotted_js_specifier_resolves_to_dotted_ts() {
         // NodeNext + Angular style combined: `./user.service.js` substitutes
         // only the trailing js-family extension.
@@ -1044,6 +1070,29 @@ mod tests {
             "src/app.ts",
         );
         assert_eq!(got, Some(PathBuf::from("src/utils/index.ts")));
+    }
+
+    #[test]
+    fn mts_full_resolve_produces_local_edge_target() {
+        let r = resolver(&["src/main.mts", "src/util.mts"]);
+        let mut files = vec![FileNode {
+            path: PathBuf::from("src/main.mts"),
+            lang: Lang::TypeScript,
+            imports: vec![Import {
+                raw: "./util".to_string(),
+                kind: ImportKind::Local,
+                resolved: None,
+                span: None,
+            }],
+            symbols: Vec::new(),
+            calls: Vec::new(),
+        }];
+        r.resolve_all(&mut files);
+        assert_eq!(files[0].imports[0].kind, ImportKind::Local);
+        assert_eq!(
+            files[0].imports[0].resolved,
+            Some(PathBuf::from("src/util.mts"))
+        );
     }
 
     // ── Ruby ─────────────────────────────────────────────────────────────

@@ -796,10 +796,6 @@ fn agent_info_json() {
 // - #63: `query --who-imports` returns TRANSITIVE dependents under a "direct
 //   importers" label. Tests only assert facts that hold under either
 //   semantics (the direct importer IS listed).
-// - #64: `query -f json` prints nothing on empty results, so JSON assertions
-//   below only cover non-empty result sets.
-// - #65: nonexistent query targets exit 0 with a plausible message — not
-//   tested as correct behavior here.
 
 #[test]
 fn query_who_imports_lists_direct_importer() {
@@ -898,8 +894,145 @@ fn query_orphans_lists_unconnected_file() {
 }
 
 #[test]
+fn query_empty_json_results_are_parseable() {
+    let fixture = fixtures_dir().join("typescript/simple");
+    let cases: &[&[&str]] = &[
+        &["query", "--cycles", "-f", "json", "--no-progress"],
+        &["query", "--orphans", "-f", "json", "--no-progress"],
+        &[
+            "query",
+            "--who-imports",
+            "main.ts",
+            "-f",
+            "json",
+            "--no-progress",
+        ],
+    ];
+
+    for args in cases {
+        let output = kgr()
+            .args(args.iter().copied())
+            .arg(&fixture)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+
+        let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(json, serde_json::json!([]));
+    }
+}
+
+#[test]
+fn query_empty_json_singleton_results_are_parseable() {
+    let fixture = fixtures_dir().join("typescript/simple");
+    let cases: &[&[&str]] = &[
+        &["query", "--largest-cycle", "-f", "json", "--no-progress"],
+        &[
+            "query",
+            "--path-between",
+            "utils.ts",
+            "main.ts",
+            "-f",
+            "json",
+            "--no-progress",
+        ],
+    ];
+
+    for args in cases {
+        let output = kgr()
+            .args(args.iter().copied())
+            .arg(&fixture)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+
+        let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(json, serde_json::Value::Null);
+    }
+}
+
+#[test]
+fn query_nonexistent_target_exits_nonzero() {
+    let fixture = fixtures_dir().join("typescript/simple");
+    kgr()
+        .args([
+            "query",
+            "--who-imports",
+            "missing.ts",
+            "-f",
+            "table",
+            "--no-progress",
+        ])
+        .arg(&fixture)
+        .assert()
+        .code(2)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("unknown query target"))
+        .stderr(predicate::str::contains("--who-imports"));
+}
+
+#[test]
+fn query_nonexistent_target_json_reports_found_false() {
+    let fixture = fixtures_dir().join("typescript/simple");
+    let output = kgr()
+        .args([
+            "query",
+            "--who-imports",
+            "missing.ts",
+            "-f",
+            "json",
+            "--no-progress",
+        ])
+        .arg(&fixture)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("unknown query target"))
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["found"], false);
+    assert_eq!(json["selector"], "who-imports");
+    assert_eq!(json["error"], "unknown query target");
+}
+
+#[test]
+fn query_target_paths_normalize_to_graph_keys() {
+    let fixture = fixtures_dir().join("typescript/simple");
+    kgr()
+        .args([
+            "query",
+            "--who-imports",
+            "./utils.ts",
+            "-f",
+            "table",
+            "--no-progress",
+        ])
+        .arg(&fixture)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Files that import utils.ts"))
+        .stdout(predicate::str::contains("main.ts"));
+
+    kgr()
+        .arg("query")
+        .arg(&fixture)
+        .arg("--deps-of")
+        .arg(fixture.join("main.ts"))
+        .args(["-f", "table", "--no-progress"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Dependencies of main.ts"))
+        .stdout(predicate::str::contains("utils.ts"));
+}
+
+#[test]
 fn query_heaviest_json_ranks_files_by_dependents() {
-    // Non-empty result set, so JSON output is safe to assert (see #64).
     // typescript/simple: main.ts -> utils.ts is a real resolved edge
     // (python/simple's edges are distorted by #16).
     let fixture = fixtures_dir().join("typescript/simple");
@@ -950,7 +1083,19 @@ fn query_without_mode_flag_exits_2_with_guidance() {
         .arg(&fixture)
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("Please specify a query flag"));
+        .stderr(predicate::str::contains("Usage:"))
+        .stderr(predicate::str::contains("--who-imports"));
+}
+
+#[test]
+fn query_rejects_multiple_selector_flags() {
+    let fixture = fixtures_dir().join("typescript/simple");
+    kgr()
+        .args(["query", "--cycles", "--orphans", "--no-progress"])
+        .arg(&fixture)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("cannot be used with"));
 }
 
 // ── CLI flag coverage ─────────────────────────────────────────────────────────

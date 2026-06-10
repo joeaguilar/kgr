@@ -5,8 +5,7 @@ use crate::types::Lang;
 pub fn detect_lang(path: &Path) -> Lang {
     match path.extension().and_then(|e| e.to_str()) {
         Some("py" | "pyi") => Lang::Python,
-        Some("ts") => Lang::TypeScript,
-        Some("tsx") => Lang::TypeScript,
+        Some("ts" | "tsx" | "mts" | "cts") => Lang::TypeScript,
         Some("js" | "jsx" | "mjs" | "cjs") => Lang::JavaScript,
         Some("java") => Lang::Java,
         Some("c" | "h") => Lang::C,
@@ -15,7 +14,7 @@ pub fn detect_lang(path: &Path) -> Lang {
         Some("go") => Lang::Go,
         Some("zig") => Lang::Zig,
         Some("cs") => Lang::CSharp,
-        Some("m") => Lang::ObjectiveC,
+        Some("m" | "mm") => Lang::ObjectiveC,
         Some("swift") => Lang::Swift,
         Some("rb" | "rake" | "gemspec") => Lang::Ruby,
         Some("php") => Lang::Php,
@@ -31,7 +30,7 @@ pub fn detect_lang(path: &Path) -> Lang {
 pub fn lang_extensions(lang: Lang) -> &'static [&'static str] {
     match lang {
         Lang::Python => &["py", "pyi"],
-        Lang::TypeScript => &["ts", "tsx"],
+        Lang::TypeScript => &["ts", "tsx", "mts", "cts"],
         Lang::JavaScript => &["js", "jsx", "mjs", "cjs"],
         Lang::Java => &["java"],
         Lang::C => &["c", "h"],
@@ -40,7 +39,7 @@ pub fn lang_extensions(lang: Lang) -> &'static [&'static str] {
         Lang::Go => &["go"],
         Lang::Zig => &["zig"],
         Lang::CSharp => &["cs"],
-        Lang::ObjectiveC => &["m"],
+        Lang::ObjectiveC => &["m", "mm"],
         Lang::Swift => &["swift"],
         Lang::Ruby => &["rb", "rake", "gemspec"],
         Lang::Php => &["php"],
@@ -50,5 +49,28 @@ pub fn lang_extensions(lang: Lang) -> &'static [&'static str] {
         Lang::Haskell => &["hs"],
         Lang::Bash => &["sh", "bash"],
         Lang::Unknown => &[],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_typescript_module_extensions() {
+        assert_eq!(detect_lang(Path::new("src/main.mts")), Lang::TypeScript);
+        assert_eq!(detect_lang(Path::new("src/main.cts")), Lang::TypeScript);
+    }
+
+    #[test]
+    fn detects_objective_c_plus_plus_as_objc() {
+        assert_eq!(detect_lang(Path::new("src/view.mm")), Lang::ObjectiveC);
+    }
+
+    #[test]
+    fn language_extension_lists_include_detected_extensions() {
+        assert!(lang_extensions(Lang::TypeScript).contains(&"mts"));
+        assert!(lang_extensions(Lang::TypeScript).contains(&"cts"));
+        assert!(lang_extensions(Lang::ObjectiveC).contains(&"mm"));
     }
 }
