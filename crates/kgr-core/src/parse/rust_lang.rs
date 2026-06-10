@@ -49,6 +49,10 @@ const RUST_SYMBOL_QUERY_SRC: &str = r#"
 (enum_item
   name: (type_identifier) @class.name)
 
+;; Enum variants
+(enum_variant
+  name: (identifier) @variant.name)
+
 ;; Pub trait
 (trait_item
   (visibility_modifier)
@@ -119,8 +123,23 @@ const RUST_CALL_QUERY_SRC: &str = r#"
 ;; Type identifier in any position (annotations, fields, etc.)
 (type_identifier) @type.ref
 
-;; Trait bounds: impl MyTrait for Foo — trait name captured via type_identifier above
-;; Generic type args: Vec<MyType> — inner type captured via type_identifier above
+;; Tuple/struct enum variant patterns: Foo::Bar(x), Foo::Bar { x }, Bar(x)
+(tuple_struct_pattern
+  type: [(identifier) (scoped_identifier)] @type.ref)
+
+(struct_pattern
+  type: [(type_identifier) (scoped_type_identifier)] @type.ref)
+
+;; Attribute paths: #[my_attr], #[path::my_attr], #[derive(MyDerive)]
+(attribute
+  [(identifier) (scoped_identifier)] @type.ref)
+
+(attribute
+  arguments: (token_tree
+    [(identifier) (scoped_identifier)] @type.ref))
+
+;; Trait bounds: impl MyTrait for Foo — trait names captured via type_identifier above
+;; Generic type args: Vec<MyType> — inner types captured via type_identifier above
 "#;
 
 static RUST_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -179,6 +198,7 @@ impl super::Parser for RustParser {
         let fn_exported_idx = query.capture_index_for_name("fn.exported").unwrap();
         let class_name_idx = query.capture_index_for_name("class.name").unwrap();
         let class_exported_idx = query.capture_index_for_name("class.exported").unwrap();
+        let variant_idx = query.capture_index_for_name("variant.name").unwrap();
         let method_idx = query.capture_index_for_name("method.name").unwrap();
         let macro_idx = query.capture_index_for_name("macro.name").unwrap();
 
@@ -199,10 +219,11 @@ impl super::Parser for RustParser {
                     (SymbolKind::Function, false)
                 } else if capture.index == class_exported_idx {
                     (SymbolKind::Class, true)
-                } else if capture.index == class_name_idx {
+                } else if capture.index == class_name_idx || capture.index == variant_idx {
                     (SymbolKind::Class, false)
                 } else if capture.index == method_idx {
-                    (SymbolKind::Method, false)
+                    let exported = node.parent().is_some_and(rust_decl_has_visibility);
+                    (SymbolKind::Method, exported)
                 } else if capture.index == macro_idx {
                     // macro_rules! macros are exported via #[macro_export],
                     // which sits as a sibling attribute_item, not a child.
@@ -329,8 +350,8 @@ impl super::Parser for RustParser {
 
                 // A single `use` may pull in several paths via brace groups:
                 // `use a::b::{c, d};` -> a::b::c, a::b::d. Expand so each path
-                // resolves independently and external_deps lists clean,
-                // brace-free package names.
+                // resolves independently and render projections receive clean,
+                // brace-free import paths.
                 if capture.index == use_idx {
                     for path in expand_use_paths(&raw) {
                         if !seen.insert(path.clone()) {
@@ -486,6 +507,14 @@ fn read_raw_rust_string(value: &str) -> Option<String> {
     let rest = &value[pos..];
     let end = rest.find(&terminator)?;
     Some(rest[..end].to_string())
+}
+
+fn rust_decl_has_visibility(decl_node: tree_sitter::Node) -> bool {
+    (0..decl_node.child_count()).any(|i| {
+        decl_node
+            .child(i)
+            .is_some_and(|child| child.kind() == "visibility_modifier")
+    })
 }
 
 /// True if a `macro_definition` node is preceded by a `#[macro_export]`
@@ -686,7 +715,7 @@ extern crate log;
             ["std::collections::HashMap", "std::collections::HashSet"]
         );
         assert!(imports.iter().all(|i| i.kind == ImportKind::External));
-        // No brace groups leak into external_deps strings.
+        // No brace groups leak into raw import strings.
         assert!(imports.iter().all(|i| !i.raw.contains('{')));
     }
 
@@ -760,6 +789,18 @@ extern crate log;
     }
 
     #[test]
+    fn symbols_finds_enum_variants() {
+        let syms = symbols("enum Flow { Ready(String), Waiting { id: u32 }, Done }\n");
+        for variant in ["Ready", "Waiting", "Done"] {
+            assert!(
+                syms.iter()
+                    .any(|s| s.name == variant && s.kind == SymbolKind::Class),
+                "missing enum variant symbol {variant}"
+            );
+        }
+    }
+
+    #[test]
     fn symbols_finds_traits() {
         let syms = symbols("trait Drawable { fn draw(&self); }\n");
         assert!(syms
@@ -786,6 +827,23 @@ extern crate log;
             .filter(|s| s.kind == SymbolKind::Method)
             .collect();
         assert_eq!(methods.len(), 2);
+    }
+
+    #[test]
+    fn symbols_exports_pub_impl_methods() {
+        let syms = symbols(
+            "struct Foo;\nimpl Foo {\n    pub fn method_a(&self) {}\n    pub(crate) fn method_b(&self) {}\n    fn method_c(&self) {}\n}\n",
+        );
+        let public = syms.iter().find(|s| s.name == "method_a").unwrap();
+        let crate_visible = syms.iter().find(|s| s.name == "method_b").unwrap();
+        let private = syms.iter().find(|s| s.name == "method_c").unwrap();
+
+        assert_eq!(public.kind, SymbolKind::Method);
+        assert!(public.exported);
+        assert_eq!(crate_visible.kind, SymbolKind::Method);
+        assert!(crate_visible.exported);
+        assert_eq!(private.kind, SymbolKind::Method);
+        assert!(!private.exported);
     }
 
     #[test]
@@ -884,6 +942,25 @@ extern crate log;
     }
 
     #[test]
+    fn calls_enum_variant_patterns() {
+        let c = calls(
+            r#"
+fn handle(flow: Flow) {
+    match flow {
+        Flow::Ready(value) => drop(value),
+        Flow::Waiting { id } => drop(id),
+        Done(value) => drop(value),
+    }
+}
+"#,
+        );
+        let names: Vec<&str> = c.iter().map(|c| c.callee_raw.as_str()).collect();
+        assert!(names.contains(&"Flow::Ready"));
+        assert!(names.contains(&"Flow::Waiting"));
+        assert!(names.contains(&"Done"));
+    }
+
+    #[test]
     fn calls_scoped_macro() {
         let c = calls("fn main() { tracing::warn!(\"uh oh\"); }\n");
         assert!(c.iter().any(|c| c.callee_raw == "tracing::warn"));
@@ -899,9 +976,25 @@ extern crate log;
 
     #[test]
     fn calls_trait_bounds() {
-        let c = calls("impl MyTrait for MyStruct {}\n");
+        let c = calls("impl<T> MyTrait for MyStruct where T: OtherTrait {}\n");
         let names: Vec<&str> = c.iter().map(|c| c.callee_raw.as_str()).collect();
         assert!(names.contains(&"MyTrait"));
         assert!(names.contains(&"MyStruct"));
+        assert!(names.contains(&"OtherTrait"));
+    }
+
+    #[test]
+    fn calls_attribute_and_derive_paths() {
+        let c = calls(
+            r#"
+#[crate::macros::tracked]
+#[derive(Clone, crate::macros::Track)]
+struct Event;
+"#,
+        );
+        let names: Vec<&str> = c.iter().map(|c| c.callee_raw.as_str()).collect();
+        assert!(names.contains(&"crate::macros::tracked"));
+        assert!(names.contains(&"Clone"));
+        assert!(names.contains(&"Track"));
     }
 }

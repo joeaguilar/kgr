@@ -113,6 +113,23 @@ thread_local! {
     });
 }
 
+fn is_using_alias_name(node: tree_sitter::Node) -> bool {
+    if node.kind() != "identifier" {
+        return false;
+    }
+
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    if parent.kind() != "using_directive" {
+        return false;
+    }
+
+    parent
+        .child_by_field_name("name")
+        .is_some_and(|name| name.id() == node.id())
+}
+
 pub struct CSharpParser;
 
 impl CSharpParser {
@@ -262,6 +279,10 @@ impl super::Parser for CSharpParser {
         while let Some(m) = matches.next() {
             for capture in m.captures {
                 let node = capture.node;
+                if is_using_alias_name(node) {
+                    continue;
+                }
+
                 let raw = match node.utf8_text(source) {
                     Ok(s) => s.to_string(),
                     Err(_) => continue,
@@ -315,6 +336,12 @@ mod tests {
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].raw, "Foo");
         assert_eq!(imports[0].kind, ImportKind::External);
+    }
+
+    #[test]
+    fn csharp_using_alias_does_not_emit_alias_as_import() {
+        let imports = parse_csharp("using Json = Newtonsoft.Json.Linq.JObject;");
+        assert!(!imports.iter().any(|i| i.raw == "Json"));
     }
 
     #[test]

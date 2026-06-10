@@ -1,5 +1,5 @@
 use predicates::prelude::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -8,6 +8,32 @@ fn fixtures_dir() -> PathBuf {
         .parent()
         .unwrap()
         .join("tests/fixtures")
+}
+
+fn graph_json(path: &Path) -> serde_json::Value {
+    let output = kgr()
+        .args(["graph", "--format", "json", "--no-progress"])
+        .arg(path)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    serde_json::from_slice(&output).unwrap()
+}
+
+fn query_orphans_json(path: &Path) -> Vec<String> {
+    let output = kgr()
+        .args(["query", "--orphans", "-f", "json", "--no-progress"])
+        .arg(path)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    serde_json::from_slice::<Vec<String>>(&output).unwrap()
 }
 
 /// Build a `kgr` command with the parse cache disabled (`KGR_NO_CACHE=1`), so
@@ -1051,6 +1077,172 @@ fn query_orphans_lists_unconnected_file() {
         .success()
         .stdout(predicate::str::contains("Orphaned files:"))
         .stdout(predicate::str::contains("lonely.ts"));
+}
+
+#[test]
+fn js_ts_orphans_exclude_vite_html_entry_and_package_scripts() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::create_dir_all(tmp.path().join("scripts")).unwrap();
+
+    std::fs::write(
+        tmp.path().join("index.html"),
+        r#"<script type="module" src="/src/boot.ts"></script>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("package.json"),
+        r#"{"scripts":{"seed":"tsx scripts/seed.ts"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("src/boot.ts"),
+        "import { app } from './app';\nconsole.log(app);\n",
+    )
+    .unwrap();
+    std::fs::write(tmp.path().join("src/app.ts"), "export const app = 1;\n").unwrap();
+    std::fs::write(
+        tmp.path().join("scripts/seed.ts"),
+        "export const seed = 1;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("src/lonely.ts"),
+        "export const lonely = 1;\n",
+    )
+    .unwrap();
+
+    let orphans = query_orphans_json(tmp.path());
+
+    assert!(orphans.contains(&"src/lonely.ts".to_string()));
+    assert!(
+        !orphans.contains(&"src/boot.ts".to_string()),
+        "Vite HTML module entry should not be a real orphan: {orphans:?}"
+    );
+    assert!(
+        !orphans.contains(&"scripts/seed.ts".to_string()),
+        "package.json script target should not be a real orphan: {orphans:?}"
+    );
+}
+
+#[test]
+fn js_ts_orphans_exclude_config_setup_routes_and_stories() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("src/routes")).unwrap();
+    std::fs::create_dir_all(tmp.path().join("src/components")).unwrap();
+
+    std::fs::write(tmp.path().join("vite.config.ts"), "export default {};\n").unwrap();
+    std::fs::write(
+        tmp.path().join("src/setupTests.ts"),
+        "export function setup(): void {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("src/routes/about.tsx"),
+        "export default function About() { return <h1>About</h1>; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("src/components/Button.stories.tsx"),
+        "export const Primary = {};\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("src/lonely.ts"),
+        "export const lonely = 1;\n",
+    )
+    .unwrap();
+
+    let orphans = query_orphans_json(tmp.path());
+
+    assert!(orphans.contains(&"src/lonely.ts".to_string()));
+    for entry in [
+        "vite.config.ts",
+        "src/setupTests.ts",
+        "src/routes/about.tsx",
+        "src/components/Button.stories.tsx",
+    ] {
+        assert!(
+            !orphans.contains(&entry.to_string()),
+            "{entry} should be classified as a structural JS/TS entry: {orphans:?}"
+        );
+    }
+}
+
+#[test]
+fn js_ts_worker_url_construction_creates_dependency_edge() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(
+        tmp.path().join("src/index.ts"),
+        "new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("src/worker.ts"),
+        "self.postMessage('ready');\n",
+    )
+    .unwrap();
+
+    let json = graph_json(tmp.path());
+    let edges = json["edges"].as_array().unwrap();
+    assert!(
+        edges
+            .iter()
+            .any(|edge| edge["from"] == "src/index.ts" && edge["to"] == "src/worker.ts"),
+        "worker URL should produce an index.ts -> worker.ts edge: {edges:?}"
+    );
+    let orphans: Vec<String> = serde_json::from_value(json["orphans"].clone()).unwrap();
+    assert!(
+        !orphans.contains(&"src/worker.ts".to_string()),
+        "worker file with a URL edge should not be orphaned: {orphans:?}"
+    );
+}
+
+#[test]
+fn js_ts_ambient_globals_are_classified_but_type_companions_are_linked() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(
+        tmp.path().join("src/global.d.ts"),
+        "declare global { interface Window { appReady: boolean } }\nexport {};\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("src/widget.ts"),
+        "export const widget = 1;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("src/widget.d.ts"),
+        "export declare const widget: number;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("src/lonely.ts"),
+        "export const lonely = 1;\n",
+    )
+    .unwrap();
+
+    let json = graph_json(tmp.path());
+    let edges = json["edges"].as_array().unwrap();
+    assert!(
+        edges
+            .iter()
+            .any(|edge| edge["from"] == "src/widget.ts" && edge["to"] == "src/widget.d.ts"),
+        "type companion declaration should be tied to its source edge: {edges:?}"
+    );
+
+    let orphans: Vec<String> = serde_json::from_value(json["orphans"].clone()).unwrap();
+    assert!(orphans.contains(&"src/lonely.ts".to_string()));
+    assert!(
+        !orphans.contains(&"src/global.d.ts".to_string()),
+        "ambient global declaration should not be a real orphan: {orphans:?}"
+    );
+    assert!(
+        !orphans.contains(&"src/widget.d.ts".to_string()),
+        "type companion should be linked, not classified as a loose global: {orphans:?}"
+    );
 }
 
 #[test]

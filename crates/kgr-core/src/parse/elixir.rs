@@ -13,6 +13,12 @@ const ELIXIR_QUERY_SRC: &str = r#"
   target: (identifier) @_fn
   (arguments
     (alias) @import.path))
+
+;; alias MyApp.{Repo, User}
+(call
+  target: (identifier) @_fn
+  (arguments
+    (dot) @import.path))
 "#;
 
 static ELIXIR_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -140,6 +146,68 @@ fn is_def_head(ident: tree_sitter::Node, source: &[u8]) -> bool {
         None => return false,
     };
     matches!(target.utf8_text(source), Ok(kw) if ELIXIR_DEF_HEAD_KEYWORDS.contains(&kw))
+}
+
+fn collect_import_paths<'tree>(
+    node: tree_sitter::Node<'tree>,
+    source: &[u8],
+    prefix: Option<String>,
+    paths: &mut Vec<(String, tree_sitter::Node<'tree>)>,
+) {
+    match node.kind() {
+        "alias" => {
+            let Ok(raw) = node.utf8_text(source) else {
+                return;
+            };
+            let raw = match prefix {
+                Some(prefix) => format!("{prefix}.{raw}"),
+                None => raw.to_string(),
+            };
+            paths.push((raw, node));
+        }
+        "dot" => {
+            let Some(left) = node.child_by_field_name("left") else {
+                return;
+            };
+            let Some(right) = node.child_by_field_name("right") else {
+                return;
+            };
+
+            if right.kind() == "tuple" {
+                let Ok(left_text) = left.utf8_text(source) else {
+                    return;
+                };
+                let prefix = match prefix {
+                    Some(prefix) => format!("{prefix}.{left_text}"),
+                    None => left_text.to_string(),
+                };
+
+                let mut cursor = right.walk();
+                for child in right.named_children(&mut cursor) {
+                    collect_import_paths(child, source, Some(prefix.clone()), paths);
+                }
+            } else {
+                let Ok(raw) = node.utf8_text(source) else {
+                    return;
+                };
+                let raw = match prefix {
+                    Some(prefix) => format!("{prefix}.{raw}"),
+                    None => raw.to_string(),
+                };
+                paths.push((raw, node));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn import_paths<'tree>(
+    node: tree_sitter::Node<'tree>,
+    source: &[u8],
+) -> Vec<(String, tree_sitter::Node<'tree>)> {
+    let mut paths = Vec::new();
+    collect_import_paths(node, source, None, &mut paths);
+    paths
 }
 
 thread_local! {
@@ -370,31 +438,27 @@ impl super::Parser for ElixirParser {
                 None => continue,
             };
 
-            let node = path_capture.node;
-            let raw = match node.utf8_text(source) {
-                Ok(s) => s.to_string(),
-                Err(_) => continue,
-            };
+            for (raw, node) in import_paths(path_capture.node, source) {
+                if !seen.insert(raw.clone()) {
+                    continue;
+                }
 
-            if !seen.insert(raw.clone()) {
-                continue;
+                let start = node.start_position();
+                let end = node.end_position();
+
+                // All Elixir imports are External
+                imports.push(Import {
+                    raw,
+                    kind: ImportKind::External,
+                    resolved: None,
+                    span: Some(Span {
+                        start_line: start.row + 1,
+                        start_col: start.column,
+                        end_line: end.row + 1,
+                        end_col: end.column,
+                    }),
+                });
             }
-
-            let start = node.start_position();
-            let end = node.end_position();
-
-            // All Elixir imports are External
-            imports.push(Import {
-                raw,
-                kind: ImportKind::External,
-                resolved: None,
-                span: Some(Span {
-                    start_line: start.row + 1,
-                    start_col: start.column,
-                    end_line: end.row + 1,
-                    end_col: end.column,
-                }),
-            });
         }
 
         imports
@@ -424,6 +488,14 @@ mod tests {
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].raw, "MyApp.Repo");
         assert_eq!(imports[0].kind, ImportKind::External);
+    }
+
+    #[test]
+    fn alias_multi_alias_expands_each_member() {
+        let imports = parse("alias MyApp.{Repo, User}");
+        let raws: Vec<_> = imports.iter().map(|i| i.raw.as_str()).collect();
+        assert_eq!(raws, vec!["MyApp.Repo", "MyApp.User"]);
+        assert!(imports.iter().all(|i| i.kind == ImportKind::External));
     }
 
     #[test]

@@ -59,6 +59,13 @@ jobs:
       - name: Check
         run: cargo check --workspace --all-targets
 
+  deny:
+    name: Dependency Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
   check:
     name: Check
     runs-on: ubuntu-latest
@@ -66,12 +73,13 @@ jobs:
       - lint
       - test
       - msrv
+      - deny
     if: ${{ always() }}
     steps:
       - name: Required jobs passed
-        if: ${{ needs.lint.result == 'success' && needs.test.result == 'success' && needs.msrv.result == 'success' }}
+        if: ${{ needs.lint.result == 'success' && needs.test.result == 'success' && needs.msrv.result == 'success' && needs.deny.result == 'success' }}
         run: true
 
       - name: Required jobs failed
-        if: ${{ needs.lint.result != 'success' || needs.test.result != 'success' || needs.msrv.result != 'success' }}
+        if: ${{ needs.lint.result != 'success' || needs.test.result != 'success' || needs.msrv.result != 'success' || needs.deny.result != 'success' }}
         run: exit 1

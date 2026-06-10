@@ -1,5 +1,6 @@
 ---
 source: crates/kgr/tests/snapshots.rs
+assertion_line: 92
 expression: stdout
 ---
 graph LR
@@ -8,4 +9,5 @@ graph LR
   n2["models.py"]
   n3["utils.py"]
 
-  n1 --> n0
+  n1 --> n3
+  n1 --> n2

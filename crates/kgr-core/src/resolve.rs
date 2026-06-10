@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::types::{FileNode, ImportKind, Lang};
 
@@ -45,12 +45,21 @@ impl Resolver {
             let file_path = file.path.clone();
             for import in file.imports.iter_mut() {
                 import.resolved = self.resolve(&import.raw, &file_path, lang, import.kind);
-                // A resolved import is upgraded to Local — EXCEPT when the
-                // parser classified it as System (C/C++/ObjC angle
-                // includes): a project header that happens to share a system
-                // header's name must not erase the System classification.
-                if import.resolved.is_some() && import.kind != ImportKind::System {
-                    import.kind = ImportKind::Local;
+                if import.resolved.is_some() {
+                    // A resolved import is upgraded to Local — EXCEPT when the
+                    // parser classified it as System (C/C++/ObjC angle
+                    // includes): a project header that happens to share a system
+                    // header's name must not erase the System classification.
+                    if import.kind != ImportKind::System {
+                        import.kind = ImportKind::Local;
+                    }
+                } else if import.kind == ImportKind::Local {
+                    // Unresolved locals would otherwise create neither a graph
+                    // edge nor an external_deps entry. Keep resolved=None, but
+                    // surface the raw specifier through the existing External
+                    // projection. Resolver-less languages that emit Local
+                    // imports follow the same documented behavior.
+                    import.kind = ImportKind::External;
                 }
             }
         }
@@ -121,11 +130,6 @@ impl Resolver {
         let rel_pkg = PathBuf::from(&module_path).join("__init__.py");
         if self.known_files.contains(&rel_pkg) {
             return Some(rel_pkg);
-        }
-
-        let rel_from = from_dir.join(format!("{}.py", module_path));
-        if self.known_files.contains(&rel_from) {
-            return Some(rel_from);
         }
 
         None
@@ -641,16 +645,33 @@ fn is_rust_path_attribute(raw: &str) -> bool {
 
 fn normalize_path(path: &Path) -> PathBuf {
     let mut components = Vec::new();
+    let mut escaped_root = false;
     for component in path.components() {
         match component {
-            std::path::Component::ParentDir => {
-                components.pop();
-            }
-            std::path::Component::CurDir => {}
+            Component::ParentDir => match components.last() {
+                Some(Component::Normal(_)) => {
+                    components.pop();
+                }
+                Some(Component::RootDir | Component::Prefix(_)) => {
+                    escaped_root = true;
+                }
+                Some(Component::ParentDir) | None => {
+                    escaped_root = true;
+                    components.push(component);
+                }
+                Some(Component::CurDir) => {}
+            },
+            Component::CurDir => {}
             other => {
                 components.push(other);
             }
         }
+    }
+    if escaped_root {
+        tracing::warn!(
+            "Path '{}' traverses above the project root during import resolution",
+            path.display()
+        );
     }
     components.iter().collect()
 }
@@ -780,6 +801,29 @@ mod tests {
             kind,
             resolved: None,
             span: None,
+        }
+    }
+
+    fn python_import(raw: &str) -> Import {
+        Import {
+            raw: raw.to_string(),
+            kind: if raw.starts_with('.') {
+                ImportKind::Local
+            } else {
+                ImportKind::External
+            },
+            resolved: None,
+            span: None,
+        }
+    }
+
+    fn python_node_with_imports(path: &str, imports: Vec<Import>) -> FileNode {
+        FileNode {
+            path: PathBuf::from(path),
+            lang: Lang::Python,
+            imports,
+            symbols: Vec::new(),
+            calls: Vec::new(),
         }
     }
 
@@ -1061,6 +1105,106 @@ mod tests {
     }
 
     #[test]
+    fn full_resolve_surfaces_unresolved_local_import_as_external() {
+        let mut files = vec![FileNode {
+            path: PathBuf::from("src/app.ts"),
+            lang: Lang::TypeScript,
+            imports: vec![Import {
+                raw: "./missing".to_string(),
+                kind: ImportKind::Local,
+                resolved: None,
+                span: None,
+            }],
+            symbols: Vec::new(),
+            calls: Vec::new(),
+        }];
+
+        let r = resolver_from_nodes(&files);
+        r.resolve_all(&mut files);
+
+        assert_eq!(files[0].imports[0].kind, ImportKind::External);
+        assert_eq!(files[0].imports[0].resolved, None);
+    }
+
+    #[test]
+    fn resolverless_local_import_is_surfaced_as_external() {
+        let mut files = vec![FileNode {
+            path: PathBuf::from("src/main.m"),
+            lang: Lang::ObjectiveC,
+            imports: vec![Import {
+                raw: "LocalThing.h".to_string(),
+                kind: ImportKind::Local,
+                resolved: None,
+                span: None,
+            }],
+            symbols: Vec::new(),
+            calls: Vec::new(),
+        }];
+
+        let r = resolver_from_nodes(&files);
+        r.resolve_all(&mut files);
+
+        assert_eq!(files[0].imports[0].kind, ImportKind::External);
+        assert_eq!(files[0].imports[0].resolved, None);
+    }
+
+    #[test]
+    fn python_bare_relative_submodule_imports_resolve_distinct_targets() {
+        let mut files = vec![
+            python_node_with_imports(
+                "pkg/__init__.py",
+                vec![python_import(".alpha"), python_import(".beta")],
+            ),
+            python_node_with_imports("pkg/alpha.py", Vec::new()),
+            python_node_with_imports("pkg/beta/__init__.py", Vec::new()),
+        ];
+
+        let r = resolver_from_nodes(&files);
+        r.resolve_all(&mut files);
+
+        assert_eq!(
+            files[0].imports[0].resolved,
+            Some(PathBuf::from("pkg/alpha.py"))
+        );
+        assert_eq!(
+            files[0].imports[1].resolved,
+            Some(PathBuf::from("pkg/beta/__init__.py"))
+        );
+        assert_ne!(files[0].imports[0].resolved, files[0].imports[1].resolved);
+    }
+
+    #[test]
+    fn python_absolute_import_ignores_shadowing_sibling_file() {
+        let mut files = vec![
+            python_node_with_imports("pkg/main.py", vec![python_import("requests")]),
+            python_node_with_imports("pkg/requests.py", Vec::new()),
+        ];
+
+        let r = resolver_from_nodes(&files);
+        r.resolve_all(&mut files);
+
+        assert_eq!(files[0].imports[0].kind, ImportKind::External);
+        assert_eq!(files[0].imports[0].resolved, None);
+    }
+
+    #[test]
+    fn python_absolute_import_resolves_explicit_project_package() {
+        let mut files = vec![
+            python_node_with_imports("pkg/main.py", vec![python_import("pkg.requests")]),
+            python_node_with_imports("pkg/requests.py", Vec::new()),
+        ];
+
+        let r = resolver_from_nodes(&files);
+        r.resolve_all(&mut files);
+
+        assert_eq!(files[0].imports[0].kind, ImportKind::Local);
+        assert_eq!(
+            files[0].imports[0].resolved,
+            Some(PathBuf::from("pkg/requests.py"))
+        );
+    }
+
+    #[test]
     fn dotted_specifier_appends_extension_instead_of_truncating() {
         // The headline bug: `./user.service` must resolve to user.service.ts,
         // never truncate at the last dot and draw an edge to user.ts.
@@ -1243,6 +1387,22 @@ mod tests {
             "src/app.ts",
         );
         assert_eq!(got, Some(PathBuf::from("src/utils/index.ts")));
+    }
+
+    #[test]
+    fn parent_relative_import_can_resolve_known_target_above_scan_root() {
+        let got = resolve_ts(
+            &["src/app.ts", "../shared.ts"],
+            "../../shared",
+            "src/app.ts",
+        );
+        assert_eq!(got, Some(PathBuf::from("../shared.ts")));
+    }
+
+    #[test]
+    fn parent_relative_import_above_scan_root_does_not_match_root_shadow() {
+        let got = resolve_ts(&["app.ts", "shared.ts"], "../shared", "app.ts");
+        assert_eq!(got, None);
     }
 
     #[test]

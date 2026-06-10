@@ -229,10 +229,10 @@ impl super::Parser for BashParser {
                 None => continue,
             };
 
-            let kind = if raw.starts_with('.') {
-                ImportKind::Local
-            } else {
+            let kind = if raw.starts_with('/') {
                 ImportKind::External
+            } else {
+                ImportKind::Local
             };
 
             let start = node.start_position();
@@ -273,6 +273,14 @@ mod tests {
         let imports = parse("source ./lib.sh");
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].raw, "./lib.sh");
+        assert_eq!(imports[0].kind, ImportKind::Local);
+    }
+
+    #[test]
+    fn source_bare_relative_directive() {
+        let imports = parse("source lib.sh");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].raw, "lib.sh");
         assert_eq!(imports[0].kind, ImportKind::Local);
     }
 

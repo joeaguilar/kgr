@@ -30,6 +30,11 @@ const TS_QUERY_SRC: &str = r#"
 (call_expression
   function: (identifier) @_fn
   arguments: (arguments (string (string_fragment) @import.path)))
+
+;; Bundler worker/assets: new URL('./worker.ts', import.meta.url)
+(new_expression
+  constructor: (identifier) @_url_ctor
+  arguments: (arguments (string (string_fragment) @import.path)))
 "#;
 
 const TS_SYMBOL_QUERY_SRC: &str = r#"
@@ -376,6 +381,9 @@ fn parse_with(
     let fn_capture_idx = query
         .capture_index_for_name("_fn")
         .expect("_fn capture must exist");
+    let url_ctor_capture_idx = query
+        .capture_index_for_name("_url_ctor")
+        .expect("_url_ctor capture must exist");
     let path_capture_idx = query
         .capture_index_for_name("import.path")
         .expect("import.path capture must exist");
@@ -397,6 +405,18 @@ fn parse_with(
                 Err(_) => continue,
             };
             if fn_name != "require" {
+                continue;
+            }
+        }
+
+        let url_ctor_capture = m.captures.iter().find(|c| c.index == url_ctor_capture_idx);
+
+        if let Some(uc) = url_ctor_capture {
+            let ctor_name = match uc.node.utf8_text(source) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            if ctor_name != "URL" {
                 continue;
             }
         }
@@ -502,6 +522,15 @@ mod tests {
         let imports = parse_ts(r#"const m = import('./lazy');"#);
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].raw, "./lazy");
+    }
+
+    #[test]
+    fn new_url_worker_import() {
+        let imports =
+            parse_ts(r#"new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });"#);
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].raw, "./worker.ts");
+        assert_eq!(imports[0].kind, ImportKind::Local);
     }
 
     #[test]

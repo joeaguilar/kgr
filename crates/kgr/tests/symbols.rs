@@ -383,6 +383,114 @@ fn refs_table_output() {
         .stdout(predicate::str::contains("app.py"));
 }
 
+#[test]
+fn refs_bare_duplicate_symbol_reports_ambiguity_with_definition_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("alpha.py"),
+        "def normalize(value):\n    return value\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("beta.py"),
+        "def normalize(value):\n    return value\n",
+    )
+    .unwrap();
+
+    let output = kgr()
+        .args(["refs", "normalize", "--format", "json", "--no-progress"])
+        .arg(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["symbol"], "normalize");
+    assert_eq!(json["ambiguous"], true);
+    assert!(json["scope_hint"]
+        .as_str()
+        .unwrap()
+        .contains("--defined-in"));
+
+    let definitions = json["definitions"].as_array().unwrap();
+    assert_eq!(definitions.len(), 2);
+    let ids: Vec<&str> = definitions
+        .iter()
+        .map(|definition| definition["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 2);
+    assert_ne!(ids[0], ids[1], "definition ids must identify the file");
+    assert!(json["references"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn refs_defined_in_filters_duplicate_symbol_references_to_that_definition() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("alpha.py"),
+        "def normalize(value):\n    return value\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("beta.py"),
+        "def normalize(value):\n    return value\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("use_alpha.py"),
+        "import alpha\n\n\ndef run():\n    return alpha.normalize('a')\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("use_beta.py"),
+        "import beta\n\n\ndef run():\n    return beta.normalize('b')\n",
+    )
+    .unwrap();
+
+    let output = kgr()
+        .args([
+            "refs",
+            "normalize",
+            "--defined-in",
+            "alpha.py",
+            "--format",
+            "json",
+            "--no-progress",
+        ])
+        .arg(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["ambiguous"], false);
+
+    let definitions = json["definitions"].as_array().unwrap();
+    assert_eq!(definitions.len(), 1);
+    assert!(definitions[0]["file"]
+        .as_str()
+        .unwrap()
+        .ends_with("alpha.py"));
+    assert!(definitions[0]["id"].is_string());
+
+    let refs = json["references"].as_array().unwrap();
+    assert!(
+        refs.iter()
+            .any(|r| r["file"].as_str().unwrap().ends_with("use_alpha.py")),
+        "scoped refs should include the alpha caller"
+    );
+    assert!(
+        !refs
+            .iter()
+            .any(|r| r["file"].as_str().unwrap().ends_with("use_beta.py")),
+        "scoped refs should not include same-name calls to beta.normalize"
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // kgr dead — "Is this thing safe to remove?"
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -410,6 +518,110 @@ fn dead_confirms_used_function_is_alive() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Not dead"));
+}
+
+#[test]
+fn dead_rust_enum_variants_are_alive_when_used_in_match_patterns() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("defs.rs"),
+        r#"
+pub enum Flow {
+    Ready(String),
+    Waiting { id: u32 },
+    Done,
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("consumer.rs"),
+        r#"
+fn consume(flow: crate::defs::Flow) {
+    match flow {
+        crate::defs::Flow::Ready(value) => drop(value),
+        crate::defs::Flow::Waiting { id } => drop(id),
+        _ => {}
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    for variant in ["Ready", "Waiting"] {
+        kgr()
+            .args(["dead", variant, "--no-progress"])
+            .arg(dir.path())
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Not dead"));
+    }
+}
+
+#[test]
+fn dead_rust_impl_and_where_bounds_keep_traits_alive() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("defs.rs"),
+        r#"
+pub trait Repository {}
+pub trait Entity {}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("impls.rs"),
+        r#"
+struct Adapter<T>(T);
+
+impl<T> crate::defs::Repository for Adapter<T>
+where
+    T: crate::defs::Entity,
+{
+}
+"#,
+    )
+    .unwrap();
+
+    for symbol in ["Repository", "Entity"] {
+        kgr()
+            .args(["dead", symbol, "--no-progress"])
+            .arg(dir.path())
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Not dead"));
+    }
+}
+
+#[test]
+fn dead_rust_derive_and_attribute_paths_keep_symbols_alive() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("markers.rs"),
+        r#"
+pub struct Track;
+pub fn audit_attr() {}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("model.rs"),
+        r#"
+#[crate::markers::audit_attr]
+#[derive(crate::markers::Track)]
+struct Event;
+"#,
+    )
+    .unwrap();
+
+    for symbol in ["Track", "audit_attr"] {
+        kgr()
+            .args(["dead", symbol, "--no-progress"])
+            .arg(dir.path())
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Not dead"));
+    }
 }
 
 #[test]
@@ -594,6 +806,104 @@ fn dead_nonexistent_symbol() {
         .assert()
         .success()
         .stdout(predicate::str::contains("not found"));
+}
+
+#[test]
+fn dead_bare_duplicate_symbol_reports_ambiguity_instead_of_global_verdict() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("unused.py"), "def helper():\n    pass\n").unwrap();
+    std::fs::write(dir.path().join("used.py"), "def helper():\n    pass\n").unwrap();
+    std::fs::write(
+        dir.path().join("caller.py"),
+        "import used\n\n\ndef run():\n    used.helper()\n",
+    )
+    .unwrap();
+
+    let output = kgr()
+        .args(["dead", "helper", "--format", "json", "--no-progress"])
+        .arg(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["found"], true);
+    assert_eq!(json["ambiguous"], true);
+    assert_eq!(json["dead"], serde_json::Value::Null);
+    assert_eq!(json["status"], "ambiguous");
+    assert!(json["scope_hint"]
+        .as_str()
+        .unwrap()
+        .contains("--defined-in"));
+
+    let definitions = json["definitions"].as_array().unwrap();
+    assert_eq!(definitions.len(), 2);
+    assert!(definitions
+        .iter()
+        .all(|definition| definition["id"].is_string()));
+}
+
+#[test]
+fn dead_defined_in_checks_only_the_selected_duplicate_symbol() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("unused.py"), "def helper():\n    pass\n").unwrap();
+    std::fs::write(dir.path().join("used.py"), "def helper():\n    pass\n").unwrap();
+    std::fs::write(
+        dir.path().join("caller.py"),
+        "import used\n\n\ndef run():\n    used.helper()\n",
+    )
+    .unwrap();
+
+    let used_output = kgr()
+        .args([
+            "dead",
+            "helper",
+            "--defined-in",
+            "used.py",
+            "--format",
+            "json",
+            "--no-progress",
+        ])
+        .arg(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let used_json: serde_json::Value = serde_json::from_slice(&used_output).unwrap();
+    assert_eq!(used_json["ambiguous"], false);
+    assert_eq!(used_json["dead"], false);
+    assert!(
+        used_json["cross_file_references"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["file"].as_str().unwrap().ends_with("caller.py")),
+        "used.py helper should be kept alive by caller.py"
+    );
+
+    let unused_output = kgr()
+        .args([
+            "dead",
+            "helper",
+            "--defined-in",
+            "unused.py",
+            "--format",
+            "json",
+            "--no-progress",
+        ])
+        .arg(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let unused_json: serde_json::Value = serde_json::from_slice(&unused_output).unwrap();
+    assert_eq!(unused_json["ambiguous"], false);
+    assert_eq!(unused_json["dead"], true);
+    assert!(unused_json["references"].as_array().unwrap().is_empty());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

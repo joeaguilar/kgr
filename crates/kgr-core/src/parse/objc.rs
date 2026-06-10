@@ -34,12 +34,16 @@ const OBJC_SYMBOL_QUERY_SRC: &str = r#"
   declarator: (function_declarator
     declarator: (identifier) @fn.name))
 
-;; Objective-C class interface — identifier is a direct child, no name: field
+;; Objective-C class interface — the class name is the first named child.
+;; The superclass is also an identifier child, so anchor to avoid recording it
+;; as a local class definition.
 (class_interface
+  .
   (identifier) @class.name)
 
-;; Objective-C class implementation — identifier is a direct child
+;; Objective-C class implementation — same shape as class_interface.
 (class_implementation
+  .
   (identifier) @class.name)
 
 ;; Method definition — identifier is a direct child, no selector: field.
@@ -192,6 +196,17 @@ impl super::Parser for ObjCParser {
                 }
 
                 let node = capture.node;
+                if let Some(parent) = node.parent() {
+                    if parent.kind() == "message_expression"
+                        && parent
+                            .child_by_field_name("method")
+                            .map(|first_method| first_method.start_byte())
+                            != Some(node.start_byte())
+                    {
+                        continue;
+                    }
+                }
+
                 let callee_raw = match node.utf8_text(source) {
                     Ok(s) => s.to_string(),
                     Err(_) => continue,
@@ -417,6 +432,22 @@ mod tests {
     }
 
     #[test]
+    fn class_interface_superclass_is_not_local_definition() {
+        let syms = symbols(
+            r#"
+@interface MyClass : NSObject
+@end
+"#,
+        );
+        assert!(syms
+            .iter()
+            .any(|s| s.name == "MyClass" && s.kind == SymbolKind::Class));
+        assert!(!syms
+            .iter()
+            .any(|s| s.name == "NSObject" && s.kind == SymbolKind::Class));
+    }
+
+    #[test]
     fn class_implementation_detection() {
         let syms = symbols(
             r#"
@@ -542,5 +573,22 @@ mod tests {
         let c = calls("int main() { printf(\"hello\"); NSLog(@\"world\"); return 0; }\n");
         assert!(c.iter().any(|c| c.callee_raw == "printf"));
         assert!(c.iter().any(|c| c.callee_raw == "NSLog"));
+    }
+
+    #[test]
+    fn multi_keyword_message_send_emits_single_call() {
+        let c = calls(
+            r#"
+void f(id obj) {
+    [obj doX:1 withY:2];
+}
+"#,
+        );
+        let selector_calls: Vec<_> = c
+            .iter()
+            .filter(|call| matches!(call.callee_raw.as_str(), "doX" | "withY"))
+            .collect();
+        assert_eq!(selector_calls.len(), 1);
+        assert_eq!(selector_calls[0].callee_raw, "doX");
     }
 }

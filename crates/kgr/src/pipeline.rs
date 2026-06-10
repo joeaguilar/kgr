@@ -1,14 +1,21 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
 use kgr_core::parse::ParserRegistry;
-use kgr_core::types::FileNode;
+use kgr_core::types::{FileNode, Lang};
 
 use crate::cache::ParseCache;
 use crate::walk::DiscoveredFile;
 
+const PARSE_FAILURE_SAMPLE_LIMIT: usize = 5;
+
+/// Parse discovered files into graph nodes.
+///
+/// Exit behavior: unreadable files and files without a registered parser are
+/// skipped as non-fatal failures, summarized with a warning after parallel
+/// parsing, and do not make the CLI fail by themselves.
 pub fn parse_all(
     root: &Path,
     files: Vec<DiscoveredFile>,
@@ -54,34 +61,14 @@ pub fn parse_all(
         None
     };
 
-    let parsed: Vec<(usize, FileNode)> = misses
+    let parsed: Vec<ParseMissResult> = misses
         .par_iter()
-        .filter_map(|(i, f)| {
-            let parser = registry.get(f.lang)?;
-            let full_path = root.join(&f.path);
-            let source = match std::fs::read(&full_path) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!("skipping unreadable file {}: {}", full_path.display(), e);
-                    return None;
-                }
-            };
-            let imports = parser.parse(&source, &f.path);
-            let symbols = parser.extract_symbols(&source, &f.path);
-            let calls = parser.extract_calls(&source, &f.path);
+        .map(|(i, f)| {
+            let result = parse_miss(root, *i, f, registry);
             if let Some(ref pb) = progress {
                 pb.inc(1);
             }
-            Some((
-                *i,
-                FileNode {
-                    path: f.path.clone(),
-                    lang: f.lang,
-                    imports,
-                    symbols,
-                    calls,
-                },
-            ))
+            result
         })
         .collect();
 
@@ -90,20 +77,122 @@ pub fn parse_all(
     }
 
     // ── Phase 3: update cache (serial) and merge results ────────────────────
-    for (i, node) in parsed {
-        let f = &files[i];
-        cache.insert(
-            f.path.clone(),
-            f.mtime,
-            f.size,
-            node.imports.clone(),
-            node.symbols.clone(),
-            node.calls.clone(),
-        );
-        ordered[i] = Some(node);
+    let mut failures = Vec::new();
+    for result in parsed {
+        match result {
+            ParseMissResult::Parsed(i, node) => {
+                let f = &files[i];
+                cache.insert(
+                    f.path.clone(),
+                    f.mtime,
+                    f.size,
+                    node.imports.clone(),
+                    node.symbols.clone(),
+                    node.calls.clone(),
+                );
+                ordered[i] = Some(node);
+            }
+            ParseMissResult::Failed(failure) => failures.push(failure),
+        }
     }
+    emit_parse_failure_summary(&failures);
 
     ordered.into_iter().flatten().collect()
+}
+
+enum ParseMissResult {
+    Parsed(usize, FileNode),
+    Failed(ParseFailure),
+}
+
+#[derive(Debug)]
+enum ParseFailure {
+    MissingParser { path: PathBuf, lang: Lang },
+    Read { path: PathBuf, error: String },
+}
+
+impl ParseFailure {
+    fn summary(&self) -> String {
+        match self {
+            Self::MissingParser { path, lang } => {
+                format!("{} (no registered parser for {lang})", path.display())
+            }
+            Self::Read { path, error } => {
+                format!("{} (read error: {error})", path.display())
+            }
+        }
+    }
+}
+
+fn parse_miss(
+    root: &Path,
+    index: usize,
+    file: &DiscoveredFile,
+    registry: &ParserRegistry,
+) -> ParseMissResult {
+    let Some(parser) = registry.get(file.lang) else {
+        return ParseMissResult::Failed(ParseFailure::MissingParser {
+            path: file.path.clone(),
+            lang: file.lang,
+        });
+    };
+
+    let full_path = root.join(&file.path);
+    let source = match std::fs::read(&full_path) {
+        Ok(source) => source,
+        Err(error) => {
+            return ParseMissResult::Failed(ParseFailure::Read {
+                path: file.path.clone(),
+                error: error.to_string(),
+            });
+        }
+    };
+
+    let imports = parser.parse(&source, &file.path);
+    let symbols = parser.extract_symbols(&source, &file.path);
+    let calls = parser.extract_calls(&source, &file.path);
+    ParseMissResult::Parsed(
+        index,
+        FileNode {
+            path: file.path.clone(),
+            lang: file.lang,
+            imports,
+            symbols,
+            calls,
+        },
+    )
+}
+
+fn emit_parse_failure_summary(failures: &[ParseFailure]) {
+    if let Some(summary) = parse_failure_summary(failures) {
+        tracing::warn!("{summary}");
+    }
+}
+
+fn parse_failure_summary(failures: &[ParseFailure]) -> Option<String> {
+    if failures.is_empty() {
+        return None;
+    }
+
+    let samples: Vec<String> = failures
+        .iter()
+        .take(PARSE_FAILURE_SAMPLE_LIMIT)
+        .map(ParseFailure::summary)
+        .collect();
+    let omitted = failures.len().saturating_sub(samples.len());
+    let omitted = if omitted == 0 {
+        String::new()
+    } else {
+        format!("; {omitted} more omitted")
+    };
+
+    Some(format!(
+        "skipped {} file(s) during parse; continuing with successfully parsed files (non-fatal). First {}: {}{}",
+        failures.len(),
+        samples.len(),
+        samples.join("; "),
+        omitted
+    ))
 }
 
 #[cfg(test)]
@@ -117,6 +206,25 @@ mod tests {
 
     fn mtime(secs: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    #[test]
+    fn parse_failure_summary_reports_count_samples_and_non_fatal_behavior() {
+        let failures: Vec<ParseFailure> = (0..6)
+            .map(|i| ParseFailure::Read {
+                path: PathBuf::from(format!("src/file{i}.py")),
+                error: "permission denied".to_string(),
+            })
+            .collect();
+
+        let summary = parse_failure_summary(&failures).unwrap();
+
+        assert!(summary.contains("skipped 6 file(s) during parse"));
+        assert!(summary.contains("non-fatal"));
+        assert!(summary.contains("src/file0.py"));
+        assert!(summary.contains("src/file4.py"));
+        assert!(!summary.contains("src/file5.py"));
+        assert!(summary.contains("1 more omitted"));
     }
 
     #[test]

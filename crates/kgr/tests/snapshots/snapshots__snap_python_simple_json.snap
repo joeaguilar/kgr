@@ -1,6 +1,6 @@
 ---
 source: crates/kgr/tests/snapshots.rs
-assertion_line: 77
+assertion_line: 90
 expression: stdout
 ---
 {
@@ -9,7 +9,12 @@ expression: stdout
     {
       "from": "main.py",
       "kind": "local",
-      "to": "__init__.py"
+      "to": "utils.py"
+    },
+    {
+      "from": "main.py",
+      "kind": "local",
+      "to": "models.py"
     }
   ],
   "external_deps": {},
@@ -63,13 +68,24 @@ expression: stdout
       "imports": [
         {
           "kind": "local",
-          "raw": ".",
-          "resolved": "__init__.py",
+          "raw": ".utils",
+          "resolved": "utils.py",
           "span": {
-            "end_col": 6,
+            "end_col": 19,
             "end_line": 1,
-            "start_col": 5,
+            "start_col": 14,
             "start_line": 1
+          }
+        },
+        {
+          "kind": "local",
+          "raw": ".models",
+          "resolved": "models.py",
+          "span": {
+            "end_col": 20,
+            "end_line": 2,
+            "start_col": 14,
+            "start_line": 2
           }
         }
       ],
@@ -139,14 +155,12 @@ expression: stdout
     }
   ],
   "orphans": [
-    "models.py",
-    "utils.py"
+    "__init__.py"
   ],
   "root": "[FIXTURES]/python/simple",
   "roots": [
-    "main.py",
-    "models.py",
-    "utils.py"
+    "__init__.py",
+    "main.py"
   ],
   "test_entries": []
 }

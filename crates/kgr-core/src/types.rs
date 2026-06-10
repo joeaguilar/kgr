@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -101,6 +101,18 @@ pub struct Symbol {
     pub kind: SymbolKind,
     pub span: Span,
     pub exported: bool,
+}
+
+impl Symbol {
+    pub fn definition_id(&self, file: &Path) -> String {
+        format!(
+            "{}:{}:{}:{}",
+            file.to_string_lossy(),
+            self.span.start_line,
+            self.kind,
+            self.name
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

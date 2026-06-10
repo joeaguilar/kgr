@@ -2,14 +2,14 @@ use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
 
+use super::external_pkgs;
 use kgr_core::graph::KGraph;
-use kgr_core::types::{DepGraph, ImportKind};
+use kgr_core::types::DepGraph;
 
 /// Immutable rendering context threaded through the recursive tree walk.
 struct TreeCtx<'a> {
     kgraph: &'a KGraph,
     cycle_edges: &'a HashSet<(PathBuf, PathBuf)>,
-    no_external: bool,
     show_external: bool,
     ext_map: &'a HashMap<&'a PathBuf, Vec<&'a str>>,
 }
@@ -22,6 +22,7 @@ pub fn render_tree(
     writer: &mut dyn Write,
 ) -> std::io::Result<()> {
     let cycle_edges: HashSet<(PathBuf, PathBuf)> = kgraph.cycle_edges().into_iter().collect();
+    let show_external = show_external && !no_external;
 
     // Build a map of file -> external dep names for --show-external.
     let ext_map: HashMap<&PathBuf, Vec<&str>> = if show_external {
@@ -29,12 +30,7 @@ pub fn render_tree(
             .files
             .iter()
             .filter_map(|f| {
-                let pkgs: Vec<&str> = f
-                    .imports
-                    .iter()
-                    .filter(|i| i.kind == ImportKind::External)
-                    .map(|i| i.raw.as_str())
-                    .collect();
+                let pkgs: Vec<&str> = external_pkgs(f).collect();
                 if pkgs.is_empty() {
                     None
                 } else {
@@ -56,7 +52,6 @@ pub fn render_tree(
     let ctx = TreeCtx {
         kgraph,
         cycle_edges: &cycle_edges,
-        no_external,
         show_external,
         ext_map: &ext_map,
     };
@@ -123,9 +118,6 @@ fn render_children(
     writer: &mut dyn Write,
 ) -> std::io::Result<()> {
     let mut edges = ctx.kgraph.edges_from(node);
-    if ctx.no_external {
-        edges.retain(|(_, kind)| *kind != ImportKind::External);
-    }
     edges.sort_by(|a, b| a.0.cmp(&b.0));
 
     // Determine if we'll append an external block after local children.
@@ -189,7 +181,7 @@ fn render_children(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kgr_core::types::{FileNode, Import, Lang};
+    use kgr_core::types::{FileNode, Import, ImportKind, Lang};
 
     fn file(path: &str, imports: &[&str]) -> FileNode {
         FileNode {
@@ -209,12 +201,25 @@ mod tests {
         }
     }
 
-    fn render(files: Vec<FileNode>) -> String {
+    fn external_import(raw: &str) -> Import {
+        Import {
+            raw: raw.to_string(),
+            kind: ImportKind::External,
+            resolved: None,
+            span: None,
+        }
+    }
+
+    fn render_with_flags(files: Vec<FileNode>, no_external: bool, show_external: bool) -> String {
         let kgraph = KGraph::from_files(&files);
         let graph = kgraph.to_dep_graph(PathBuf::from("."), files);
         let mut out = Vec::new();
-        render_tree(&graph, &kgraph, false, false, &mut out).unwrap();
+        render_tree(&graph, &kgraph, no_external, show_external, &mut out).unwrap();
         String::from_utf8(out).unwrap()
+    }
+
+    fn render(files: Vec<FileNode>) -> String {
+        render_with_flags(files, false, false)
     }
 
     #[test]
@@ -259,6 +264,24 @@ mod tests {
         assert!(
             !out.contains("Cycles:"),
             "unexpected Cycles section:\n{out}"
+        );
+    }
+
+    #[test]
+    fn no_external_overrides_show_external_leaf_nodes() {
+        let mut main = file("main.ts", &["helper.ts"]);
+        main.imports.push(external_import("react"));
+        let helper = file("helper.ts", &[]);
+
+        let out = render_with_flags(vec![main, helper], true, true);
+
+        assert!(
+            out.contains("main.ts  [entry]"),
+            "missing root entry:\n{out}"
+        );
+        assert!(
+            !out.contains("react [ext]"),
+            "--no-external should suppress external leaves:\n{out}"
         );
     }
 }

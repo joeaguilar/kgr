@@ -201,17 +201,8 @@ impl super::Parser for PhpParser {
                     continue;
                 };
 
-                // Check if the declaration (parent of the name node) has a
-                // visibility_modifier child containing "public"
                 let decl_node = node.parent().unwrap();
-                let exported = (0..decl_node.child_count()).any(|i| {
-                    let child = decl_node.child(i).unwrap();
-                    (child.kind() == "visibility_modifier" || child.kind() == "modifiers")
-                        && child
-                            .utf8_text(source)
-                            .map(|t| t.contains("public"))
-                            .unwrap_or(false)
-                });
+                let exported = php_symbol_is_exported(kind, decl_node, source);
 
                 let start = node.start_position();
                 let end = node.end_position();
@@ -402,6 +393,38 @@ impl super::Parser for PhpParser {
     }
 }
 
+fn php_symbol_is_exported(kind: SymbolKind, decl_node: tree_sitter::Node, source: &[u8]) -> bool {
+    match kind {
+        SymbolKind::Class | SymbolKind::Function => php_decl_is_file_scoped(decl_node),
+        SymbolKind::Method => php_decl_has_public_modifier(decl_node, source),
+    }
+}
+
+fn php_decl_is_file_scoped(decl_node: tree_sitter::Node) -> bool {
+    let Some(parent) = decl_node.parent() else {
+        return false;
+    };
+
+    match parent.kind() {
+        "program" | "namespace_definition" => true,
+        "compound_statement" => parent
+            .parent()
+            .is_some_and(|grandparent| grandparent.kind() == "namespace_definition"),
+        _ => false,
+    }
+}
+
+fn php_decl_has_public_modifier(decl_node: tree_sitter::Node, source: &[u8]) -> bool {
+    (0..decl_node.child_count()).any(|i| {
+        let child = decl_node.child(i).unwrap();
+        (child.kind() == "visibility_modifier" || child.kind() == "modifiers")
+            && child
+                .utf8_text(source)
+                .map(|t| t.contains("public"))
+                .unwrap_or(false)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -573,6 +596,24 @@ include_once('./extra.php');
         assert_eq!(syms.len(), 1);
         assert_eq!(syms[0].name, "helper");
         assert_eq!(syms[0].kind, SymbolKind::Function);
+    }
+
+    #[test]
+    fn symbols_exports_top_level_functions_and_classes() {
+        let syms = symbols(
+            r#"<?php
+function helper() {}
+class Svc {}
+interface Contract {}
+trait Mix {}
+enum Choice { case A; }
+?>"#,
+        );
+
+        for name in ["helper", "Svc", "Contract", "Mix", "Choice"] {
+            let symbol = syms.iter().find(|s| s.name == name).unwrap();
+            assert!(symbol.exported, "expected {name} to be exported");
+        }
     }
 
     #[test]

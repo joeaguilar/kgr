@@ -1,5 +1,10 @@
 ---
 source: crates/kgr/tests/snapshots.rs
+assertion_line: 129
 expression: stderr
 ---
-All checks passed.
+error[kgr::cycle]: Circular dependency detected
+  c.py -> b.py -> a.py -> c.py (cycle)
+
+warning[kgr::orphan]: Orphaned files (no imports, not imported):
+  __init__.py

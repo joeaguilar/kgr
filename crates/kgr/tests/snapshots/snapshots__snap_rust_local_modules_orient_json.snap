@@ -9,10 +9,8 @@ expression: stdout
     "src/main.rs"
   ],
   "external_packages": [
-    "serde::Serialize",
-    "std::collections::HashMap",
-    "std::collections::HashSet",
-    "std::fmt"
+    "serde",
+    "std"
   ],
   "files": 3,
   "heaviest": [

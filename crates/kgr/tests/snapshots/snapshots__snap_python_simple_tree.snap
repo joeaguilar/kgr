@@ -1,10 +1,11 @@
 ---
 source: crates/kgr/tests/snapshots.rs
+assertion_line: 89
 expression: stdout
 ---
 main.py  [entry]
-└── __init__.py
+├── models.py
+└── utils.py
 
 Orphaned files:
-  models.py
-  utils.py
+  __init__.py

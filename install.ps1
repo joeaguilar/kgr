@@ -1,33 +1,54 @@
 <#
 .SYNOPSIS
-    Install the kgr CLI on Windows from the latest GitHub Release.
+    Install or update the kgr CLI on Windows from the latest GitHub Release.
 
 .DESCRIPTION
     Downloads a prebuilt kgr binary matching the host architecture
     (x86_64 or arm64), verifies its SHA256 checksum, and installs it
     into a directory on PATH.
 
+    When -Update is supplied (or the positional `update` argument), the
+    installer prefers an existing kgr.exe already on PATH and replaces it
+    in-place rather than always writing to $InstallDir. This mirrors the
+    `install.sh --update` behavior on Unix.
+
 .PARAMETER Version
     Pin a specific release tag (e.g. v0.2.0). Defaults to the latest.
 
 .PARAMETER InstallDir
-    Install location. Defaults to $env:LOCALAPPDATA\Programs\kgr.
+    Install location. Defaults to $env:LOCALAPPDATA\Programs\kgr. When
+    -Update is set and an existing kgr.exe is found on PATH, that location
+    wins over the default so the shell keeps resolving the same binary.
 
 .PARAMETER Repo
     GitHub repo slug. Defaults to joeaguilar/kgr.
+
+.PARAMETER Update
+    Update an existing kgr install if found on PATH; otherwise install it.
+    The positional value `update` (or `install`) is also accepted, e.g.
+    `.\install.ps1 update`.
 
 .EXAMPLE
     iwr -useb https://raw.githubusercontent.com/joeaguilar/kgr/main/install.ps1 | iex
 
 .EXAMPLE
     .\install.ps1 -Version v0.2.0 -InstallDir C:\tools\kgr
+
+.EXAMPLE
+    .\install.ps1 -Update
+
+.EXAMPLE
+    .\install.ps1 update
 #>
 
-[CmdletBinding()]
+[CmdletBinding(PositionalBinding = $false)]
 param(
     [string]$Version = $env:KGR_VERSION,
     [string]$InstallDir = $env:KGR_INSTALL_DIR,
-    [string]$Repo = $(if ($env:KGR_REPO) { $env:KGR_REPO } else { 'joeaguilar/kgr' })
+    [string]$Repo = $(if ($env:KGR_REPO) { $env:KGR_REPO } else { 'joeaguilar/kgr' }),
+    [switch]$Update,
+    [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
+    [string[]]$Action
 )
 
 $ErrorActionPreference = 'Stop'
@@ -36,6 +57,7 @@ Set-StrictMode -Version Latest
 function Write-Info { param([string]$m) Write-Host "i $m" -ForegroundColor Blue }
 function Write-Ok   { param([string]$m) Write-Host "+ $m" -ForegroundColor Green }
 function Write-Warn { param([string]$m) Write-Host "! $m" -ForegroundColor Yellow }
+function Write-Err  { param([string]$m) Write-Host "x $m" -ForegroundColor Red }
 
 function Get-Target {
     $arch = $env:PROCESSOR_ARCHITECTURE
@@ -91,8 +113,80 @@ function Test-InPath {
     return ($parts -contains $Dir)
 }
 
+function Get-ExistingKgrPath {
+    $cmd = Get-Command kgr.exe -ErrorAction SilentlyContinue
+    if ($cmd -and $cmd.Path -and (Test-Path $cmd.Path)) {
+        return $cmd.Path
+    }
+    return $null
+}
+
+function Get-ExistingKgrInDir {
+    param([string]$Dir)
+
+    if (-not $Dir) { return $null }
+
+    $candidate = Join-Path $Dir 'kgr.exe'
+    if (Test-Path $candidate) {
+        return $candidate
+    }
+
+    return $null
+}
+
+function Show-ExistingVersion {
+    param([string]$BinPath)
+
+    if (-not $BinPath) { return }
+
+    try {
+        $ver = & $BinPath --version 2>$null
+        if ($ver) {
+            Write-Info "Current install: $ver ($BinPath)"
+        } else {
+            Write-Info "Current install: $BinPath"
+        }
+    } catch {
+        Write-Info "Current install: $BinPath"
+    }
+}
+
+$ActionMode = if ($Update) { 'update' } else { 'install' }
+if ($Action) {
+    foreach ($arg in $Action) {
+        switch -Regex ($arg) {
+            '^(--update|update)$'   { $ActionMode = 'update' }
+            '^(--install|install)$' { $ActionMode = 'install' }
+            '^(-h|--help)$' {
+                $scriptPath = $MyInvocation.MyCommand.Path
+                if ($scriptPath -and (Test-Path $scriptPath)) {
+                    Get-Help $scriptPath -Detailed
+                } else {
+                    Write-Host 'Usage:'
+                    Write-Host '  .\install.ps1 [-Update] [-Version <tag>] [-InstallDir <path>] [-Repo <slug>]'
+                    Write-Host '  .\install.ps1 update      # positional form, mirrors install.sh'
+                    Write-Host ''
+                    Write-Host 'Environment overrides:'
+                    Write-Host '  KGR_VERSION       Pin a specific release tag (defaults to latest).'
+                    Write-Host '  KGR_INSTALL_DIR   Override the install directory.'
+                    Write-Host '  KGR_REPO          Override the GitHub repo slug.'
+                }
+                exit 0
+            }
+            default {
+                Write-Err "Unknown argument: $arg"
+                exit 1
+            }
+        }
+    }
+}
+
 Write-Host ''
-Write-Info 'Installing kgr, the polyglot source dependency knowledge graph'
+if ($ActionMode -eq 'update') {
+    Write-Info 'Updating kgr, the polyglot source dependency knowledge graph'
+} else {
+    Write-Info 'Installing kgr, the polyglot source dependency knowledge graph'
+}
 Write-Host ''
 
 $target = Get-Target
@@ -103,8 +197,16 @@ if (-not $Version) {
 }
 Write-Info "Release: $Version"
 
+$existingKgr = Get-ExistingKgrPath
 if (-not $InstallDir) {
-    $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\kgr'
+    if ($existingKgr) {
+        $InstallDir = Split-Path -Parent $existingKgr
+        if ($ActionMode -eq 'install') {
+            Write-Info "Existing kgr.exe found on PATH; installing alongside it at $InstallDir"
+        }
+    } else {
+        $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\kgr'
+    }
 }
 $InstallDir = [Environment]::ExpandEnvironmentVariables($InstallDir)
 
@@ -122,16 +224,29 @@ try {
     Write-Info "Downloading $assetBase.zip"
     Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing
 
+    $hasChecksum = $true
     try {
         Invoke-WebRequest -Uri $sumUrl -OutFile $sumPath -UseBasicParsing -ErrorAction Stop
+    } catch {
+        $statusCode = $null
+        if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
+            $statusCode = [int]$_.Exception.Response.StatusCode
+        }
+        if ($statusCode -eq 404) {
+            $hasChecksum = $false
+            Write-Warn 'Checksum file not available (HTTP 404); skipping verification.'
+        } else {
+            throw
+        }
+    }
+
+    if ($hasChecksum) {
         $expected = (Get-Content $sumPath -Raw).Trim().Split()[0].ToLower()
         $actual = (Get-FileHash -Algorithm SHA256 $zipPath).Hash.ToLower()
         if ($expected -ne $actual) {
             throw "Checksum mismatch: expected $expected, got $actual"
         }
         Write-Ok 'Checksum verified.'
-    } catch [System.Net.WebException] {
-        Write-Warn 'Checksum file not available; skipping verification.'
     }
 
     Write-Info 'Extracting...'
@@ -147,8 +262,21 @@ try {
     }
 
     $binDst = Join-Path $InstallDir 'kgr.exe'
+    $existingBefore = Get-ExistingKgrInDir -Dir $InstallDir
+    Show-ExistingVersion -BinPath $existingBefore
+
+    if ($existingBefore) {
+        Write-Info "Updating $binDst"
+    } else {
+        Write-Info "Installing to $InstallDir"
+    }
+
     Copy-Item -Force $binSrc $binDst
-    Write-Ok "Installed $binDst"
+    if ($existingBefore) {
+        Write-Ok "Updated $binDst"
+    } else {
+        Write-Ok "Installed $binDst"
+    }
 
     if (-not (Test-InPath $InstallDir)) {
         $added = Add-ToUserPath -Dir $InstallDir

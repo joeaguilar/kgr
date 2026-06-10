@@ -1,5 +1,6 @@
 ---
 source: crates/kgr/tests/snapshots.rs
+assertion_line: 91
 expression: stdout
 ---
 digraph kgr {
@@ -12,5 +13,6 @@ digraph kgr {
   "models.py" [label="models.py" color="#3776ab"];
   "utils.py" [label="utils.py" color="#3776ab"];
 
-  "main.py" -> "__init__.py";
+  "main.py" -> "utils.py";
+  "main.py" -> "models.py";
 }

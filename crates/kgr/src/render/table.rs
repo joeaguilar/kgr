@@ -1,14 +1,18 @@
 use std::io::Write;
 
+use super::external_pkgs;
 use kgr_core::graph::KGraph;
-use kgr_core::types::{DepGraph, ImportKind};
+use kgr_core::types::DepGraph;
 
 pub fn render_table(
     graph: &DepGraph,
     kgraph: &KGraph,
+    no_external: bool,
     show_external: bool,
     writer: &mut dyn Write,
 ) -> std::io::Result<()> {
+    let show_external = show_external && !no_external;
+
     // Header
     writeln!(
         writer,
@@ -30,11 +34,12 @@ pub fn render_table(
         // raw import list would count them separately.
         let local_in = kgraph.in_degree(&file.path);
         let local_out = kgraph.out_degree(&file.path);
-        let ext_out = file
-            .imports
-            .iter()
-            .filter(|i| i.kind == ImportKind::External)
-            .count();
+        let ext_pkgs: Vec<&str> = if no_external {
+            Vec::new()
+        } else {
+            external_pkgs(file).collect()
+        };
+        let ext_out = ext_pkgs.len();
 
         let in_cycle = cycle_files.contains(&file.path);
         let is_orphan = graph.orphans.contains(&file.path);
@@ -66,14 +71,8 @@ pub fn render_table(
             status,
         )?;
 
-        if show_external && ext_out > 0 {
-            let pkgs: Vec<&str> = file
-                .imports
-                .iter()
-                .filter(|i| i.kind == ImportKind::External)
-                .map(|i| i.raw.as_str())
-                .collect();
-            writeln!(writer, "  \u{2514} external: {}", pkgs.join(", "))?;
+        if show_external && !ext_pkgs.is_empty() {
+            writeln!(writer, "  \u{2514} external: {}", ext_pkgs.join(", "))?;
         }
     }
 
@@ -83,7 +82,7 @@ pub fn render_table(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kgr_core::types::{FileNode, Import, Lang};
+    use kgr_core::types::{FileNode, Import, ImportKind, Lang};
     use std::path::PathBuf;
 
     fn local_import(raw: &str, resolved: &str) -> Import {
@@ -91,6 +90,15 @@ mod tests {
             raw: raw.to_string(),
             kind: ImportKind::Local,
             resolved: Some(PathBuf::from(resolved)),
+            span: None,
+        }
+    }
+
+    fn external_import(raw: &str) -> Import {
+        Import {
+            raw: raw.to_string(),
+            kind: ImportKind::External,
+            resolved: None,
             span: None,
         }
     }
@@ -137,7 +145,7 @@ mod tests {
         assert_eq!(graph.edges.len(), 1, "parallel imports collapse to 1 edge");
 
         let mut out = Vec::new();
-        render_table(&graph, &kgraph, false, &mut out).unwrap();
+        render_table(&graph, &kgraph, false, false, &mut out).unwrap();
         let rendered = String::from_utf8(out).unwrap();
         let rows = data_rows(&rendered);
 
@@ -171,7 +179,7 @@ mod tests {
         let graph = kgraph.to_dep_graph(PathBuf::from("src"), files);
 
         let mut out = Vec::new();
-        render_table(&graph, &kgraph, false, &mut out).unwrap();
+        render_table(&graph, &kgraph, false, false, &mut out).unwrap();
         let rendered = String::from_utf8(out).unwrap();
         let rows = data_rows(&rendered);
 
@@ -180,5 +188,24 @@ mod tests {
 
         assert_eq!(sum_out, graph.edges.len(), "sum(LOCAL-OUT) == edges");
         assert_eq!(sum_in, graph.edges.len(), "sum(LOCAL-IN) == edges");
+    }
+
+    #[test]
+    fn no_external_hides_external_counts_and_annotations() {
+        let files = vec![file("src/main.rs", vec![external_import("serde")])];
+        let kgraph = KGraph::from_files(&files);
+        let graph = kgraph.to_dep_graph(PathBuf::from("src"), files);
+
+        let mut out = Vec::new();
+        render_table(&graph, &kgraph, true, true, &mut out).unwrap();
+        let rendered = String::from_utf8(out).unwrap();
+        let rows = data_rows(&rendered);
+
+        let main_row = rows.iter().find(|r| r[0] == "src/main.rs").unwrap();
+        assert_eq!(main_row[4], "0", "main.rs EXT");
+        assert!(
+            !rendered.contains("external: serde"),
+            "--no-external should suppress external annotations:\n{rendered}"
+        );
     }
 }

@@ -1,10 +1,11 @@
 ---
 source: crates/kgr/tests/snapshots.rs
+assertion_line: 93
 expression: stdout
 ---
 FILE                                               LANG         LOCAL-IN LOCAL-OUT   EXT  CYCLES STATUS
 ---------------------------------------------------------------------------------------------------------
-__init__.py                                        python        1         0     0       — —
-main.py                                            python        0         1     0       — entry
-models.py                                          python        0         0     0       — orphan
-utils.py                                           python        0         0     0       — orphan
+__init__.py                                        python        0         0     0       — orphan
+main.py                                            python        0         2     0       — entry
+models.py                                          python        1         0     0       — —
+utils.py                                           python        1         0     0       — —

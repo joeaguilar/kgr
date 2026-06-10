@@ -127,6 +127,63 @@ impl PythonParser {
             tree
         })
     }
+
+    fn push_import(imports: &mut Vec<Import>, raw: String, node: tree_sitter::Node) {
+        let kind = if raw.starts_with('.') {
+            ImportKind::Local
+        } else {
+            ImportKind::External
+        };
+
+        let start = node.start_position();
+        let end = node.end_position();
+
+        imports.push(Import {
+            raw,
+            kind,
+            resolved: None,
+            span: Some(Span {
+                start_line: start.row + 1,
+                start_col: start.column,
+                end_line: end.row + 1,
+                end_col: end.column,
+            }),
+        });
+    }
+
+    fn push_bare_relative_imports(
+        imports: &mut Vec<Import>,
+        prefix: &str,
+        relative_node: tree_sitter::Node,
+        source: &[u8],
+    ) -> bool {
+        let Some(statement) = relative_node.parent() else {
+            return false;
+        };
+        if statement.kind() != "import_from_statement" {
+            return false;
+        }
+
+        let mut pushed = false;
+        let mut cursor = statement.walk();
+        for name_node in statement.children_by_field_name("name", &mut cursor) {
+            let path_node = if name_node.kind() == "aliased_import" {
+                match name_node.child_by_field_name("name") {
+                    Some(node) => node,
+                    None => continue,
+                }
+            } else {
+                name_node
+            };
+            let name = match path_node.utf8_text(source) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            Self::push_import(imports, format!("{prefix}{name}"), path_node);
+            pushed = true;
+        }
+        pushed
+    }
 }
 
 impl super::Parser for PythonParser {
@@ -275,26 +332,14 @@ impl super::Parser for PythonParser {
                         Err(_) => continue,
                     };
 
-                    let kind = if raw.starts_with('.') {
-                        ImportKind::Local
-                    } else {
-                        ImportKind::External
-                    };
+                    if node.kind() == "relative_import"
+                        && raw.chars().all(|c| c == '.')
+                        && Self::push_bare_relative_imports(&mut imports, &raw, node, source)
+                    {
+                        continue;
+                    }
 
-                    let start = node.start_position();
-                    let end = node.end_position();
-
-                    imports.push(Import {
-                        raw,
-                        kind,
-                        resolved: None,
-                        span: Some(Span {
-                            start_line: start.row + 1,
-                            start_col: start.column,
-                            end_line: end.row + 1,
-                            end_col: end.column,
-                        }),
-                    });
+                    Self::push_import(&mut imports, raw, node);
                 }
             }
 
@@ -351,15 +396,23 @@ mod tests {
     fn relative_import() {
         let imports = parse("from . import utils");
         assert_eq!(imports.len(), 1);
-        assert!(imports[0].raw.starts_with('.'));
+        assert_eq!(imports[0].raw, ".utils");
         assert_eq!(imports[0].kind, ImportKind::Local);
+    }
+
+    #[test]
+    fn relative_import_multiple_submodules() {
+        let imports = parse("from . import utils, models as m");
+        let raw: Vec<&str> = imports.iter().map(|i| i.raw.as_str()).collect();
+        assert_eq!(raw, vec![".utils", ".models"]);
+        assert!(imports.iter().all(|i| i.kind == ImportKind::Local));
     }
 
     #[test]
     fn relative_import_dotdot() {
         let imports = parse("from ..models import User");
         assert_eq!(imports.len(), 1);
-        assert!(imports[0].raw.starts_with(".."));
+        assert_eq!(imports[0].raw, "..models");
         assert_eq!(imports[0].kind, ImportKind::Local);
     }
 

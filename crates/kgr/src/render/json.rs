@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 
-use kgr_core::types::{DepGraph, ImportKind};
+use super::external_pkgs;
+use kgr_core::types::DepGraph;
 
 pub fn render_json(graph: &DepGraph, writer: &mut dyn Write) -> std::io::Result<()> {
     let value = graph_value(graph)?;
@@ -16,12 +17,7 @@ pub fn graph_value(graph: &DepGraph) -> std::io::Result<serde_json::Value> {
         .files
         .iter()
         .filter_map(|f| {
-            let pkgs: Vec<String> = f
-                .imports
-                .iter()
-                .filter(|i| i.kind == ImportKind::External)
-                .map(|i| i.raw.clone())
-                .collect();
+            let pkgs: Vec<String> = external_pkgs(f).map(str::to_string).collect();
             if pkgs.is_empty() {
                 None
             } else {
