@@ -633,6 +633,129 @@ fn check_update_baseline_zero_files_errors_without_writing_baseline() {
     );
 }
 
+// ── check --exit-zero (report-only mode) ──────────────────────────────────────
+
+/// `check --exit-zero` is report-only for findings: on a cycle, the JSON is
+/// byte-identical to the default run (including "ok": false and the cycle
+/// itself) — only the exit code changes from 1 to 0.
+#[test]
+fn check_exit_zero_reports_cycle_json_and_exits_0() {
+    let fixture = fixtures_dir().join("typescript/cycle");
+
+    // Default behavior unchanged: findings exit 1.
+    let default_stdout = kgr()
+        .args(["check", "--format", "json", "--no-progress"])
+        .arg(&fixture)
+        .assert()
+        .code(1)
+        .get_output()
+        .stdout
+        .clone();
+
+    let exit_zero_stdout = kgr()
+        .args(["check", "--format", "json", "--exit-zero", "--no-progress"])
+        .arg(&fixture)
+        .assert()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+
+    assert_eq!(
+        default_stdout, exit_zero_stdout,
+        "--exit-zero must not change the JSON diagnostics, only the exit code"
+    );
+
+    let json: serde_json::Value = serde_json::from_slice(&exit_zero_stdout).unwrap();
+    assert_eq!(json["ok"], false, "findings still reported as not ok");
+    assert!(
+        !json["cycles"].as_array().unwrap().is_empty(),
+        "the cycle must still appear in JSON output"
+    );
+}
+
+/// Text mode under --exit-zero keeps the error-severity diagnostics on
+/// stderr (no fake "All checks passed.") while exiting 0.
+#[test]
+fn check_exit_zero_text_mode_keeps_error_diagnostics() {
+    let fixture = fixtures_dir().join("typescript/cycle");
+
+    kgr()
+        .args(["check", "--exit-zero", "--no-progress"])
+        .arg(&fixture)
+        .assert()
+        .code(0)
+        .stderr(predicate::str::contains("error[kgr::cycle]"))
+        .stderr(predicate::str::contains("All checks passed.").not());
+}
+
+/// --exit-zero composes with rule enforcement: an error-severity rule
+/// violation still prints and appears in JSON, but the exit code is 0.
+#[test]
+fn check_exit_zero_rule_violation_exits_0() {
+    let tmp = tempfile::tempdir().unwrap();
+    make_ts_fixture(&tmp);
+    std::fs::write(
+        tmp.path().join(".kgr.toml"),
+        "[[rules]]\nname=\"no-legacy-to-core\"\nfrom=\"legacy/**\"\nto=\"core/**\"\nseverity=\"error\"\n",
+    )
+    .unwrap();
+
+    let output = kgr()
+        .args(["check", "--format", "json", "--exit-zero", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["ok"], false);
+    let violations = json["rule_violations"].as_array().unwrap();
+    assert_eq!(violations.len(), 1);
+    assert_eq!(violations[0]["severity"], "error");
+}
+
+/// --exit-zero applies to findings only. Operational failures — unreadable
+/// or empty scan target, invalid --format, broken rule config — must still
+/// exit nonzero so harnesses can distinguish "ran and found issues" from
+/// "did not run".
+#[test]
+fn check_exit_zero_does_not_mask_operational_errors() {
+    // Zero supported files: still exit 2.
+    let empty = tempfile::tempdir().unwrap();
+    kgr()
+        .args(["check", "--format", "json", "--exit-zero", "--no-progress"])
+        .arg(empty.path())
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("No supported source files found"));
+
+    // Invalid format: still exit 2.
+    let tmp = tempfile::tempdir().unwrap();
+    make_ts_fixture(&tmp);
+    kgr()
+        .args(["check", "--format", "josn", "--exit-zero", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("Unknown format"));
+
+    // Broken rule config (invalid glob): still exits nonzero.
+    std::fs::write(
+        tmp.path().join(".kgr.toml"),
+        "[[rules]]\nname=\"bad-glob\"\nfrom=\"legacy/[\"\nto=\"core/**\"\nseverity=\"error\"\n",
+    )
+    .unwrap();
+    kgr()
+        .args(["check", "--exit-zero", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("warning[kgr::rule-config]"));
+}
+
 #[test]
 fn zero_file_json_scan_commands_emit_parseable_errors() {
     let tmp = tempfile::tempdir().unwrap();
@@ -921,6 +1044,11 @@ fn agent_info_documents_current_cli_surface() {
         .stdout(predicate::str::contains("zig, cs, objc, swift"))
         .stdout(predicate::str::contains("--syntax"))
         .stdout(predicate::str::contains("syntax_errors"))
+        .stdout(predicate::str::contains("--exit-zero"))
+        .stdout(predicate::str::contains("--first-party"))
+        .stdout(predicate::str::contains("FIRST-PARTY FILTERING"))
+        .stdout(predicate::str::contains("first_party_filter"))
+        .stdout(predicate::str::contains("vendor_globs"))
         .stdout(predicate::str::contains("-l, --lang <lang>"));
 }
 
@@ -1242,6 +1370,68 @@ fn js_ts_ambient_globals_are_classified_but_type_companions_are_linked() {
     assert!(
         !orphans.contains(&"src/widget.d.ts".to_string()),
         "type companion should be linked, not classified as a loose global: {orphans:?}"
+    );
+}
+
+#[test]
+fn tsconfig_paths_load_from_scan_root_not_cwd() {
+    // Scan target: a project whose tsconfig maps @app/* -> src/app/*.
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(project.path().join("src/app")).unwrap();
+    std::fs::write(
+        project.path().join("tsconfig.json"),
+        r#"{"compilerOptions": {"paths": {"@app/*": ["src/app/*"]}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        project.path().join("src/main.ts"),
+        "import { util } from '@app/util';\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.path().join("src/app/util.ts"),
+        "export const util = 1;\n",
+    )
+    .unwrap();
+
+    // Process CWD: a different directory whose decoy tsconfig points the same
+    // alias at a target that does not exist in the scanned project. Under the
+    // old behavior (tsconfig.json loaded relative to the CWD, not the scan
+    // root) the decoy would be loaded and the alias import would not resolve.
+    let cwd = tempfile::tempdir().unwrap();
+    std::fs::write(
+        cwd.path().join("tsconfig.json"),
+        r#"{"compilerOptions": {"paths": {"@app/*": ["decoy/*"]}}}"#,
+    )
+    .unwrap();
+
+    let output = kgr()
+        .current_dir(cwd.path())
+        .args(["graph", "--format", "json", "--no-progress"])
+        .arg(project.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+
+    let edges = json["edges"].as_array().unwrap();
+    assert!(
+        edges
+            .iter()
+            .any(|edge| edge["from"] == "src/main.ts" && edge["to"] == "src/app/util.ts"),
+        "tsconfig alias from the scanned root should resolve @app/util: {edges:?}"
+    );
+
+    let external_deps = json["external_deps"].as_object().unwrap();
+    assert!(
+        !external_deps.values().any(|deps| {
+            deps.as_array()
+                .map(|d| d.iter().any(|name| name == "@app/util"))
+                .unwrap_or(false)
+        }),
+        "resolved alias import must not surface as an external dep: {external_deps:?}"
     );
 }
 
@@ -1966,6 +2156,417 @@ fn agent_info_rejects_unknown_format() {
         ));
 }
 
+// ── Rust module & re-export edges ─────────────────────────────────────────────
+
+/// Edge list from graph JSON as (from, to) string pairs.
+fn graph_edges(path: &Path) -> Vec<(String, String)> {
+    graph_json(path)["edges"]
+        .as_array()
+        .expect("graph JSON edges array")
+        .iter()
+        .map(|edge| {
+            (
+                edge["from"].as_str().unwrap().to_string(),
+                edge["to"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+fn query_who_imports_json(root: &Path, target: &str) -> Vec<String> {
+    let output = kgr()
+        .args([
+            "query",
+            "--who-imports",
+            target,
+            "-f",
+            "json",
+            "--no-progress",
+        ])
+        .arg(root)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    serde_json::from_slice::<Vec<String>>(&output).unwrap()
+}
+
+/// Nested modules + a re-export barrel: `pub use crate::models::*;` gives the
+/// barrel out-edges, `use crate::prelude::*;` gives it in-edges, and a
+/// consumer of a crate-root re-export (`use crate::User;`) links to lib.rs.
+#[test]
+fn rust_reexport_barrel_and_nested_modules_create_edges() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(src.join("models")).unwrap();
+    std::fs::write(
+        src.join("lib.rs"),
+        "pub mod api;\npub mod models;\npub mod prelude;\npub use models::user::User;\n",
+    )
+    .unwrap();
+    std::fs::write(src.join("models/mod.rs"), "pub mod user;\n").unwrap();
+    std::fs::write(src.join("models/user.rs"), "pub struct User;\n").unwrap();
+    std::fs::write(
+        src.join("prelude.rs"),
+        "pub use crate::models::*;\npub use crate::models::user::User;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("api.rs"),
+        "use crate::prelude::*;\nuse crate::User;\npub fn handler() -> User { User }\n",
+    )
+    .unwrap();
+
+    let edges = graph_edges(tmp.path());
+    let expect = [
+        // mod declarations
+        ("src/lib.rs", "src/api.rs"),
+        ("src/lib.rs", "src/models/mod.rs"),
+        ("src/lib.rs", "src/prelude.rs"),
+        ("src/models/mod.rs", "src/models/user.rs"),
+        // crate-root re-export of a nested module item (bare 2018 path)
+        ("src/lib.rs", "src/models/user.rs"),
+        // re-export barrel: glob and item re-exports both give out-edges
+        ("src/prelude.rs", "src/models/mod.rs"),
+        ("src/prelude.rs", "src/models/user.rs"),
+        // consumers: glob import of the barrel, item via crate-root re-export
+        ("src/api.rs", "src/prelude.rs"),
+        ("src/api.rs", "src/lib.rs"),
+    ];
+    for (from, to) in expect {
+        assert!(
+            edges.contains(&(from.to_string(), to.to_string())),
+            "missing edge {from} -> {to} in {edges:?}"
+        );
+    }
+
+    // The barrel and the re-export consumer edges feed who-imports…
+    assert_eq!(
+        query_who_imports_json(tmp.path(), "src/prelude.rs"),
+        vec!["src/api.rs".to_string(), "src/lib.rs".to_string()]
+    );
+    assert_eq!(
+        query_who_imports_json(tmp.path(), "src/lib.rs"),
+        vec!["src/api.rs".to_string()]
+    );
+
+    // …and heaviest rankings: lib.rs and the barrel have real dependents.
+    let output = kgr()
+        .args(["query", "--heaviest", "-f", "json", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let ranked: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    let dependents_of = |path: &str| {
+        ranked
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["path"] == path)
+            .map(|e| e["dependents"].as_u64().unwrap())
+            .unwrap_or(0)
+    };
+    assert_eq!(dependents_of("src/prelude.rs"), 2);
+    assert_eq!(dependents_of("src/lib.rs"), 1);
+    // user.rs: declared by models/mod.rs, re-exported by lib.rs and prelude.rs.
+    assert_eq!(dependents_of("src/models/user.rs"), 3);
+}
+
+/// `use super::item;` from a nested module links the child to the file that
+/// DEFINES the parent module — mod.rs and modern sibling layouts both.
+#[test]
+fn rust_super_item_import_links_child_to_parent_module_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(src.join("engine")).unwrap();
+    std::fs::create_dir_all(src.join("store")).unwrap();
+    std::fs::write(src.join("lib.rs"), "pub mod engine;\npub mod store;\n").unwrap();
+    std::fs::write(
+        src.join("engine/mod.rs"),
+        "pub mod core;\npub fn config() {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("engine/core.rs"),
+        "use super::config;\npub fn run() { config(); }\n",
+    )
+    .unwrap();
+    // Modern layout: parent module file is the sibling store.rs.
+    std::fs::write(src.join("store.rs"), "pub mod disk;\npub fn flush() {}\n").unwrap();
+    std::fs::write(
+        src.join("store/disk.rs"),
+        "use super::flush;\npub fn sync() { flush(); }\n",
+    )
+    .unwrap();
+
+    let edges = graph_edges(tmp.path());
+    assert!(
+        edges.contains(&("src/engine/core.rs".into(), "src/engine/mod.rs".into())),
+        "super item import should link core.rs to engine/mod.rs: {edges:?}"
+    );
+    assert!(
+        edges.contains(&("src/store/disk.rs".into(), "src/store.rs".into())),
+        "super item import should link disk.rs to sibling store.rs: {edges:?}"
+    );
+}
+
+/// The ubiquitous `#[cfg(test)] mod tests { use super::*; }` names the file's
+/// OWN module: it must not draw a phantom edge to the parent module file and
+/// must not surface as an external package.
+#[test]
+fn rust_test_module_super_glob_creates_no_phantom_edges() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("lib.rs"), "pub mod util;\n").unwrap();
+    std::fs::write(
+        src.join("util.rs"),
+        "pub fn helper() {}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn works() {\n        helper();\n    }\n}\n",
+    )
+    .unwrap();
+
+    let json = graph_json(tmp.path());
+    let edges = graph_edges(tmp.path());
+    assert!(
+        !edges.contains(&("src/util.rs".into(), "src/lib.rs".into())),
+        "test-module super glob must not point at the crate root: {edges:?}"
+    );
+    let externals = &json["external_deps"]["src/util.rs"];
+    assert!(
+        externals.is_null(),
+        "test-module super glob must not be an external dep: {externals}"
+    );
+}
+
+/// A crate root reachable only through its re-exports must not be reported
+/// as an orphan: `use crate::Engine;` from a module file is an in-edge to
+/// the lib.rs that re-exports Engine, even with no file-backed `mod` decls.
+#[test]
+fn rust_lib_rs_reachable_via_reexports_is_not_an_orphan() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("lib.rs"),
+        "pub mod inner {\n    pub struct Engine;\n}\npub use inner::Engine;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("main.rs"),
+        "mod helper;\nfn main() { helper::run(); }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("helper.rs"),
+        "use crate::Engine;\npub fn run() { let _ = Engine; }\n",
+    )
+    .unwrap();
+
+    let orphans = query_orphans_json(tmp.path());
+    assert!(
+        !orphans.contains(&"src/lib.rs".to_string()),
+        "re-export-consumed lib.rs misreported as orphan: {orphans:?}"
+    );
+    assert_eq!(
+        query_who_imports_json(tmp.path(), "src/lib.rs"),
+        vec!["src/helper.rs".to_string()]
+    );
+}
+
+/// Inline-nested `mod` declarations resolve into the inline chain's directory
+/// (`mod outer { mod inner; }` in lib.rs -> src/outer/inner.rs).
+#[test]
+fn rust_nested_inline_mod_declaration_resolves_into_chain_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(src.join("outer")).unwrap();
+    std::fs::write(src.join("lib.rs"), "mod outer {\n    pub mod inner;\n}\n").unwrap();
+    std::fs::write(src.join("outer/inner.rs"), "pub fn f() {}\n").unwrap();
+
+    let edges = graph_edges(tmp.path());
+    assert!(
+        edges.contains(&("src/lib.rs".into(), "src/outer/inner.rs".into())),
+        "nested inline mod declaration should resolve into outer/: {edges:?}"
+    );
+}
+
+fn structural_entries_map(json: &serde_json::Value) -> std::collections::BTreeMap<String, String> {
+    json["structural_entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            (
+                entry["path"].as_str().unwrap().to_string(),
+                entry["reason"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+/// Cargo loads build scripts, binary/library roots, examples, benches, and
+/// integration tests by convention, not by imports. They must be classified
+/// as structural entry points (with a stable reason) instead of orphans,
+/// while a genuinely unreferenced module stays an orphan candidate.
+#[test]
+fn rust_cargo_targets_classified_as_structural_entries_not_orphans() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("src/bin/multi")).unwrap();
+    std::fs::create_dir_all(tmp.path().join("examples")).unwrap();
+    std::fs::create_dir_all(tmp.path().join("benches")).unwrap();
+    std::fs::create_dir_all(tmp.path().join("tests")).unwrap();
+
+    std::fs::write(
+        tmp.path().join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(tmp.path().join("build.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(tmp.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(tmp.path().join("src/bin/tool.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(tmp.path().join("src/bin/multi/main.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(tmp.path().join("examples/demo.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(tmp.path().join("benches/perf.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(tmp.path().join("tests/smoke.rs"), "#[test]\nfn ok() {}\n").unwrap();
+    std::fs::write(tmp.path().join("src/dead.rs"), "pub fn unused() {}\n").unwrap();
+
+    let json = graph_json(tmp.path());
+
+    let orphans: Vec<String> = serde_json::from_value(json["orphans"].clone()).unwrap();
+    assert_eq!(
+        orphans,
+        vec!["src/dead.rs".to_string()],
+        "only the truly unreferenced module is a real orphan"
+    );
+
+    let entries = structural_entries_map(&json);
+    for (path, reason) in [
+        ("build.rs", "cargo build script"),
+        ("src/main.rs", "cargo binary target"),
+        ("src/bin/tool.rs", "cargo binary target"),
+        ("src/bin/multi/main.rs", "cargo binary target"),
+        ("examples/demo.rs", "cargo example target"),
+        ("benches/perf.rs", "cargo bench target"),
+        ("tests/smoke.rs", "cargo test target"),
+    ] {
+        assert_eq!(
+            entries.get(path).map(String::as_str),
+            Some(reason),
+            "{path} should classify as '{reason}': {entries:?}"
+        );
+    }
+    assert!(
+        !entries.contains_key("src/dead.rs"),
+        "a plain unreferenced module must not be classified: {entries:?}"
+    );
+
+    // The Cargo test target gets the specific structural classification, not
+    // the generic test-entry bucket.
+    let test_entries: Vec<String> = serde_json::from_value(json["test_entries"].clone()).unwrap();
+    assert!(
+        !test_entries.contains(&"tests/smoke.rs".to_string()),
+        "cargo test target should not double-report as a test entry: {test_entries:?}"
+    );
+}
+
+/// Workspace member crate roots (lib.rs / main.rs next to a member
+/// Cargo.toml) are loaded by the workspace build, not by imports.
+#[test]
+fn rust_workspace_member_roots_classified_not_orphans() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("crates/alpha/src")).unwrap();
+    std::fs::create_dir_all(tmp.path().join("crates/beta/src")).unwrap();
+
+    std::fs::write(
+        tmp.path().join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/alpha\", \"crates/beta\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("crates/alpha/Cargo.toml"),
+        "[package]\nname = \"alpha\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("crates/alpha/src/lib.rs"),
+        "pub fn alpha() {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("crates/beta/Cargo.toml"),
+        "[package]\nname = \"beta\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(tmp.path().join("crates/beta/src/main.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(tmp.path().join("crates/beta/build.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(
+        tmp.path().join("crates/beta/src/forgotten.rs"),
+        "pub fn unused() {}\n",
+    )
+    .unwrap();
+
+    let json = graph_json(tmp.path());
+
+    let orphans: Vec<String> = serde_json::from_value(json["orphans"].clone()).unwrap();
+    assert_eq!(
+        orphans,
+        vec!["crates/beta/src/forgotten.rs".to_string()],
+        "member roots are structural; only the forgotten module is an orphan"
+    );
+
+    let entries = structural_entries_map(&json);
+    assert_eq!(
+        entries.get("crates/alpha/src/lib.rs").map(String::as_str),
+        Some("cargo library target"),
+        "{entries:?}"
+    );
+    assert_eq!(
+        entries.get("crates/beta/src/main.rs").map(String::as_str),
+        Some("cargo binary target"),
+        "{entries:?}"
+    );
+    // Mirrors the kgr dogfood case: a member-crate build script scanned from
+    // the workspace's crates/ parent directory.
+    assert_eq!(
+        entries.get("crates/beta/build.rs").map(String::as_str),
+        Some("cargo build script"),
+        "{entries:?}"
+    );
+}
+
+/// Conventional-looking paths with no Cargo.toml anywhere are NOT Cargo
+/// targets — they must keep showing up as orphan candidates so the
+/// classification never over-suppresses.
+#[test]
+fn rust_conventional_paths_without_manifest_stay_orphans() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::create_dir_all(tmp.path().join("examples")).unwrap();
+
+    std::fs::write(tmp.path().join("build.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(tmp.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(tmp.path().join("examples/demo.rs"), "fn main() {}\n").unwrap();
+
+    let json = graph_json(tmp.path());
+
+    let orphans: Vec<String> = serde_json::from_value(json["orphans"].clone()).unwrap();
+    for path in ["build.rs", "src/main.rs", "examples/demo.rs"] {
+        assert!(
+            orphans.contains(&path.to_string()),
+            "{path} without a manifest should stay an orphan: {orphans:?}"
+        );
+    }
+    assert_eq!(
+        json["structural_entries"].as_array().unwrap().len(),
+        0,
+        "no manifest means no Cargo target classification"
+    );
+}
+
 /// A bad format coming from the config `format` field (no CLI flag at all)
 /// must fail identically to a bad CLI flag.
 #[test]
@@ -1984,4 +2585,459 @@ fn config_sourced_bad_format_rejected_by_check() {
         .stderr(predicate::str::contains(
             "Unknown format: yaml (expected: text, json)",
         ));
+}
+
+/// Mixed C/C++ fixture where vendored headers dominate orphan and heaviest
+/// analysis, alongside first-party files with the same names:
+///
+///   a.c, b.c            -> vendor/util.h, util.h
+///   vendor/util.h        vendored, 2 dependents (heaviest noise)
+///   vendor/foo.h         vendored orphan
+///   third_party/bar.hpp  vendored orphan
+///   util.h               first-party, 2 dependents, name-twin of vendor/util.h
+///   src/foo.h            first-party orphan, name-twin of vendor/foo.h
+fn write_vendor_fixture(root: &Path) {
+    std::fs::create_dir_all(root.join("vendor")).unwrap();
+    std::fs::create_dir_all(root.join("third_party")).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let includes = "#include \"vendor/util.h\"\n#include \"util.h\"\n";
+    std::fs::write(root.join("a.c"), includes).unwrap();
+    std::fs::write(root.join("b.c"), includes).unwrap();
+    std::fs::write(root.join("vendor/util.h"), "#define VENDOR_UTIL 1\n").unwrap();
+    std::fs::write(root.join("vendor/foo.h"), "#define VENDOR_FOO 1\n").unwrap();
+    std::fs::write(root.join("third_party/bar.hpp"), "#define BAR 1\n").unwrap();
+    std::fs::write(root.join("util.h"), "#define UTIL 1\n").unwrap();
+    std::fs::write(root.join("src/foo.h"), "#define FOO 1\n").unwrap();
+}
+
+/// Default `query --orphans` stays a bare JSON array including vendored
+/// paths; `--first-party` switches to an object that filters them out and
+/// reports the applied vendor globs, keeping the same-named first-party
+/// file.
+#[test]
+fn query_orphans_first_party_excludes_vendored_paths_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_vendor_fixture(tmp.path());
+
+    // Backwards-compatible default: bare array, vendored orphans included.
+    let unfiltered = query_orphans_json(tmp.path());
+    for path in ["vendor/foo.h", "third_party/bar.hpp", "src/foo.h"] {
+        assert!(
+            unfiltered.contains(&path.to_string()),
+            "{path} should be an orphan by default: {unfiltered:?}"
+        );
+    }
+
+    let output = kgr()
+        .args([
+            "query",
+            "--orphans",
+            "--first-party",
+            "-f",
+            "json",
+            "--no-progress",
+        ])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+
+    let orphans: Vec<String> = serde_json::from_value(json["orphans"].clone()).unwrap();
+    assert_eq!(
+        orphans,
+        vec!["src/foo.h".to_string()],
+        "vendored orphans filtered; the name-twin first-party header stays"
+    );
+    assert_eq!(json["first_party_filter"]["excluded_orphans"], 2);
+    let globs: Vec<String> =
+        serde_json::from_value(json["first_party_filter"]["vendor_globs"].clone()).unwrap();
+    assert_eq!(
+        globs,
+        vec!["**/vendor/**", "**/third_party/**", "**/external/**"],
+        "applied filtering must be explicit in JSON output"
+    );
+}
+
+/// `query --heaviest --first-party` drops vendored headers from the ranking
+/// but keeps the first-party header with the same file name and dependent
+/// count; the default output shape (bare array with vendored entries) is
+/// unchanged.
+#[test]
+fn query_heaviest_first_party_keeps_first_party_name_twin() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_vendor_fixture(tmp.path());
+
+    // Default: bare array; the vendored header ranks alongside util.h.
+    let output = kgr()
+        .args(["query", "--heaviest", "-f", "json", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let unfiltered: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    let paths: Vec<&str> = unfiltered
+        .as_array()
+        .expect("default --heaviest output stays a bare array")
+        .iter()
+        .map(|item| item["path"].as_str().unwrap())
+        .collect();
+    assert!(paths.contains(&"vendor/util.h"), "{paths:?}");
+    assert!(paths.contains(&"util.h"), "{paths:?}");
+
+    let output = kgr()
+        .args([
+            "query",
+            "--heaviest",
+            "--first-party",
+            "-f",
+            "json",
+            "--no-progress",
+        ])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+
+    let entries: Vec<(String, u64)> = json["heaviest"]
+        .as_array()
+        .expect("filtered --heaviest output is an object with a heaviest array")
+        .iter()
+        .map(|item| {
+            (
+                item["path"].as_str().unwrap().to_string(),
+                item["dependents"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert!(
+        entries.contains(&("util.h".to_string(), 2)),
+        "first-party name-twin keeps its rank: {entries:?}"
+    );
+    assert!(
+        entries
+            .iter()
+            .all(|(path, _)| !path.starts_with("vendor/") && !path.starts_with("third_party/")),
+        "vendored paths must be excluded: {entries:?}"
+    );
+    // vendor/util.h, vendor/foo.h, third_party/bar.hpp
+    assert_eq!(json["first_party_filter"]["excluded_files"], 3);
+    assert!(json["first_party_filter"]["vendor_globs"].is_array());
+}
+
+/// `kgr check --first-party` filters the orphan summary in both text and
+/// JSON modes and reports the filtering explicitly; the default JSON shape
+/// carries no filter key at all.
+#[test]
+fn check_first_party_filters_orphan_summary() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_vendor_fixture(tmp.path());
+
+    // Backwards-compatible default: vendored orphans reported, no filter key.
+    let output = kgr()
+        .args(["check", "-f", "json", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    let orphans: Vec<String> = serde_json::from_value(json["orphans"].clone()).unwrap();
+    assert!(orphans.contains(&"vendor/foo.h".to_string()), "{orphans:?}");
+    assert!(
+        json.get("first_party_filter").is_none(),
+        "default JSON output must not grow a filter key"
+    );
+
+    let output = kgr()
+        .args(["check", "--first-party", "-f", "json", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    let orphans: Vec<String> = serde_json::from_value(json["orphans"].clone()).unwrap();
+    assert_eq!(orphans, vec!["src/foo.h".to_string()]);
+    assert_eq!(json["first_party_filter"]["excluded_orphans"], 2);
+
+    // Text mode: vendored orphans gone from the warning, note names the count.
+    kgr()
+        .args(["check", "--first-party", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("src/foo.h"))
+        .stderr(predicate::str::contains("vendor/foo.h").not())
+        .stderr(predicate::str::contains(
+            "note: first-party filter excluded 2 vendored file(s) from orphan analysis",
+        ));
+}
+
+/// `kgr graph --first-party --format json` filters the orphan summary and
+/// makes the applied filtering explicit; the default graph JSON is
+/// byte-compatible (no filter key, vendored orphans present).
+#[test]
+fn graph_json_first_party_reports_applied_filter() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_vendor_fixture(tmp.path());
+
+    let json = graph_json(tmp.path());
+    let orphans: Vec<String> = serde_json::from_value(json["orphans"].clone()).unwrap();
+    assert!(orphans.contains(&"vendor/foo.h".to_string()), "{orphans:?}");
+    assert!(
+        json.get("first_party_filter").is_none(),
+        "default graph JSON must not grow a filter key"
+    );
+
+    let output = kgr()
+        .args([
+            "graph",
+            "--first-party",
+            "--format",
+            "json",
+            "--no-progress",
+        ])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    let orphans: Vec<String> = serde_json::from_value(json["orphans"].clone()).unwrap();
+    assert_eq!(orphans, vec!["src/foo.h".to_string()]);
+    assert_eq!(json["first_party_filter"]["excluded_orphans"], 2);
+    // The vendored files stay in the graph itself — only the summary filters.
+    let files: Vec<&str> = json["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["path"].as_str().unwrap())
+        .collect();
+    assert!(files.contains(&"vendor/util.h"), "{files:?}");
+}
+
+/// Config `first_party = true` enables filtering without the CLI flag, and
+/// config `vendor_globs` replaces the default list entirely: only
+/// third_party/ is vendored here, so vendor/foo.h stays an orphan.
+#[test]
+fn config_first_party_and_custom_vendor_globs_drive_query() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_vendor_fixture(tmp.path());
+    std::fs::write(
+        tmp.path().join(".kgr.toml"),
+        "first_party = true\nvendor_globs = [\"third_party/**\"]\n",
+    )
+    .unwrap();
+
+    let output = kgr()
+        .args(["query", "--orphans", "-f", "json", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+
+    let orphans: Vec<String> = serde_json::from_value(json["orphans"].clone()).unwrap();
+    assert_eq!(
+        orphans,
+        vec!["src/foo.h".to_string(), "vendor/foo.h".to_string()],
+        "custom vendor_globs replace the defaults: only third_party/ filters"
+    );
+    assert_eq!(json["first_party_filter"]["excluded_orphans"], 1);
+    let globs: Vec<String> =
+        serde_json::from_value(json["first_party_filter"]["vendor_globs"].clone()).unwrap();
+    assert_eq!(globs, vec!["third_party/**"]);
+}
+
+// ── Skipped-unsupported reporting ─────────────────────────────────────────────
+
+/// Mixed repo: supported sources (.py, .ts), unsupported source-looking
+/// files (.zigzag x4 so the sample bound shows, .xyz, an extensionless text
+/// file), non-source assets that must never be reported (json/png/binary
+/// blob), and an excluded vendor/ dir whose contents must be invisible.
+fn write_mixed_unsupported_fixture(root: &Path) {
+    std::fs::write(root.join("main.py"), "import helper\n").unwrap();
+    std::fs::write(root.join("helper.py"), "x = 1\n").unwrap();
+    std::fs::write(root.join("app.ts"), "import './lib';\n").unwrap();
+    std::fs::write(root.join("lib.ts"), "export const x = 1;\n").unwrap();
+
+    for name in ["alpha", "beta", "delta", "gamma"] {
+        std::fs::write(root.join(format!("{name}.zigzag")), "unsupported source\n").unwrap();
+    }
+    std::fs::write(root.join("data.xyz"), "records\n").unwrap();
+    std::fs::write(root.join("notes"), "plain text without a shebang\n").unwrap();
+
+    std::fs::write(root.join("config.json"), "{}\n").unwrap();
+    std::fs::write(root.join("logo.png"), [0x89u8, b'P', 0x00]).unwrap();
+    std::fs::write(root.join("blob"), [0u8, 159, 146, 150]).unwrap();
+
+    std::fs::create_dir(root.join("vendor")).unwrap();
+    std::fs::write(root.join("vendor/skip.zigzag"), "excluded\n").unwrap();
+    std::fs::write(root.join(".kgr.toml"), "exclude = [\"vendor/**\"]\n").unwrap();
+}
+
+#[test]
+fn graph_json_reports_skipped_unsupported_groups_with_bounded_sample() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_mixed_unsupported_fixture(tmp.path());
+
+    let json = graph_json(tmp.path());
+
+    let groups = json["skipped_unsupported"].as_array().unwrap();
+    assert_eq!(groups.len(), 3, "{groups:?}");
+
+    // Largest group first; sample sorted and capped at 3 of the 4 files.
+    assert_eq!(groups[0]["group"], "zigzag");
+    assert_eq!(groups[0]["count"], 4);
+    let sample: Vec<&str> = groups[0]["sample"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(sample, ["alpha.zigzag", "beta.zigzag", "delta.zigzag"]);
+
+    // Ties order alphabetically: "(no extension)" before "xyz".
+    assert_eq!(groups[1]["group"], "(no extension)");
+    assert_eq!(groups[1]["count"], 1);
+    assert_eq!(groups[1]["sample"][0], "notes");
+    assert_eq!(groups[2]["group"], "xyz");
+    assert_eq!(groups[2]["count"], 1);
+
+    // Non-source assets, binary blobs, and excluded paths never appear.
+    let raw = serde_json::to_string(&json["skipped_unsupported"]).unwrap();
+    assert!(!raw.contains("config.json"), "{raw}");
+    assert!(!raw.contains("logo.png"), "{raw}");
+    assert!(!raw.contains("blob"), "{raw}");
+    assert!(!raw.contains("vendor"), "{raw}");
+}
+
+#[test]
+fn check_json_includes_skipped_unsupported_summary() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_mixed_unsupported_fixture(tmp.path());
+
+    let output = kgr()
+        .args(["check", "--format", "json", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["skipped_unsupported"][0]["group"], "zigzag");
+    assert_eq!(json["skipped_unsupported"][0]["count"], 4);
+    let sample = json["skipped_unsupported"][0]["sample"].as_array().unwrap();
+    assert_eq!(sample.len(), 3);
+}
+
+#[test]
+fn orient_json_includes_skipped_unsupported_summary() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_mixed_unsupported_fixture(tmp.path());
+
+    let output = kgr()
+        .args(["orient", "--format", "json", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+
+    let groups = json["skipped_unsupported"].as_array().unwrap();
+    assert_eq!(groups[0]["group"], "zigzag");
+    assert_eq!(groups[0]["count"], 4);
+
+    // Orient text mode surfaces the same summary as a single bounded line.
+    kgr()
+        .args(["orient", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Skipped unsupported: 6 file(s) (zigzag: 4, (no extension): 1, xyz: 1)",
+        ));
+}
+
+/// Supported languages excluded by --lang are filtered, not "unsupported":
+/// the skipped summary must not mention them, and genuinely unsupported
+/// files are still reported under an active filter.
+#[test]
+fn lang_filter_does_not_misreport_supported_languages_as_skipped() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_mixed_unsupported_fixture(tmp.path());
+
+    let output = kgr()
+        .args(["graph", "--format", "json", "--no-progress", "--lang", "py"])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+
+    let files: Vec<&str> = json["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["path"].as_str().unwrap())
+        .collect();
+    assert!(files.contains(&"main.py"), "{files:?}");
+    assert!(!files.contains(&"app.ts"), "{files:?}");
+
+    let groups = json["skipped_unsupported"].as_array().unwrap();
+    assert!(groups.iter().any(|g| g["group"] == "zigzag"), "{groups:?}");
+    assert!(
+        !groups.iter().any(|g| g["group"] == "ts"),
+        "filtered TypeScript files must not be reported as skipped: {groups:?}"
+    );
+    let raw = serde_json::to_string(&json["skipped_unsupported"]).unwrap();
+    assert!(!raw.contains("app.ts"), "{raw}");
+    assert!(!raw.contains("lib.ts"), "{raw}");
+}
+
+/// Fully-supported repos keep their JSON shape: the key appears ONLY when
+/// at least one unsupported file was skipped.
+#[test]
+fn graph_json_omits_skipped_unsupported_for_fully_supported_repo() {
+    let json = graph_json(&fixtures_dir().join("python/simple"));
+    assert!(json.get("skipped_unsupported").is_none());
+}
+
+/// Human-format runs get a bounded stderr note (mirroring the parse-failure
+/// summary): total count, per-extension samples, omitted-count marker — and
+/// nothing from excluded directories.
+#[test]
+fn skipped_unsupported_stderr_note_is_bounded_and_respects_excludes() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_mixed_unsupported_fixture(tmp.path());
+
+    kgr()
+        .args(["graph", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("skipped 6 unsupported file(s)"))
+        .stderr(predicate::str::contains("alpha.zigzag"))
+        .stderr(predicate::str::contains("1 more"))
+        .stderr(predicate::str::contains("gamma.zigzag").not())
+        .stderr(predicate::str::contains("vendor").not());
 }

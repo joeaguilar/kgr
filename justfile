@@ -69,9 +69,9 @@ graph:
 table:
     cargo run --release -q -- graph --format table --no-progress crates
 
-# Run check on kgr's own crates
+# Run check on kgr's own crates (baseline suppresses the intentional parse/ module cycle)
 kgr-check:
-    cargo run --release -q -- check --no-progress crates
+    cargo run --release -q -- check --no-progress --baseline .kgr-baseline.json crates
 
 # ─── Clean ───────────────────────────────────────────────────────────
 

@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use figment::providers::{Env, Format, Serialized, Toml};
 use figment::Figment;
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -53,6 +54,19 @@ pub struct Config {
     /// OR-semantics: either the CLI flag or this setting suppresses it.
     #[serde(default)]
     pub no_progress: bool,
+    /// Enable first-party filtering by default (same as always passing
+    /// `--first-party`): vendored paths are excluded from orphan and
+    /// heaviest analysis. OR-semantics: either the CLI flag or this
+    /// setting enables it. Vendored files stay in the graph — only the
+    /// analysis summaries are filtered.
+    #[serde(default)]
+    pub first_party: bool,
+    /// Glob patterns (relative to root) marking paths as vendored for the
+    /// first-party filter. Only consulted when filtering is enabled; when
+    /// unset, `DEFAULT_VENDOR_GLOBS` applies.
+    /// Example: `vendor_globs = ["**/vendor/**", "deps/**"]`
+    #[serde(default)]
+    pub vendor_globs: Option<Vec<String>>,
     #[serde(default)]
     pub rules: Vec<Rule>,
 }
@@ -87,6 +101,77 @@ pub fn resolve_langs(
 /// `--no-progress` flag or config `no_progress = true` suppresses it.
 pub fn resolve_no_progress(cli: bool, config: bool) -> bool {
     cli || config
+}
+
+/// Resolve first-party filtering with OR-semantics: either the CLI
+/// `--first-party` flag or config `first_party = true` enables it.
+pub fn resolve_first_party(cli: bool, config: bool) -> bool {
+    cli || config
+}
+
+/// Default vendor globs for the first-party filter. `**/` matches zero or
+/// more leading directories, so these cover both top-level (`vendor/x.h`)
+/// and nested (`libs/vendor/x.h`) vendored trees.
+pub const DEFAULT_VENDOR_GLOBS: &[&str] = &["**/vendor/**", "**/third_party/**", "**/external/**"];
+
+/// The vendor globs in effect: config `vendor_globs` when set, otherwise
+/// `DEFAULT_VENDOR_GLOBS`.
+pub fn effective_vendor_globs(config: &Option<Vec<String>>) -> Vec<String> {
+    match config {
+        Some(globs) => globs.clone(),
+        None => DEFAULT_VENDOR_GLOBS
+            .iter()
+            .map(|g| (*g).to_string())
+            .collect(),
+    }
+}
+
+/// Compiled first-party filter: root-relative paths matching any vendor
+/// glob are treated as vendored and excluded from orphan/heaviest analysis
+/// when filtering is enabled.
+pub struct FirstPartyFilter {
+    set: GlobSet,
+    globs: Vec<String>,
+}
+
+impl FirstPartyFilter {
+    /// Compile vendor globs. Invalid patterns are skipped (valid ones
+    /// still apply) and reported back as warning strings for the caller
+    /// to emit, mirroring the exclude-glob diagnostics in walk.rs.
+    pub fn compile(patterns: Vec<String>) -> (Self, Vec<String>) {
+        let mut builder = GlobSetBuilder::new();
+        let mut globs = Vec::new();
+        let mut warnings = Vec::new();
+
+        for pattern in patterns {
+            match Glob::new(&pattern) {
+                Ok(glob) => {
+                    builder.add(glob);
+                    globs.push(pattern);
+                }
+                Err(error) => warnings.push(format!(
+                    "warning[kgr::vendor-config]: invalid vendor glob '{pattern}': {error}"
+                )),
+            }
+        }
+
+        // Building a GlobSet from valid globs is infallible.
+        let set = builder
+            .build()
+            .unwrap_or_else(|_| GlobSetBuilder::new().build().unwrap());
+
+        (Self { set, globs }, warnings)
+    }
+
+    /// True when `path` (relative to the scan root) matches a vendor glob.
+    pub fn is_vendored(&self, path: &Path) -> bool {
+        self.set.is_match(path)
+    }
+
+    /// The vendor globs actually applied (invalid patterns excluded).
+    pub fn globs(&self) -> &[String] {
+        &self.globs
+    }
 }
 
 pub fn load_config(root: &Path) -> Result<Config, Box<figment::Error>> {
@@ -181,6 +266,15 @@ exclude = []
 # Suppress the progress bar by default (same as always passing --no-progress).
 # no_progress = true
 
+# Exclude vendored paths from orphan and heaviest analysis by default
+# (same as always passing --first-party). Vendored files stay in the
+# graph; only the analysis summaries are filtered.
+# first_party = true
+
+# Paths treated as vendored when first-party filtering is enabled.
+# Defaults to ["**/vendor/**", "**/third_party/**", "**/external/**"].
+# vendor_globs = ["**/vendor/**", "**/third_party/**", "**/external/**"]
+
 # Enforce architectural boundaries. Each rule checks that no import
 # edge runs from a 'from' file to a 'to' file matching the globs.
 # severity: "error" (default, fails kgr check) or "warn" (informational).
@@ -243,6 +337,66 @@ mod tests {
         assert!(resolve_no_progress(true, false));
         assert!(resolve_no_progress(false, true));
         assert!(resolve_no_progress(true, true));
+    }
+
+    #[test]
+    fn resolve_first_party_or_semantics() {
+        assert!(!resolve_first_party(false, false));
+        assert!(resolve_first_party(true, false));
+        assert!(resolve_first_party(false, true));
+        assert!(resolve_first_party(true, true));
+    }
+
+    #[test]
+    fn effective_vendor_globs_defaults_when_unset() {
+        assert_eq!(
+            effective_vendor_globs(&None),
+            DEFAULT_VENDOR_GLOBS
+                .iter()
+                .map(|g| (*g).to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn effective_vendor_globs_config_replaces_defaults() {
+        let config = Some(vec!["legacy/**".to_string()]);
+        assert_eq!(
+            effective_vendor_globs(&config),
+            vec!["legacy/**".to_string()]
+        );
+    }
+
+    /// Default vendor globs match top-level and nested vendor directories
+    /// by path, never by file name: `src/foo.h` stays first-party even
+    /// when `vendor/foo.h` shares its name.
+    #[test]
+    fn default_vendor_globs_match_by_path_not_name() {
+        let (filter, warnings) = FirstPartyFilter::compile(effective_vendor_globs(&None));
+        assert!(warnings.is_empty());
+
+        assert!(filter.is_vendored(Path::new("vendor/foo.h")));
+        assert!(filter.is_vendored(Path::new("third_party/bar.hpp")));
+        assert!(filter.is_vendored(Path::new("external/baz.h")));
+        assert!(filter.is_vendored(Path::new("libs/vendor/deep/foo.h")));
+
+        assert!(!filter.is_vendored(Path::new("src/foo.h")));
+        assert!(!filter.is_vendored(Path::new("foo.h")));
+        // Component match only — `myvendor/` is not `vendor/`.
+        assert!(!filter.is_vendored(Path::new("myvendor/foo.h")));
+    }
+
+    #[test]
+    fn invalid_vendor_glob_is_skipped_with_warning() {
+        let (filter, warnings) =
+            FirstPartyFilter::compile(vec!["vendor/**".to_string(), "src/[oops".to_string()]);
+
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0]
+            .starts_with("warning[kgr::vendor-config]: invalid vendor glob 'src/[oops': "));
+        // The valid glob still applies and is the only one reported.
+        assert!(filter.is_vendored(Path::new("vendor/foo.h")));
+        assert_eq!(filter.globs(), &["vendor/**".to_string()]);
     }
 
     /// All load_config assertions that touch KGR_FORMAT live in this single

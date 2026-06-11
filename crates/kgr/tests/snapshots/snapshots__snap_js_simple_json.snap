@@ -86,5 +86,6 @@ expression: stdout
   "roots": [
     "index.js"
   ],
+  "structural_entries": [],
   "test_entries": []
 }

@@ -162,5 +162,6 @@ expression: stdout
     "__init__.py",
     "main.py"
   ],
+  "structural_entries": [],
   "test_entries": []
 }

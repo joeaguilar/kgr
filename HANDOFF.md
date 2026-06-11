@@ -1,6 +1,6 @@
 # kgr — Handoff
 
-_Last updated: 2026-06-10 (post-review backlog wave 1)_
+_Last updated: 2026-06-10 (post-review backlog blitz complete — tracker empty)_
 
 A continuity note bridging sessions. The **`itr` tracker is the source of truth** for task
 detail — this doc is the narrative: where things stand, what's next, and the context you
@@ -10,145 +10,77 @@ can't get from code or the tracker alone. Issue IDs (`#N`) link to `itr get N`.
 
 ## TL;DR
 
-The review-batch blitz is complete and committed through `f20e061` (`fix: close wave 12
-review-batch issues`). A follow-on unscoped wave closed five more live backlog issues:
-**#11, #12, #33, #37, and #2**. `just verify` is green after that wave. The follow-on
-wave is **not committed** yet.
+**The backlog is empty.** The post-review blitz (epic #117) closed all 26 actionable
+tasks across 10 waves, and epics #1 (release/install parity), #6 (triple-audit), and
+#117 are closed. Waves 1–4 are committed at `d96ca50`; **waves 5–10 are in the working
+tree, uncommitted** — review and commit them. Both gates are green: `just verify`
+exit 0, `just kgr-check` "3 violation(s) suppressed by baseline / All checks passed".
 
-Review-batch wave log:
-`sprint/_unscoped/blitz-2026-06-09T22-25-41Z.md`. Follow-on wave log:
-`sprint/_unscoped/blitz-2026-06-10T05-07-32Z.md`. Blitz epic **#115** is closed.
+Wave log (config, conflicts, interventions, per-wave outcomes, final report):
+`sprint/_unscoped/blitz-2026-06-10T16-50-00Z.md`.
 
 ---
 
 ## Repo / branch state
 
-- **`main` @ `f20e061`** — review-batch Waves 1–12 committed (`fix: close wave 12 review-batch issues`).
-- **Working tree** — Follow-on wave changed rules, cache, Rust resolver, dead reporting,
-  auto-version/release workflow support, the new wave log, and this handoff. **Gate is green**
-  (`just verify` exit 0: check, clippy `-D warnings`, 61+1+72+26+37+453 tests, fmt).
-  **Not committed** — review and commit this follow-on wave.
-- `.claude/settings.local.json` — gitignored; gained allowlist entries this session (see
-  playbook below). Leave them; waves depend on them.
-- `tests/fixtures/**/.kgr-cache.json` litter — eliminated (tests now run `KGR_NO_CACHE=1`).
+- **`main` @ `d96ca50`** — blitz waves 1–4 committed (`fix: close post-review backlog blitz waves`).
+- **Working tree** — waves 5–10: 17 files changed, ~2,945 insertions, plus new untracked
+  `.kgr-baseline.json`. Gate green. **Not committed.**
+- Suggested commit: `git add -A && git commit -m "fix: close final post-review blitz waves 5-10"`
 
-## What shipped (waves 1–12, 70 issues)
+## What shipped in waves 5–10 (this working tree)
 
-- **W1** #49 single-file PATH support, #50 dotted-specifier resolution, #51 py decorated
-  symbols, #52 ts/js arrow/generator symbols, #57 cpp inline methods
-- **W2** #48 rust `::` calls in refs/dead/impact, #54 Ruby/PHP/Lua/Bash resolver arms,
-  #53 php import capture, #58 c/cpp phantom-Class fix, #59 elixir def forms
-- **W3** #47 init overwrite guard (`--force`), #55 zig imports, #60 cache-hermetic tests +
-  build-fingerprint CACHE_VERSION + `KGR_NO_CACHE`, #89 csharp records/generics, #90 java
-  records/interface visibility
-- **W4** #46 config fields wired (languages/format/no_progress; dead fields removed),
-  #56 go.mod resolution, #61 query/flag test coverage, #85 ruby singleton/scoped symbols,
-  #93 scala grouped imports
-- **W5** #77 rust mod child-dir-before-sibling, #72 DOT escaping, #75 table LOCAL-OUT
-  degree fix, #76 cyclic tree rendering, #87 lua module-table symbols
-- **W6** #116 `check --syntax` un-no-op'd (all 19 parsers), #66 `--format` validation
-  everywhere, #78 tsconfig alias semantics, #71/#73 mermaid IDs/escaping/determinism,
-  #102 vacuous-test hardening
-- **W7** #81/#82 ts require-imports + abstract classes, #83/#84 php static refs +
-  trait/enum symbols, #86/#111 ruby receivers + load/autoload, #91/#92 cpp template refs +
-  c typedef structs, #94 elixir pseudo-call exclusion
-- **W8** #62/#105 dead/impact `found:false` + multi-definition contracts, #79 angle-include
-  System-kind fix, #95 haskell binds + export lists, #96/#113 objc `@import` + selector fix,
-  #97 rust type/union/macro/trait-sig symbols
-- **W9** #64/#65/#107 query empty JSON + target validation + selector ArgGroup, #80
-  `.mts`/`.cts`/`.mm` detection and TS resolution candidates, #88 bash source first-arg-only,
-  #98 zig top-level symbol filtering/classification, #112 python literal dynamic imports
-- **W10** #63/#74/#106 direct who-imports + agent-doc synopsis + heaviest `--top`, #109 go
-  nested-subpackage resolution, #67 invalid exclude-glob warnings, #104 cache pruning,
-  #101 JSON graph snapshots
-- **W11** #68 malformed-baseline error, #69 safe upgrade replacement, #70 zero-file check
-  errors, #114 Rust `#[path]` mod resolution, #108 Objective-C `--lang` JSON round-trip,
-  #100 all-language e2e coverage + detect round-trip
-- **W12** #99 KGR_* test env sanitization, #110 extensionless shebang language detection,
-  #103 Linux/macOS/Windows + MSRV CI matrix
+- **W5** #23 scan root threaded into all `Resolver::new` call sites (tsconfig/go.mod
+  load from scanned root, not CWD); #32 intentional 20-node parse/ cycle baselined in
+  `.kgr-baseline.json`, `kgr-check` recipe passes `--baseline`.
+- **W6** #41 Rust mod/use/pub-use file edges: inline-module-chain rebasing of
+  self/super, crate/super anchor files for re-export consumption, glob re-exports
+  resolve; lib.rs reachable via re-exports no longer orphan.
+- **W7** #35 crate root derived from nearest ancestor `Cargo.toml` (src-dir first,
+  scan-root fallback now logged); #39 Cargo targets (build.rs, bins, lib, examples,
+  benches, tests) classified as `structural_entries` with stable JSON reasons.
+- **W8** #43 `--first-party` flag + `first_party`/`vendor_globs` config: vendored paths
+  excluded from heaviest/orphan summaries, JSON `first_party_filter` key when active.
+- **W9** #44 `kgr check --exit-zero`: same diagnostics, exit 0 on findings, operational
+  errors still nonzero; AGENT_DOCS updated for both #44 and #43.
+- **W10** #45 skipped unsupported files reported (grouped by extension, bounded sample)
+  in graph/check/orient JSON + stderr; `--lang` filtering never misreported as skipped.
 
----
+## Carried-over context
 
-## Review-batch status
+- `.kgr-baseline.json` (repo root, NEW — must be committed) records **3 intentional
+  cycles** in kgr's own code: the 20-node parse/ cycle, {render/mod,json,table,tree},
+  and {rules,main,config,baseline}. The latter two surfaced when #41 made `super::`/
+  `crate::` anchoring accurate — they are true positives of a benign pattern. Refresh
+  with `cargo run --release -q -- check --no-progress --baseline .kgr-baseline.json --update-baseline crates`.
+- Dogfood `just kgr-check` now warns that the 26 `.snap` snapshot files are unsupported
+  — that's #45 working as intended, not a regression. If it grates, deny-list `.snap`
+  in walk.rs's non-source extension list.
+- The resolver is still heuristic where Cargo/tsconfig metadata is absent — but the
+  old caveats (#16/#17 Python edges, #35 silent root fallback) are fixed; tests no
+  longer need to route around them.
+- clippy 1.95 is stricter than older toolchains.
+- `.claude/settings.local.json` (gitignored) carries the blitz permission allowlist —
+  leave it; future waves depend on it. Wave-agent sandboxes cannot run `just kgr-check`
+  or the kgr binary directly — orchestrator verifies dogfood claims itself.
 
-The review-batch blitz is complete. Wave 12 closed the final three issues:
+## Blitz process playbook
 
-| Issues | Outcome |
-|---|---|
-| #99 | Host `KGR_*` env is stripped from CLI test subprocesses; config-loading unit tests use a shared clean-env guard; explicit env layering still has coverage |
-| #110 | Extensionless files with recognized first-line shebangs are detected and parsed |
-| #103 | CI tests stable Rust on Linux/macOS/Windows and checks MSRV 1.81.0 |
-
-## Follow-on wave status
-
-The first post-review-batch wave closed five issues:
-
-| Issues | Outcome |
-|---|---|
-| #11 | Rule globs now use literal path separators; root anchoring and `*`/`**` semantics are documented; likely-dead rules warn when endpoint globs match no local edges |
-| #12 | Parse cache keys compare subsecond mtime nanoseconds plus size; same-second/same-size stale-read regression covered |
-| #33 | Rust bare imports only resolve through parsed `mod` declarations, avoiding phantom local edges from external-crate name collisions |
-| #37 | `kgr dead` separates self-file references from cross-file references and treats self-only references as not live |
-| #2 | Added main-branch auto-version tagging and release workflow dispatch; release checkout fetches full tag history |
-
-## Remaining backlog beyond the review batch (~28 issues)
-
-Not scoped into these waves — run `itr ready` for the live list:
-- **Triple-audit findings** under epic #6: resolver semantics (#16/#17/#18/#19,
-  #34/#35, #23), `--no-external` (#20), objc
-  calls (#21), parse failures surfaced (#22), parser drops (#25/#26), cycles/orphans
-  (#27/#28/#32), refs/dead features (#38/#41/#42), entry-point modeling (#39/#40),
-  product features (#43/#44/#45).
-- **Release/install epic #1** (#3–#5): cargo-deny, release smoke tests,
-  install.ps1 parity.
-- Epics #1 and #6 stay open for release/install and triple-audit work. Epic #115 is closed.
-
----
-
-## Blitz process playbook (hard-won — read before running waves 9–12)
-
-1. **Permissions.** `.claude/settings.local.json` allows `just verify`, `cargo
-   check/test/clippy`, `cargo fmt --check`, `itr *` so background wave agents can
-   self-verify and self-close. The matcher denies compound forms (`cmd; echo $?`), pipes
-   around allowed commands, and env-prefixed commands (`ITR_AGENT=x itr ...`) — wave prompts
-   must say "plain commands only, plain `itr close`".
-2. **Formatter rules.** Wave agents NEVER run `cargo fmt` (crate-wide; wipes neighbors) or
-   `just update-snapshots`/`cargo insta accept` (bakes in neighbors' breakage). Agents
-   hand-fix drift in their OWN files **before their final gate** — this rule (added in W8)
-   eliminated the W7 wedges. Orchestrator may run `cargo fmt --all` only when ALL agents
-   are terminal.
-3. **Stranded agents.** Agents that "wait for a notification" die with their turn —
-   sleep-watchers never fire. Prompts must say "retry the gate IN THIS TURN". When an agent
-   dies with work done but task open: `git diff -- <its files>` to verify, run the gate
-   yourself, close with attribution. If a DEAD agent left fmt drift, hand-fix it
-   immediately — it will never self-clear and wedges every live agent.
-4. **Snapshots.** Hand-edit only the `.snap` files a change provably affects, derived from
-   verified runs. `cargo-insta` is not installed; `INSTA_UPDATE=new` + rename works for
-   solo sessions but is forbidden mid-wave.
-5. **Test-writing traps.** Python fixtures' edges are distorted by open #16/#17 — write
-   edge-dependent tests against TS fixtures or tempdirs. Use the `kgr()` helper in
-   integration.rs (sets `KGR_NO_CACHE=1`). Don't bake open bugs (#20 `--no-external`) into
-   assertions; reference issue numbers in comments instead.
-6. **Gate.** `just verify` exit 0 between waves, no exceptions, even when every agent
-   reported green.
-
----
+Unchanged from the previous run and still load-bearing — see the "Blitz process
+playbook" section in git history (`git show dafb622:HANDOFF.md`) for the six rules:
+permissions/plain-commands, formatter prohibition, stranded-agent recovery, snapshot
+hand-editing, test-writing traps, and the hard wave gate. All six held; zero
+quarantines and zero formatter wedges this run.
 
 ## How to resume
 
 ```sh
 just verify                      # confirm still green
-git status --short               # note new .github/workflows/auto-version.yml and wave log
-git diff --stat                  # review tracked follow-on wave changes
-git add -A && git commit -m "fix: close first post-review backlog wave"
-itr ready -f json --fields id,title,urgency,status
-# current top ready item is #40, followed by #5 and resolver/render/parser follow-ups
+git status --short               # waves 5-10 + new .kgr-baseline.json
+git diff --stat                  # review
+git add -A && git commit -m "fix: close final post-review blitz waves 5-10"
+itr ready -f json --fields id,title,urgency,status   # currently: empty
 ```
 
-- Wave log: `sprint/_unscoped/blitz-2026-06-09T22-25-41Z.md` (config, conflicts, all
-  interventions, per-wave outcomes).
-- Follow-on wave log: `sprint/_unscoped/blitz-2026-06-10T05-07-32Z.md`.
-- Carried-over context still true from the last session: the resolver is knowingly
-  heuristic (`crate_src_base`, `module_dir` — see #35 before "cleaning up"); kgr
-  detects a real 20-node cycle in its own `parse/` module (#32) — break or baseline it;
-  clippy 1.95 is stricter than older toolchains.
+With the tracker empty, next work comes from new audits, dogfooding feedback, or
+product direction — `/roadmap` or a fresh `/spec-writer` pass, not `/blitz`.

@@ -239,6 +239,7 @@ mod tests {
             roots: Vec::new(),
             orphans: Vec::new(),
             test_entries: Vec::new(),
+            structural_entries: Vec::new(),
         }
     }
 

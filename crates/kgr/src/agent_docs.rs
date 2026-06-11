@@ -15,20 +15,31 @@ kgr graph [PATH] [FLAGS]
                            zig, cs, objc, swift, rb, php, scala, lua, ex, hs, sh
         --no-external      Hide external (third-party) dependencies
         --show-external    Show external package names as leaf nodes (tree/table)
+        --first-party      Exclude vendored paths from the orphan summary
+                           (files stay in the graph; see FIRST-PARTY FILTERING)
         --symbols          Include symbol definitions in each file node (JSON only)
     -o, --output <file>    Write output to file instead of stdout
         --no-progress      Disable progress bar (recommended for CI/pipes)
 
 kgr check [PATH] [FLAGS]
   Check for dependency issues: cycles, orphans, rule violations.
-  Exit 0 = clean; exit 1 = errors found.
+  Exit 0 = clean; exit 1 = errors found; exit 2 = operational failure
+  (bad path, invalid format, broken config/baseline).
   Flags:
     -f, --format <fmt>     Output format: text (default), json
     -l, --lang <lang>      Filter by language
+        --first-party      Exclude vendored paths from the orphan summary
+                           (cycles and rule violations always report in full)
         --no-progress      Disable progress bar
         --update-baseline  Record current violations as baseline (exits 0)
         --baseline <file>  Path to baseline file (default: .kgr-baseline.json)
         --syntax           Include tree-sitter ERROR/MISSING parse diagnostics
+        --exit-zero        Report-only mode: identical diagnostics and JSON
+                           (including "ok": false), but exit 0 even when
+                           cycles or error-severity rule violations are found.
+                           Operational failures still exit nonzero. Use this
+                           when batching check with other commands — no need
+                           for `|| true` shell workarounds.
   JSON output shape:
     {
       "ok": bool,
@@ -39,6 +50,10 @@ kgr check [PATH] [FLAGS]
     }
     With --syntax, JSON also includes:
       "syntax_errors": [{"file": "bad.py", "message": "...", "line": 3, "column": 8}]
+    With first-party filtering active, JSON also includes:
+      "first_party_filter": {"vendor_globs": [...], "excluded_orphans": <int>}
+    When the walk skipped unsupported files, JSON also includes
+      "skipped_unsupported" (see SKIPPED UNSUPPORTED FILES)
 
 kgr query [PATH] [FLAGS]
   Query the graph without printing the full structure.
@@ -51,9 +66,14 @@ kgr query [PATH] [FLAGS]
     --heaviest             List files ranked by number of dependents
     -t, --top <n>          Show top N files for --heaviest (default: 20)
     --largest-cycle        Show the largest cycle
+    --first-party          Exclude vendored paths from --orphans and --heaviest
     -f, --format <fmt>     Output format: table (default), json
     -l, --lang <lang>      Filter by language
         --no-progress      Disable progress bar
+  JSON shape note: --orphans and --heaviest emit a bare array by default.
+  With first-party filtering active they switch to an object:
+    {"orphans": [...], "first_party_filter": {"vendor_globs": [...], "excluded_orphans": <int>}}
+    {"heaviest": [...], "first_party_filter": {"vendor_globs": [...], "excluded_files": <int>}}
 
 kgr symbols [PATH] [FLAGS]
   List all symbol definitions (functions, classes, methods) in the scanned files.
@@ -137,6 +157,9 @@ kgr orient [PATH] [FLAGS]
       "external_packages": ["serde"],
       "heaviest": [{"file": "src/lib.rs", "dependents": 4}]
     }
+  When the walk skipped unsupported files, JSON also includes
+  "skipped_unsupported" and text output adds a one-line summary
+  (see SKIPPED UNSUPPORTED FILES).
 
 kgr impact <NAME> [PATH] [FLAGS]
   Show the transitive blast radius of a symbol change.
@@ -191,10 +214,38 @@ OUTPUT FORMATS (kgr graph)
 --------------------------
   tree     ASCII tree rooted at entry points (default)
   json     Full DepGraph as JSON; includes files, edges, cycles, orphans,
-           roots, external_deps map
+           roots, external_deps map (plus skipped_unsupported when the walk
+           skipped unsupported files — see SKIPPED UNSUPPORTED FILES)
   table    Per-file summary: lang, local-in, local-out, ext count, status
   dot      Graphviz DOT — pipe to `dot -Tsvg` for a visual
   mermaid  Mermaid flowchart — paste into mermaid.live
+
+FIRST-PARTY FILTERING
+---------------------
+  `--first-party` (on graph, check, and query) excludes vendored paths from
+  orphan and heaviest summaries. Vendored files STAY in the graph — only the
+  summaries are filtered. Cycles and rule violations always report in full.
+  Default vendor globs: **/vendor/**, **/third_party/**, **/external/**
+  Config equivalents (.kgr.toml):
+    first_party  = true                  # same as passing --first-party
+    vendor_globs = ["third_party/**"]    # custom list REPLACES the defaults
+  The "first_party_filter" JSON key appears ONLY when the filter is active,
+  so default JSON output shapes are unchanged.
+
+SKIPPED UNSUPPORTED FILES
+-------------------------
+  Files in languages kgr cannot parse (Kotlin, Perl, Vue, ...) are skipped,
+  summarized on stderr, and reported in graph/check/orient JSON as
+    "skipped_unsupported": [{"group": "kt", "count": 4, "sample": ["a.kt", ...]}]
+  grouped by extension ("(no extension)" for extensionless text files),
+  largest group first, with a small bounded path sample per group. The key
+  appears ONLY when at least one unsupported file was skipped, so
+  fully-supported repos keep their JSON shapes unchanged. Obvious non-source
+  files (data/config, docs, lockfiles, images, archives, binaries) are never
+  reported. Files excluded by --lang are filtered, not skipped — a supported
+  language outside your filter never shows up here. Graph coverage is
+  partial whenever this key is present: fall back to grep for content inside
+  the listed files.
 
 .kgr.toml CONFIGURATION
 ------------------------
@@ -207,10 +258,16 @@ OUTPUT FORMATS (kgr graph)
   Severity "error" → exit 1; "warn" → exit 0 but printed to stderr.
   Use --update-baseline to suppress known violations during migration.
 
+  Top-level keys (selection): first_party = true, vendor_globs = [...]
+  (see FIRST-PARTY FILTERING above).
+
 RECOMMENDED AGENT WORKFLOW
 --------------------------
   1. Run `kgr check --format json --no-progress .` to get structured status.
      Parse "ok" to branch: if true, no action needed.
+     When batching check with other commands (or running under a harness
+     that aborts on nonzero exits), add --exit-zero: same JSON, exit 0 on
+     findings. Do NOT use `|| true` — it also masks real operational errors.
   2. Inspect "cycles" and "rule_violations" arrays for specific violations.
   3. Use `kgr query --who-imports <file>` or `--deps-of <file>` to trace
      dependency paths relevant to a violation.

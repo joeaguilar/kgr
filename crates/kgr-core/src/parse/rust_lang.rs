@@ -351,15 +351,20 @@ impl super::Parser for RustParser {
                 // A single `use` may pull in several paths via brace groups:
                 // `use a::b::{c, d};` -> a::b::c, a::b::d. Expand so each path
                 // resolves independently and render projections receive clean,
-                // brace-free import paths.
+                // brace-free import paths. Paths inside inline modules
+                // (`mod tests { use super::*; }`) are rebased against the
+                // inline-module chain so self/super point at the right module.
                 if capture.index == use_idx {
+                    let chain = inline_module_chain(node, source);
                     for path in expand_use_paths(&raw) {
+                        let path = rebase_use_path(&path, &chain);
                         if !seen.insert(path.clone()) {
                             continue;
                         }
                         let kind = if path.starts_with("crate::")
                             || path.starts_with("super::")
                             || path.starts_with("self::")
+                            || matches!(path.as_str(), "crate" | "super" | "self")
                         {
                             ImportKind::Local
                         } else {
@@ -383,7 +388,15 @@ impl super::Parser for RustParser {
                     if mod_item.child_by_field_name("body").is_some() {
                         continue;
                     }
-                    let raw = mod_path_attribute(mod_item, source).unwrap_or(raw);
+                    // `#[path = "..."]` wins outright. Otherwise a declaration
+                    // nested in inline modules (`mod outer { mod inner; }`)
+                    // targets the inline chain's directory: self::outer::inner.
+                    let chain = inline_module_chain(node, source);
+                    let raw = match mod_path_attribute(mod_item, source) {
+                        Some(path) => path,
+                        None if chain.is_empty() => raw,
+                        None => format!("self::{}::{raw}", chain.join("::")),
+                    };
                     if !seen.insert(raw.clone()) {
                         continue;
                     }
@@ -537,6 +550,77 @@ fn macro_is_exported(macro_def: tree_sitter::Node, source: &[u8]) -> bool {
         sibling = node.prev_sibling();
     }
     false
+}
+
+/// Names of the inline (`mod name { ... }`) module ancestors enclosing `node`,
+/// outermost first. File-backed `mod name;` declarations never enclose other
+/// items, so only mod_items WITH a body count.
+fn inline_module_chain(node: tree_sitter::Node, source: &[u8]) -> Vec<String> {
+    let mut chain = Vec::new();
+    let mut current = node.parent();
+    while let Some(ancestor) = current {
+        if ancestor.kind() == "mod_item" && ancestor.child_by_field_name("body").is_some() {
+            if let Some(name) = ancestor
+                .child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+            {
+                chain.push(name.to_string());
+            }
+        }
+        current = ancestor.parent();
+    }
+    chain.reverse();
+    chain
+}
+
+/// Rebase a use path written inside inline modules onto the file's own module.
+///
+/// Inside `mod tests { use super::*; }` the `super` names the FILE's module,
+/// not its parent — taking it literally would draw a phantom edge to the
+/// parent module file. Each leading `super::` pops one inline ancestor;
+/// whatever remains is re-expressed relative to the file (`self::...`), and
+/// only supers that outlive the chain keep pointing above the file.
+/// `crate::` and bare 2018-edition paths are absolute and pass through.
+fn rebase_use_path(path: &str, chain: &[String]) -> String {
+    if chain.is_empty() {
+        return path.to_string();
+    }
+    if let Some(rest) = path.strip_prefix("self::") {
+        return format!("self::{}::{rest}", chain.join("::"));
+    }
+    if path == "self" {
+        // `use super::x::{self}` style: names the innermost inline module,
+        // which still lives in this very file.
+        return format!("self::{}", chain.join("::"));
+    }
+
+    let mut supers = 0usize;
+    let mut rest = path;
+    while let Some(stripped) = rest.strip_prefix("super::") {
+        supers += 1;
+        rest = stripped;
+    }
+    if rest == "super" {
+        supers += 1;
+        rest = "";
+    }
+    if supers == 0 {
+        return path.to_string();
+    }
+
+    let popped = supers.min(chain.len());
+    let remaining_supers = supers - popped;
+    let mut parts: Vec<&str> = if remaining_supers > 0 {
+        vec!["super"; remaining_supers]
+    } else {
+        let mut kept: Vec<&str> = vec!["self"];
+        kept.extend(chain[..chain.len() - popped].iter().map(String::as_str));
+        kept
+    };
+    if !rest.is_empty() {
+        parts.push(rest);
+    }
+    parts.join("::")
 }
 
 /// Expand a Rust `use` argument into individual import paths, distributing the
@@ -752,6 +836,91 @@ extern crate log;
         let imports = parse("use crate::config::{self, Settings};");
         let raws: Vec<&str> = imports.iter().map(|i| i.raw.as_str()).collect();
         assert_eq!(raws, ["crate::config", "crate::config::Settings"]);
+    }
+
+    #[test]
+    fn test_module_super_glob_rebases_to_self() {
+        // `use super::*;` inside `mod tests` names THIS file's module, not the
+        // file's parent — it must not look like a parent-module dependency.
+        let imports = parse("mod tests {\n    use super::*;\n}\n");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].raw, "self::*");
+        assert_eq!(imports[0].kind, ImportKind::Local);
+    }
+
+    #[test]
+    fn test_module_super_items_rebase_to_self() {
+        let imports = parse("mod tests {\n    use super::{helper, Config};\n}\n");
+        let raws: Vec<&str> = imports.iter().map(|i| i.raw.as_str()).collect();
+        assert_eq!(raws, ["self::helper", "self::Config"]);
+        assert!(imports.iter().all(|i| i.kind == ImportKind::Local));
+    }
+
+    #[test]
+    fn nested_inline_modules_rebase_supers_one_level_each() {
+        let imports = parse(
+            r#"
+mod outer {
+    mod inner {
+        use super::super::Top;
+        use super::Mid;
+        use crate::cfg::Z;
+        use serde::Serialize;
+    }
+}
+"#,
+        );
+        let raws: Vec<&str> = imports.iter().map(|i| i.raw.as_str()).collect();
+        assert_eq!(
+            raws,
+            [
+                "self::Top",
+                "self::outer::Mid",
+                "crate::cfg::Z",
+                "serde::Serialize"
+            ]
+        );
+    }
+
+    #[test]
+    fn super_beyond_inline_chain_keeps_pointing_above_the_file() {
+        // One inline level, two supers: the second super escapes the file.
+        let imports = parse("mod tests {\n    use super::super::shared::util;\n}\n");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].raw, "super::shared::util");
+        assert_eq!(imports[0].kind, ImportKind::Local);
+    }
+
+    #[test]
+    fn self_paths_inside_inline_module_gain_the_chain_prefix() {
+        let imports = parse("mod outer {\n    use self::detail::Inner;\n}\n");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].raw, "self::outer::detail::Inner");
+        assert_eq!(imports[0].kind, ImportKind::Local);
+    }
+
+    #[test]
+    fn nested_mod_declaration_targets_the_inline_chain_dir() {
+        let imports = parse("mod outer {\n    mod inner;\n}\n");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].raw, "self::outer::inner");
+        assert_eq!(imports[0].kind, ImportKind::Local);
+    }
+
+    #[test]
+    fn glob_reexport_keeps_trailing_star_segment() {
+        let imports = parse("pub use crate::models::*;\n");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].raw, "crate::models::*");
+        assert_eq!(imports[0].kind, ImportKind::Local);
+    }
+
+    #[test]
+    fn pub_use_reexports_are_captured_like_plain_use() {
+        let imports = parse("pub use crate::a::Thing;\npub use super::b::Other;\n");
+        let raws: Vec<&str> = imports.iter().map(|i| i.raw.as_str()).collect();
+        assert_eq!(raws, ["crate::a::Thing", "super::b::Other"]);
+        assert!(imports.iter().all(|i| i.kind == ImportKind::Local));
     }
 
     // ── Symbol extraction tests ──────────────────────────────────────────

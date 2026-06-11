@@ -313,5 +313,6 @@ expression: stdout
   "roots": [
     "src/main.rs"
   ],
+  "structural_entries": [],
   "test_entries": []
 }

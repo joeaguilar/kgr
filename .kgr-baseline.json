@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "cycles": [
+    [
+      "kgr-core/src/parse/bash.rs",
+      "kgr-core/src/parse/mod.rs",
+      "kgr-core/src/parse/zig.rs",
+      "kgr-core/src/parse/typescript.rs",
+      "kgr-core/src/parse/swift.rs",
+      "kgr-core/src/parse/scala.rs",
+      "kgr-core/src/parse/rust_lang.rs",
+      "kgr-core/src/parse/ruby.rs",
+      "kgr-core/src/parse/python.rs",
+      "kgr-core/src/parse/php.rs",
+      "kgr-core/src/parse/objc.rs",
+      "kgr-core/src/parse/lua.rs",
+      "kgr-core/src/parse/javascript.rs",
+      "kgr-core/src/parse/java.rs",
+      "kgr-core/src/parse/haskell.rs",
+      "kgr-core/src/parse/go.rs",
+      "kgr-core/src/parse/elixir.rs",
+      "kgr-core/src/parse/csharp.rs",
+      "kgr-core/src/parse/cpp.rs",
+      "kgr-core/src/parse/c.rs"
+    ],
+    [
+      "kgr/src/baseline.rs",
+      "kgr/src/rules.rs",
+      "kgr/src/main.rs",
+      "kgr/src/config.rs"
+    ],
+    [
+      "kgr/src/render/json.rs",
+      "kgr/src/render/mod.rs",
+      "kgr/src/render/tree.rs",
+      "kgr/src/render/table.rs"
+    ]
+  ],
+  "rule_violations": []
+}

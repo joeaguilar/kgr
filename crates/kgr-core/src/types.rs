@@ -143,6 +143,16 @@ pub struct ParseError {
     pub span: Span,
 }
 
+/// A file that has no graph edges but is loaded by build-tool convention
+/// rather than by imports (e.g. Cargo targets like `build.rs` or
+/// `src/bin/*.rs`). These are reported separately from `orphans` so agents
+/// can tell "structurally loaded" apart from "actually dead".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StructuralEntry {
+    pub path: PathBuf,
+    pub reason: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DepGraph {
     pub root: PathBuf,
@@ -152,4 +162,6 @@ pub struct DepGraph {
     pub roots: Vec<PathBuf>,
     pub orphans: Vec<PathBuf>,
     pub test_entries: Vec<PathBuf>,
+    #[serde(default)]
+    pub structural_entries: Vec<StructuralEntry>,
 }

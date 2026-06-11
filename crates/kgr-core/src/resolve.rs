@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
 use crate::types::{FileNode, ImportKind, Lang};
@@ -18,24 +18,34 @@ struct TsPathAlias {
 pub struct Resolver {
     known_files: HashSet<PathBuf>,
     rust_declared_modules: HashSet<PathBuf>,
-    #[expect(dead_code, reason = "root stored for future relative resolution")]
-    root: PathBuf,
+    /// `crate::` source base per Rust source directory, precomputed in `new`
+    /// (the Cargo.toml probes hit the filesystem; see `derive_crate_src_base`).
+    rust_crate_bases: HashMap<PathBuf, PathBuf>,
     tsconfig_paths: Vec<TsPathAlias>,
     go_module: Option<String>,
+    /// Owned copy of the scan root, kept for on-the-fly crate-base derivation
+    /// when `crate_src_base` is asked about a file outside the scanned set.
+    root: PathBuf,
 }
 
 impl Resolver {
-    pub fn new(root: PathBuf, files: &[FileNode]) -> Self {
+    /// Build a resolver for the files discovered under `root` (the scan
+    /// root). `tsconfig.json` and `go.mod` are loaded from `root`, NOT the
+    /// process CWD, so scanning a directory other than the CWD picks up that
+    /// directory's path aliases and module path.
+    pub fn new(root: &Path, files: &[FileNode]) -> Self {
         let known_files: HashSet<PathBuf> = files.iter().map(|f| f.path.clone()).collect();
         let rust_declared_modules = collect_rust_declared_modules(&known_files, files);
-        let tsconfig_paths = load_tsconfig_paths(&root);
-        let go_module = load_go_module(&root);
+        let rust_crate_bases = compute_rust_crate_bases(root, files);
+        let tsconfig_paths = load_tsconfig_paths(root);
+        let go_module = load_go_module(root);
         Self {
             known_files,
             rust_declared_modules,
-            root,
+            rust_crate_bases,
             tsconfig_paths,
             go_module,
+            root: root.to_path_buf(),
         }
     }
 
@@ -45,6 +55,17 @@ impl Resolver {
             let file_path = file.path.clone();
             for import in file.imports.iter_mut() {
                 import.resolved = self.resolve(&import.raw, &file_path, lang, import.kind);
+                if lang == Lang::Rust && import.resolved.as_deref() == Some(file_path.as_path()) {
+                    // Rust same-file reference: `use self::Item;`, a test-module
+                    // `use super::*;` (rebased to `self::*` by the parser), or a
+                    // crate-absolute path to the importing file's own module. It
+                    // names items in this very file, so there is no dependency
+                    // edge and it is never an external package — keep it Local
+                    // and unresolved instead of surfacing it as External.
+                    import.resolved = None;
+                    import.kind = ImportKind::Local;
+                    continue;
+                }
                 if import.resolved.is_some() {
                     // A resolved import is upgraded to Local — EXCEPT when the
                     // parser classified it as System (C/C++/ObjC angle
@@ -328,6 +349,24 @@ impl Resolver {
             return self.known_files.contains(&target).then_some(target);
         }
 
+        // Keyword-only paths: `use crate as me;` and group-self members
+        // (`use super::{self}` rebased to `self` by the parser) name a module
+        // file directly. They must not fall through to the single-segment
+        // branches below, which would look for a literal `crate.rs`.
+        match raw {
+            "crate" => return self.crate_root_file(from),
+            // Same-file reference; resolve_all clears it without an edge.
+            "self" => return Some(from.to_path_buf()),
+            "super" => {
+                let dir = module_dir(from)
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_default();
+                return self.module_owner_file(&dir);
+            }
+            _ => {}
+        }
+
         // `mod foo;` — a submodule of the current file's module. From
         // mod.rs/lib.rs/main.rs it's a sibling (`foo.rs`); from `bar.rs` it
         // nests under `bar/`. The module dir must win: rustc only accepts
@@ -339,7 +378,7 @@ impl Resolver {
             if kind == ImportKind::Local {
                 return resolve_rust_mod_declaration(&self.known_files, raw, from);
             }
-            let resolved = self.try_module(&crate_src_base(from), &[raw])?;
+            let resolved = self.try_module(&self.crate_src_base(from), &[raw])?;
             return self
                 .rust_declared_modules
                 .contains(&resolved)
@@ -347,14 +386,31 @@ impl Resolver {
         }
 
         // Resolve the base directory and remaining path from the leading
-        // qualifier. `crate::` is anchored at the owning crate's `src/` root
-        // (NOT a hardcoded `src/` off the scan root, so workspaces resolve);
-        // `self::`/`super::` are relative to the current module.
-        let (base, rest, require_declared_module): (PathBuf, &str, bool) =
+        // qualifier. `crate::` is anchored at the owning crate's source base
+        // (the nearest `src/` ancestor, else the nearest ancestor with a
+        // Cargo.toml on disk — NOT a hardcoded `src/` off the scan root, so
+        // workspaces and lib-at-root layouts resolve; see
+        // `derive_crate_src_base`); `self::`/`super::` are relative to the
+        // current module.
+        //
+        // Each qualifier also carries an ANCHOR file: the module file the
+        // qualifier itself names. When the remaining segments never match a
+        // module FILE, the path names an item defined in — or re-exported
+        // by — that anchor module (`use crate::Config;` -> lib.rs barrel,
+        // `use super::helper;` -> the parent's mod.rs), so the anchor is the
+        // real file-level dependency. Bare 2018-edition paths get no anchor:
+        // an unresolved bare path is an external crate, not the crate root.
+        let (base, rest, require_declared_module, anchor): (PathBuf, &str, bool, Option<PathBuf>) =
             if let Some(r) = raw.strip_prefix("crate::") {
-                (crate_src_base(from), r, false)
+                (
+                    self.crate_src_base(from),
+                    r,
+                    false,
+                    self.crate_root_file(from),
+                )
             } else if let Some(r) = raw.strip_prefix("self::") {
-                (module_dir(from), r, false)
+                // Self-anchor = the importing file; resolve_all clears it.
+                (module_dir(from), r, false, Some(from.to_path_buf()))
             } else if raw.starts_with("super::") {
                 let mut dir = module_dir(from);
                 let mut r = raw;
@@ -362,25 +418,83 @@ impl Resolver {
                     dir = dir.parent().map(Path::to_path_buf).unwrap_or_default();
                     r = stripped;
                 }
-                (dir, r, false)
+                let anchor = self.module_owner_file(&dir);
+                (dir, r, false, anchor)
             } else {
                 // Bare 2018-edition path import of a crate-local module, e.g.
                 // `use cli::Foo;` at the crate root. A file-name collision with
                 // an external crate is not enough: the shortened module target
                 // must also come from a parsed `mod` declaration.
-                (crate_src_base(from), raw, true)
+                (self.crate_src_base(from), raw, true, None)
             };
 
-        if rest.split("::").any(|s| s == "*") {
+        // A trailing glob re-exports the named module's items: the dependency
+        // is the module itself (`pub use crate::models::*;` -> models). Globs
+        // anywhere else are not valid Rust.
+        let mut segments: Vec<&str> = rest.split("::").filter(|s| !s.is_empty()).collect();
+        if segments.last() == Some(&"*") {
+            segments.pop();
+        }
+        if segments.contains(&"*") {
             return None;
         }
 
-        let segments: Vec<&str> = rest.split("::").filter(|s| !s.is_empty()).collect();
-        let resolved = self.try_module(&base, &segments)?;
+        let resolved = self.try_module(&base, &segments).or(anchor)?;
         if require_declared_module && !self.rust_declared_modules.contains(&resolved) {
             return None;
         }
         Some(resolved)
+    }
+
+    /// The directory `crate::` paths resolve under for the crate owning
+    /// `from` (see `derive_crate_src_base` for the heuristic). Precomputed
+    /// per source directory in `new`; files outside the scanned set (possible
+    /// only for direct programmatic calls) are derived on the fly.
+    fn crate_src_base(&self, from: &Path) -> PathBuf {
+        let dir = from.parent().unwrap_or(Path::new(""));
+        if let Some(base) = self.rust_crate_bases.get(dir) {
+            return base.clone();
+        }
+        derive_crate_src_base(&self.root, from, &mut HashMap::new())
+    }
+
+    /// The crate root file owning `from`: `lib.rs` (the module-defining root
+    /// when both targets exist) or `main.rs` inside the crate's source base.
+    fn crate_root_file(&self, from: &Path) -> Option<PathBuf> {
+        let base = self.crate_src_base(from);
+        for name in ["lib.rs", "main.rs"] {
+            let candidate = base.join(name);
+            if self.known_files.contains(&candidate) {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
+    /// The file that DEFINES the module whose children live in `dir`:
+    /// `dir/mod.rs`, the modern sibling `<dir>.rs`, or — when `dir` is a
+    /// crate source root — `lib.rs`/`main.rs`.
+    fn module_owner_file(&self, dir: &Path) -> Option<PathBuf> {
+        let as_mod = dir.join("mod.rs");
+        if self.known_files.contains(&as_mod) {
+            return Some(as_mod);
+        }
+        if let Some(name) = dir.file_name().and_then(|n| n.to_str()) {
+            let sibling = dir
+                .parent()
+                .unwrap_or(Path::new(""))
+                .join(format!("{name}.rs"));
+            if self.known_files.contains(&sibling) {
+                return Some(sibling);
+            }
+        }
+        for name in ["lib.rs", "main.rs"] {
+            let candidate = dir.join(name);
+            if self.known_files.contains(&candidate) {
+                return Some(candidate);
+            }
+        }
+        None
     }
 
     /// Resolve a `::`-separated module path under `base` to a file. The final
@@ -562,6 +676,11 @@ fn collect_rust_declared_modules(
             if import.kind != ImportKind::Local || import.raw.contains("::") {
                 continue;
             }
+            // Keyword-only use paths (`use crate as me;`) are Local without
+            // `::` but are NOT mod declarations.
+            if matches!(import.raw.as_str(), "crate" | "self" | "super") {
+                continue;
+            }
             if let Some(target) = resolve_rust_mod_declaration(known_files, &import.raw, &file.path)
             {
                 declared.insert(target);
@@ -609,11 +728,42 @@ fn try_module_path(
     None
 }
 
-/// The crate's `src` directory for a root-relative file path: the nearest
-/// ancestor directory named `src`. Falls back to the repo root, so both
-/// single-crate (`src/main.rs`) and workspace (`crates/foo/src/lib.rs`)
-/// layouts resolve `crate::` imports correctly.
-fn crate_src_base(from: &Path) -> PathBuf {
+/// Precompute the `crate::` source base for every directory containing a
+/// parsed Rust file. The Cargo.toml probes in `derive_crate_src_base` hit
+/// the filesystem, so they run once per directory here (with a shared
+/// manifest-probe memo) instead of once per resolved import.
+fn compute_rust_crate_bases(root: &Path, files: &[FileNode]) -> HashMap<PathBuf, PathBuf> {
+    let mut bases: HashMap<PathBuf, PathBuf> = HashMap::new();
+    let mut has_manifest: HashMap<PathBuf, bool> = HashMap::new();
+    for file in files.iter().filter(|f| f.lang == Lang::Rust) {
+        let dir = file.path.parent().unwrap_or(Path::new("")).to_path_buf();
+        bases
+            .entry(dir)
+            .or_insert_with(|| derive_crate_src_base(root, &file.path, &mut has_manifest));
+    }
+    bases
+}
+
+/// Derive the crate source base — the directory `crate::` paths resolve
+/// under, i.e. the one holding the crate root file — for a scan-root-relative
+/// file path. Heuristic, in priority order:
+///
+/// 1. The nearest ancestor directory literally named `src`: the standard
+///    Cargo layout (`src/main.rs`, `crates/foo/src/lib.rs`). Pure path
+///    matching, no filesystem access.
+/// 2. Otherwise the nearest ancestor directory whose `Cargo.toml` exists on
+///    disk (probed relative to the scan root, NOT the process CWD — the same
+///    discipline as tsconfig.json/go.mod loading). This anchors lib-at-root
+///    crates and other `[lib]/[[bin]] path = ...` layouts where modules sit
+///    beside the manifest, including workspace members without a `src/` dir.
+/// 3. Otherwise the scan root itself. This is a guess — `crate::` imports
+///    from such a file usually resolve to nothing — so it is logged at debug
+///    level to surface during dogfooding instead of failing silently.
+fn derive_crate_src_base(
+    root: &Path,
+    from: &Path,
+    has_manifest: &mut HashMap<PathBuf, bool>,
+) -> PathBuf {
     let mut current = from.parent();
     while let Some(dir) = current {
         if dir.file_name().and_then(|n| n.to_str()) == Some("src") {
@@ -621,6 +771,28 @@ fn crate_src_base(from: &Path) -> PathBuf {
         }
         current = dir.parent();
     }
+
+    let mut current = from.parent();
+    while let Some(dir) = current {
+        let found = *has_manifest
+            .entry(dir.to_path_buf())
+            .or_insert_with(|| root.join(dir).join("Cargo.toml").is_file());
+        if found {
+            tracing::debug!(
+                "no `src` ancestor for '{}'; anchoring crate:: at manifest dir '{}' (Cargo.toml)",
+                from.display(),
+                dir.display()
+            );
+            return dir.to_path_buf();
+        }
+        current = dir.parent();
+    }
+
+    tracing::debug!(
+        "no `src` ancestor or ancestor Cargo.toml for '{}'; \
+         falling back to the scan root for crate:: resolution",
+        from.display()
+    );
     PathBuf::new()
 }
 
@@ -828,7 +1000,7 @@ mod tests {
     }
 
     fn resolver_from_nodes(nodes: &[FileNode]) -> Resolver {
-        Resolver::new(PathBuf::new(), nodes)
+        Resolver::new(Path::new(""), nodes)
     }
 
     fn resolver(files: &[&str]) -> Resolver {
@@ -874,6 +1046,124 @@ mod tests {
             "src/main.rs",
         );
         assert_eq!(got, Some(PathBuf::from("src/config.rs")));
+    }
+
+    /// Unique on-disk root containing Cargo.toml manifests at the given
+    /// subdirectories ("" = the root itself) — same precedent as
+    /// `tsconfig_root` / `go_mod_root` below.
+    fn cargo_root(tag: &str, manifest_dirs: &[&str]) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("kgr-resolve-cargo-{}-{}", tag, std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for sub in manifest_dirs {
+            let manifest_dir = dir.join(sub);
+            std::fs::create_dir_all(&manifest_dir).unwrap();
+            std::fs::write(manifest_dir.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn crate_import_resolves_in_lib_at_root_workspace_member() {
+        // No `src/` dir anywhere: the member crate keeps lib.rs beside its
+        // Cargo.toml. `crate::` must anchor at the NEAREST manifest dir (the
+        // member), not the workspace root and not the scan-root fallback.
+        let root = cargo_root("member", &["", "member"]);
+        let nodes: Vec<FileNode> = ["member/lib.rs", "member/util.rs"]
+            .iter()
+            .map(|p| node(p))
+            .collect();
+        let r = Resolver::new(&root, &nodes);
+        // Bases are precomputed in `new`; resolution itself needs no disk.
+        std::fs::remove_dir_all(&root).ok();
+
+        let got = r.resolve_rust(
+            "crate::util",
+            Path::new("member/lib.rs"),
+            ImportKind::External,
+        );
+        assert_eq!(got, Some(PathBuf::from("member/util.rs")));
+    }
+
+    #[test]
+    fn crate_import_resolves_when_manifest_is_at_the_scan_root() {
+        // Single lib-at-root crate scanned at its own root: the manifest dir
+        // IS the scan root, so `crate::` anchors there intentionally.
+        let root = cargo_root("rootlib", &[""]);
+        let nodes: Vec<FileNode> = ["lib.rs", "util.rs"].iter().map(|p| node(p)).collect();
+        let r = Resolver::new(&root, &nodes);
+        std::fs::remove_dir_all(&root).ok();
+
+        let got = r.resolve_rust("crate::util", Path::new("lib.rs"), ImportKind::External);
+        assert_eq!(got, Some(PathBuf::from("util.rs")));
+    }
+
+    #[test]
+    fn crate_item_anchor_holds_in_lib_at_root_layout() {
+        // Anchor-file contract in a manifest-derived layout: a `crate::` item
+        // path whose segments match no module file anchors to the crate root
+        // lib.rs found beside the Cargo.toml.
+        let root = cargo_root("anchor", &["member"]);
+        let nodes: Vec<FileNode> = ["member/lib.rs", "member/util.rs"]
+            .iter()
+            .map(|p| node(p))
+            .collect();
+        let r = Resolver::new(&root, &nodes);
+        std::fs::remove_dir_all(&root).ok();
+
+        let got = r.resolve_rust(
+            "crate::Config",
+            Path::new("member/util.rs"),
+            ImportKind::External,
+        );
+        assert_eq!(got, Some(PathBuf::from("member/lib.rs")));
+    }
+
+    #[test]
+    fn crate_import_without_src_or_manifest_falls_back_to_scan_root() {
+        // Documented last resort: no `src` ancestor and no Cargo.toml on
+        // disk. `crate::` re-anchors at the scan root (logged at debug
+        // level), so the member-local target is NOT found.
+        let root = cargo_root("bare", &[]);
+        let nodes: Vec<FileNode> = ["member/lib.rs", "member/util.rs"]
+            .iter()
+            .map(|p| node(p))
+            .collect();
+        let r = Resolver::new(&root, &nodes);
+        std::fs::remove_dir_all(&root).ok();
+
+        let got = r.resolve_rust(
+            "crate::util",
+            Path::new("member/lib.rs"),
+            ImportKind::External,
+        );
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn src_ancestor_wins_without_filesystem_probes() {
+        // Standard layouts derive purely from the path: a nonexistent root
+        // proves no Cargo.toml probe runs (none is memoized either).
+        let mut memo = HashMap::new();
+        let base = derive_crate_src_base(
+            Path::new("/nonexistent-kgr-test-root"),
+            Path::new("crates/foo/src/bar/baz.rs"),
+            &mut memo,
+        );
+        assert_eq!(base, PathBuf::from("crates/foo/src"));
+        assert!(memo.is_empty());
+    }
+
+    #[test]
+    fn crate_src_base_for_unscanned_file_is_derived_on_the_fly() {
+        // `from` outside the scanned set has no precomputed entry; the
+        // src-name fast path still anchors it without touching the disk.
+        let got = resolve_rust(
+            &["elsewhere/src/lib.rs", "elsewhere/src/util.rs"],
+            "crate::util",
+            "elsewhere/src/sub/nested.rs",
+        );
+        assert_eq!(got, Some(PathBuf::from("elsewhere/src/util.rs")));
     }
 
     #[test]
@@ -1020,20 +1310,168 @@ mod tests {
     }
 
     #[test]
-    fn rust_glob_imports_intentionally_resolve_to_none() {
+    fn rust_glob_imports_resolve_to_the_named_module() {
+        // `use super::*;` at file top level pulls in the parent module's
+        // items: the dependency is the parent's defining file.
         let super_glob = resolve_rust(
             &["src/a/mod.rs", "src/a/b.rs", "src/a/c.rs"],
             "super::*",
             "src/a/b.rs",
         );
-        assert_eq!(super_glob, None);
+        assert_eq!(super_glob, Some(PathBuf::from("src/a/mod.rs")));
 
+        // `pub use crate::foo::*;` — the re-export barrel depends on foo.
         let crate_glob = resolve_rust(
             &["src/lib.rs", "src/foo.rs", "src/foo/bar.rs"],
             "crate::foo::*",
             "src/lib.rs",
         );
-        assert_eq!(crate_glob, None);
+        assert_eq!(crate_glob, Some(PathBuf::from("src/foo.rs")));
+    }
+
+    #[test]
+    fn bare_glob_reexport_resolves_only_through_declared_modules() {
+        // `pub use cli::*;` in main.rs with `mod cli;` parsed — the barrel
+        // gets an out-edge. The same shape against an undeclared name (an
+        // external crate glob) must stay unresolved.
+        let nodes = vec![
+            node_with_imports("src/main.rs", vec![rust_import("cli", ImportKind::Local)]),
+            node("src/cli.rs"),
+            node("src/time.rs"),
+        ];
+        let r = resolver_from_nodes(&nodes);
+        assert_eq!(
+            r.resolve_rust("cli::*", Path::new("src/main.rs"), ImportKind::Local),
+            Some(PathBuf::from("src/cli.rs"))
+        );
+        assert_eq!(
+            r.resolve_rust("time::*", Path::new("src/main.rs"), ImportKind::External),
+            None
+        );
+    }
+
+    #[test]
+    fn crate_item_path_anchors_to_the_crate_root_file() {
+        // `use crate::Config;` — Config is an item defined in (or re-exported
+        // by) lib.rs, so lib.rs is the file-level dependency.
+        let got = resolve_rust(&["src/lib.rs", "src/foo.rs"], "crate::Config", "src/foo.rs");
+        assert_eq!(got, Some(PathBuf::from("src/lib.rs")));
+
+        // Workspace layout anchors at the owning crate's root, not the scan root.
+        let workspace = resolve_rust(
+            &["crates/core/src/lib.rs", "crates/core/src/foo.rs"],
+            "crate::Config",
+            "crates/core/src/foo.rs",
+        );
+        assert_eq!(workspace, Some(PathBuf::from("crates/core/src/lib.rs")));
+
+        // Bin-only crate: the root is main.rs.
+        let bin = resolve_rust(
+            &["src/main.rs", "src/foo.rs"],
+            "crate::Config",
+            "src/foo.rs",
+        );
+        assert_eq!(bin, Some(PathBuf::from("src/main.rs")));
+    }
+
+    #[test]
+    fn super_item_path_anchors_to_the_parent_module_file() {
+        // `use super::helper;` where helper is an item, not a submodule file:
+        // the dependency is the parent module's defining file.
+        let mod_rs = resolve_rust(
+            &["src/a/mod.rs", "src/a/b.rs"],
+            "super::helper",
+            "src/a/b.rs",
+        );
+        assert_eq!(mod_rs, Some(PathBuf::from("src/a/mod.rs")));
+
+        // Modern layout: the parent module is the sibling a.rs.
+        let sibling = resolve_rust(&["src/a.rs", "src/a/b.rs"], "super::helper", "src/a/b.rs");
+        assert_eq!(sibling, Some(PathBuf::from("src/a.rs")));
+
+        // One super from a top-level module lands on the crate root.
+        let root = resolve_rust(&["src/lib.rs", "src/b.rs"], "super::helper", "src/b.rs");
+        assert_eq!(root, Some(PathBuf::from("src/lib.rs")));
+    }
+
+    #[test]
+    fn self_item_path_resolves_to_the_importing_file_itself() {
+        // resolve_all clears these (no self-loop edge); resolution-level they
+        // identify the importing file.
+        let got = resolve_rust(&["src/lib.rs", "src/foo.rs"], "self::Item", "src/foo.rs");
+        assert_eq!(got, Some(PathBuf::from("src/foo.rs")));
+
+        let glob = resolve_rust(&["src/lib.rs", "src/foo.rs"], "self::*", "src/foo.rs");
+        assert_eq!(glob, Some(PathBuf::from("src/foo.rs")));
+    }
+
+    #[test]
+    fn keyword_only_paths_resolve_to_module_files() {
+        // `use crate as me;`
+        let krate = resolve_rust(&["src/lib.rs", "src/foo.rs"], "crate", "src/foo.rs");
+        assert_eq!(krate, Some(PathBuf::from("src/lib.rs")));
+
+        // `use super::{self};` at file top level.
+        let sup = resolve_rust(&["src/a/mod.rs", "src/a/b.rs"], "super", "src/a/b.rs");
+        assert_eq!(sup, Some(PathBuf::from("src/a/mod.rs")));
+
+        // Keyword raws never feed the declared-modules set, so a stray
+        // `crate.rs` file is not treated as a declared module target.
+        let nodes = vec![
+            node_with_imports("src/main.rs", vec![rust_import("crate", ImportKind::Local)]),
+            node("src/crate.rs"),
+        ];
+        let r = resolver_from_nodes(&nodes);
+        assert!(!r
+            .rust_declared_modules
+            .contains(&PathBuf::from("src/crate.rs")));
+    }
+
+    #[test]
+    fn full_resolve_keeps_rust_self_reference_local_and_unresolved() {
+        // A test-module `use super::*;` arrives rebased as `self::*`. It must
+        // not create an edge, a self-loop cycle, or an External entry.
+        let mut files = vec![
+            FileNode {
+                path: PathBuf::from("src/foo.rs"),
+                lang: Lang::Rust,
+                imports: vec![
+                    rust_import("self::*", ImportKind::Local),
+                    rust_import("self::helper", ImportKind::Local),
+                ],
+                symbols: Vec::new(),
+                calls: Vec::new(),
+            },
+            node("src/lib.rs"),
+        ];
+        let r = resolver_from_nodes(&files);
+        r.resolve_all(&mut files);
+
+        for import in &files[0].imports {
+            assert_eq!(import.kind, ImportKind::Local, "{} flipped", import.raw);
+            assert_eq!(import.resolved, None, "{} resolved", import.raw);
+        }
+    }
+
+    #[test]
+    fn full_resolve_crate_item_in_crate_root_itself_creates_no_self_loop() {
+        // lib.rs referring to its own items via `use crate::Item;` (common
+        // with inline modules) must not become a size-one cycle.
+        let mut files = vec![
+            FileNode {
+                path: PathBuf::from("src/lib.rs"),
+                lang: Lang::Rust,
+                imports: vec![rust_import("crate::Item", ImportKind::Local)],
+                symbols: Vec::new(),
+                calls: Vec::new(),
+            },
+            node("src/util.rs"),
+        ];
+        let r = resolver_from_nodes(&files);
+        r.resolve_all(&mut files);
+
+        assert_eq!(files[0].imports[0].kind, ImportKind::Local);
+        assert_eq!(files[0].imports[0].resolved, None);
     }
 
     #[test]
@@ -1348,7 +1786,7 @@ mod tests {
             r#"{"compilerOptions": {"baseUrl": "src", "paths": {"@lib/*": ["lib/*"]}}}"#,
         );
         let nodes: Vec<FileNode> = vec![node("src/lib/util.ts")];
-        let r = Resolver::new(root, &nodes);
+        let r = Resolver::new(&root, &nodes);
         let got = r.resolve_tsconfig_path("@lib/util", TS_EXTS);
         assert_eq!(got, Some(PathBuf::from("src/lib/util.ts")));
     }
@@ -1361,7 +1799,7 @@ mod tests {
             r#"{"compilerOptions": {"baseUrl": "./", "paths": {"@lib/*": ["src/lib/*"]}}}"#,
         );
         let nodes: Vec<FileNode> = vec![node("src/lib/util.ts")];
-        let r = Resolver::new(root, &nodes);
+        let r = Resolver::new(&root, &nodes);
         let got = r.resolve_tsconfig_path("@lib/util", TS_EXTS);
         assert_eq!(got, Some(PathBuf::from("src/lib/util.ts")));
     }
@@ -1781,7 +2219,7 @@ mod tests {
             .iter()
             .map(|p| node(p))
             .collect();
-        let r = Resolver::new(root.clone(), &nodes);
+        let r = Resolver::new(&root, &nodes);
         std::fs::remove_dir_all(&root).ok();
 
         let got = r.resolve_go(
@@ -1801,7 +2239,7 @@ mod tests {
             .iter()
             .map(|p| node(p))
             .collect();
-        let r = Resolver::new(root.clone(), &nodes);
+        let r = Resolver::new(&root, &nodes);
         std::fs::remove_dir_all(&root).ok();
 
         let mut files = vec![FileNode {

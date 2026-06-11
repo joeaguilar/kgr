@@ -5,7 +5,7 @@ use petgraph::algo::tarjan_scc;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::Direction;
 
-use crate::types::{DepEdge, DepGraph, FileNode, ImportKind, Lang};
+use crate::types::{DepEdge, DepGraph, FileNode, ImportKind, Lang, StructuralEntry};
 
 fn is_test_entry(path: &Path) -> bool {
     const TEST_DIRS: &[&str] = &["tests", "test", "spec", "specs", "__tests__", "__mocks__"];
@@ -431,6 +431,89 @@ fn js_ts_structural_entries(root: &Path, files: &[FileNode]) -> HashSet<PathBuf>
     entries
 }
 
+/// If `path` (relative to `root`) sits where Cargo loads a target by
+/// convention, return the stable classification reason. Detection is purely
+/// path-pattern based plus a filesystem check that the matching crate
+/// directory actually contains a `Cargo.toml` — no resolver involvement.
+fn rust_cargo_target_reason(root: &Path, path: &Path) -> Option<&'static str> {
+    let comps: Vec<&str> = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(s) => s.to_str(),
+            _ => None,
+        })
+        .collect();
+    let n = comps.len();
+    let file = *comps.last()?;
+
+    // True when the crate dir `up` components above the file holds a manifest.
+    let has_manifest = |up: usize| -> bool {
+        let mut dir = root.to_path_buf();
+        for component in &comps[..n - up] {
+            dir.push(component);
+        }
+        dir.join("Cargo.toml").is_file()
+    };
+
+    // <crate>/build.rs
+    if file == "build.rs" && has_manifest(1) {
+        return Some("cargo build script");
+    }
+
+    // <crate>/src/main.rs and <crate>/src/lib.rs (covers standalone crates
+    // and workspace member roots alike).
+    if n >= 2 && comps[n - 2] == "src" && has_manifest(2) {
+        if file == "main.rs" {
+            return Some("cargo binary target");
+        }
+        if file == "lib.rs" {
+            return Some("cargo library target");
+        }
+    }
+
+    // <crate>/src/bin/<name>.rs
+    if n >= 3 && comps[n - 3] == "src" && comps[n - 2] == "bin" && has_manifest(3) {
+        return Some("cargo binary target");
+    }
+    // <crate>/src/bin/<name>/main.rs
+    if n >= 4
+        && comps[n - 4] == "src"
+        && comps[n - 3] == "bin"
+        && file == "main.rs"
+        && has_manifest(4)
+    {
+        return Some("cargo binary target");
+    }
+
+    // <crate>/{examples,benches,tests}/<name>.rs and .../<name>/main.rs
+    for (dir, reason) in [
+        ("examples", "cargo example target"),
+        ("benches", "cargo bench target"),
+        ("tests", "cargo test target"),
+    ] {
+        if n >= 2 && comps[n - 2] == dir && has_manifest(2) {
+            return Some(reason);
+        }
+        if n >= 3 && comps[n - 3] == dir && file == "main.rs" && has_manifest(3) {
+            return Some(reason);
+        }
+    }
+
+    None
+}
+
+/// Rust files Cargo loads by convention (build scripts, binary/library
+/// roots, examples, benches, integration tests), mapped to a stable reason.
+fn rust_structural_entries(root: &Path, files: &[FileNode]) -> HashMap<PathBuf, &'static str> {
+    files
+        .iter()
+        .filter(|file| file.lang == Lang::Rust)
+        .filter_map(|file| {
+            rust_cargo_target_reason(root, &file.path).map(|reason| (file.path.clone(), reason))
+        })
+        .collect()
+}
+
 pub struct KGraph {
     inner: DiGraph<PathBuf, ImportKind>,
     node_index: HashMap<PathBuf, NodeIndex>,
@@ -570,11 +653,39 @@ impl KGraph {
         let cycles = self.cycles();
         let mut roots = self.roots();
         roots.sort();
-        let structural_entries = js_ts_structural_entries(&root, &files);
-        let mut orphans = self.orphans_excluding(&structural_entries);
+
+        let rust_targets = rust_structural_entries(&root, &files);
+        let mut suppressed = js_ts_structural_entries(&root, &files);
+        suppressed.extend(rust_targets.keys().cloned());
+
+        let mut orphans = self.orphans_excluding(&suppressed);
         orphans.sort();
-        let mut test_entries = self.test_entries();
+
+        // Cargo targets under tests/ get the more specific structural
+        // classification instead of the generic test-entry bucket.
+        let mut test_entries: Vec<PathBuf> = self
+            .test_entries()
+            .into_iter()
+            .filter(|path| !rust_targets.contains_key(path))
+            .collect();
         test_entries.sort();
+
+        // Like `test_entries`, only files that would otherwise be orphan
+        // candidates (isolated in the graph) are reported; convention-loaded
+        // files with real edges need no explanation.
+        let mut structural_entries: Vec<StructuralEntry> = rust_targets
+            .into_iter()
+            .filter(|(path, _)| {
+                self.node_index
+                    .get(path)
+                    .is_some_and(|&idx| self.is_isolated(idx))
+            })
+            .map(|(path, reason)| StructuralEntry {
+                path,
+                reason: reason.to_string(),
+            })
+            .collect();
+        structural_entries.sort_by(|a, b| a.path.cmp(&b.path));
 
         DepGraph {
             root,
@@ -584,6 +695,7 @@ impl KGraph {
             roots,
             orphans,
             test_entries,
+            structural_entries,
         }
     }
 
@@ -830,6 +942,67 @@ mod tests {
                 (PathBuf::from("src/d.rs"), 0),
             ]
         );
+    }
+
+    #[test]
+    fn cargo_target_patterns_classify_when_manifest_exists() {
+        // The kgr-core crate dir itself has a Cargo.toml, so it doubles as a
+        // real crate root for the manifest presence check.
+        let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+        let cases = [
+            ("build.rs", "cargo build script"),
+            ("src/main.rs", "cargo binary target"),
+            ("src/lib.rs", "cargo library target"),
+            ("src/bin/tool.rs", "cargo binary target"),
+            ("src/bin/tool/main.rs", "cargo binary target"),
+            ("examples/demo.rs", "cargo example target"),
+            ("examples/demo/main.rs", "cargo example target"),
+            ("benches/perf.rs", "cargo bench target"),
+            ("tests/smoke.rs", "cargo test target"),
+            ("tests/smoke/main.rs", "cargo test target"),
+        ];
+        for (path, reason) in cases {
+            assert_eq!(
+                rust_cargo_target_reason(&crate_root, Path::new(path)),
+                Some(reason),
+                "{path} should classify as a Cargo target"
+            );
+        }
+
+        // Plain modules and helper files are never Cargo targets.
+        for path in [
+            "src/util.rs",
+            "src/bin/tool/helper.rs",
+            "examples/demo/helper.rs",
+            "tests/common/mod.rs",
+        ] {
+            assert_eq!(
+                rust_cargo_target_reason(&crate_root, Path::new(path)),
+                None,
+                "{path} should stay an orphan candidate"
+            );
+        }
+    }
+
+    #[test]
+    fn cargo_target_patterns_need_a_manifest() {
+        // The shared fixtures tree has no Cargo.toml, so even perfectly
+        // conventional paths must not classify.
+        let no_manifest_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("tests/fixtures/rust/local_modules");
+
+        for path in ["build.rs", "src/main.rs", "src/lib.rs", "examples/demo.rs"] {
+            assert_eq!(
+                rust_cargo_target_reason(&no_manifest_root, Path::new(path)),
+                None,
+                "{path} without a Cargo.toml should not classify"
+            );
+        }
     }
 
     #[test]

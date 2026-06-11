@@ -103,6 +103,12 @@ enum Commands {
         #[arg(long)]
         show_external: bool,
 
+        /// Exclude vendored paths (vendor/, third_party/, external/ by
+        /// default; override with `vendor_globs` in .kgr.toml) from orphan
+        /// analysis. Files stay in the graph; only the summary is filtered.
+        #[arg(long)]
+        first_party: bool,
+
         /// Disable progress bar
         #[arg(long)]
         no_progress: bool,
@@ -134,6 +140,12 @@ enum Commands {
         #[arg(short, long)]
         lang: Option<Vec<String>>,
 
+        /// Exclude vendored paths (vendor/, third_party/, external/ by
+        /// default; override with `vendor_globs` in .kgr.toml) from orphan
+        /// analysis. Files stay in the graph; only the summary is filtered.
+        #[arg(long)]
+        first_party: bool,
+
         /// Disable progress bar
         #[arg(long)]
         no_progress: bool,
@@ -149,6 +161,13 @@ enum Commands {
         /// Also report tree-sitter parse errors (ERROR/MISSING nodes)
         #[arg(long)]
         syntax: bool,
+
+        /// Report-only mode: emit the same diagnostics but exit 0 even when
+        /// cycles or error-severity rule violations are found. Operational
+        /// failures (bad path, invalid format, broken config) still exit
+        /// nonzero.
+        #[arg(long)]
+        exit_zero: bool,
 
         /// Increase verbosity
         #[arg(short, long, action = clap::ArgAction::Count)]
@@ -206,6 +225,12 @@ enum Commands {
         /// List the largest cycle
         #[arg(long)]
         largest_cycle: bool,
+
+        /// Exclude vendored paths (vendor/, third_party/, external/ by
+        /// default; override with `vendor_globs` in .kgr.toml) from
+        /// --heaviest and --orphans results
+        #[arg(long)]
+        first_party: bool,
 
         /// Output format [default: table]
         #[arg(short, long)]
@@ -442,6 +467,7 @@ fn main() {
             lang,
             no_external,
             show_external,
+            first_party,
             no_progress,
             symbols,
             output,
@@ -454,6 +480,7 @@ fn main() {
                 &lang,
                 no_external,
                 show_external,
+                first_party,
                 no_progress,
                 symbols,
                 output.as_deref(),
@@ -463,10 +490,12 @@ fn main() {
             path,
             format,
             lang,
+            first_party,
             no_progress,
             update_baseline,
             baseline,
             syntax,
+            exit_zero,
             verbose,
         }) => {
             setup_tracing(verbose);
@@ -474,10 +503,12 @@ fn main() {
                 &path,
                 format.as_deref(),
                 &lang,
+                first_party,
                 no_progress,
                 update_baseline,
                 baseline.as_deref(),
                 syntax,
+                exit_zero,
             );
         }
         Some(Commands::Query {
@@ -490,6 +521,7 @@ fn main() {
             heaviest,
             top,
             largest_cycle,
+            first_party,
             format,
             lang,
             no_progress,
@@ -506,6 +538,7 @@ fn main() {
                 heaviest,
                 top,
                 largest_cycle,
+                first_party,
                 format.as_deref(),
                 &lang,
                 no_progress,
@@ -623,6 +656,7 @@ fn main() {
                 false,
                 false,
                 false,
+                false,
                 None,
             );
         }
@@ -671,23 +705,30 @@ fn resolve_scan_target(path: &Path) -> (PathBuf, Option<PathBuf>) {
 /// Discover source files for the scan target. For a single explicitly-named
 /// file, a clear error is printed and the process exits non-zero when the
 /// file cannot be analyzed (unsupported language, --lang mismatch, too big).
+///
+/// Returns the analyzable files plus the skipped-unsupported summary from
+/// the walk (always empty in single-file mode — the unsupported case exits
+/// with an explicit error there).
 fn discover_or_exit(
     root: &Path,
     single_file: Option<&Path>,
     lang: &Option<Vec<String>>,
     cfg: &config::Config,
-) -> Vec<walk::DiscoveredFile> {
+) -> (Vec<walk::DiscoveredFile>, Vec<walk::SkippedGroup>) {
     match single_file {
         Some(file) => {
             match walk::discover_single_file(root, file, lang, cfg.max_file_size_bytes()) {
-                Ok(f) => vec![f],
+                Ok(f) => (vec![f], Vec::new()),
                 Err(reason) => {
                     eprintln!("Error: cannot analyze '{}': {}", file.display(), reason);
                     process::exit(2);
                 }
             }
         }
-        None => walk::discover(root, lang, &cfg.exclude, cfg.max_file_size_bytes()),
+        None => {
+            let discovery = walk::discover(root, lang, &cfg.exclude, cfg.max_file_size_bytes());
+            (discovery.files, discovery.skipped_unsupported)
+        }
     }
 }
 
@@ -699,6 +740,49 @@ fn load_config_or_exit(root: &Path) -> config::Config {
             e
         );
         process::exit(2);
+    })
+}
+
+/// Build the compiled first-party filter when filtering is enabled (CLI
+/// `--first-party` OR config `first_party = true`); `None` keeps the
+/// default, unfiltered behavior. Invalid vendor globs warn and are
+/// skipped, mirroring exclude-glob handling in walk.rs.
+fn build_first_party_filter(
+    cli_first_party: bool,
+    cfg: &config::Config,
+) -> Option<config::FirstPartyFilter> {
+    if !config::resolve_first_party(cli_first_party, cfg.first_party) {
+        return None;
+    }
+    let (filter, warnings) =
+        config::FirstPartyFilter::compile(config::effective_vendor_globs(&cfg.vendor_globs));
+    for warning in warnings {
+        eprintln!("{warning}");
+    }
+    Some(filter)
+}
+
+/// Drop vendored paths from an orphan list, returning how many were
+/// excluded. First-party filtering composes with the test-entry and
+/// structural-entry suppression already applied during graph construction
+/// — it removes vendored paths from whatever orphans remain.
+fn filter_vendored_orphans(orphans: &mut Vec<PathBuf>, filter: &config::FirstPartyFilter) -> usize {
+    let before = orphans.len();
+    orphans.retain(|path| !filter.is_vendored(path));
+    before - orphans.len()
+}
+
+/// JSON object describing the applied first-party filtering. Attached to
+/// outputs only when the filter is active, so default output shapes stay
+/// byte-for-byte backwards compatible.
+fn first_party_filter_json(
+    filter: &config::FirstPartyFilter,
+    excluded_key: &str,
+    excluded: usize,
+) -> serde_json::Value {
+    serde_json::json!({
+        "vendor_globs": filter.globs(),
+        (excluded_key): excluded,
     })
 }
 
@@ -723,20 +807,38 @@ fn no_supported_files_message(root: &Path) -> String {
     )
 }
 
-fn exit_no_supported_files(root: &Path, format: &str) -> ! {
+fn exit_no_supported_files(root: &Path, format: &str, skipped: &[walk::SkippedGroup]) -> ! {
     let message = no_supported_files_message(root);
     eprintln!("{message}");
     if format == "json" {
         let mut stdout = std::io::stdout().lock();
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "ok": false,
             "error": "no supported source files found",
             "root": root.to_string_lossy(),
             "hint": "Check the path, --lang filter, and exclude settings.",
         });
+        if !skipped.is_empty() {
+            if let Some(obj) = payload.as_object_mut() {
+                obj.insert(
+                    "skipped_unsupported".to_string(),
+                    skipped_unsupported_json(skipped),
+                );
+            }
+        }
         write_json_line(&mut stdout, &payload);
     }
     process::exit(2);
+}
+
+/// JSON value for the skipped-unsupported summary: an array of
+/// `{group, count, sample}` objects, grouped by extension with a bounded
+/// path sample. Attached to graph/check/orient JSON ONLY when at least one
+/// unsupported file was skipped, so fully-supported repos keep their
+/// existing output shapes byte-for-byte.
+fn skipped_unsupported_json(skipped: &[walk::SkippedGroup]) -> serde_json::Value {
+    let empty = serde_json::Value::Array(Vec::new());
+    serde_json::to_value(skipped).unwrap_or(empty)
 }
 
 #[expect(
@@ -749,6 +851,7 @@ fn run_graph(
     lang: &Option<Vec<String>>,
     no_external: bool,
     show_external: bool,
+    first_party: bool,
     no_progress: bool,
     include_symbols: bool,
     output: Option<&std::path::Path>,
@@ -760,11 +863,12 @@ fn run_graph(
     validate_format_or_exit(format, &["tree", "json", "table", "dot", "mermaid"]);
     let lang = config::resolve_langs(lang, &cfg.languages);
     let no_progress = config::resolve_no_progress(no_progress, cfg.no_progress);
+    let fp_filter = build_first_party_filter(first_party, &cfg);
     let registry = ParserRegistry::new();
-    let files = discover_or_exit(&root, single_file.as_deref(), &lang, &cfg);
+    let (files, skipped_unsupported) = discover_or_exit(&root, single_file.as_deref(), &lang, &cfg);
 
     if files.is_empty() {
-        exit_no_supported_files(&root, format);
+        exit_no_supported_files(&root, format, &skipped_unsupported);
     }
 
     tracing::info!("Discovered {} files", files.len());
@@ -775,7 +879,7 @@ fn run_graph(
         pipeline::parse_all(&root, files, &registry, &mut parse_cache, !no_progress);
     parse_cache.save(&cache_path);
 
-    let resolver = Resolver::new(PathBuf::new(), &file_nodes);
+    let resolver = Resolver::new(&root, &file_nodes);
     resolver.resolve_all(&mut file_nodes);
 
     // Keep a copy of file_nodes for --symbols enrichment
@@ -791,7 +895,15 @@ fn run_graph(
     };
 
     let kgraph = KGraph::from_files(&file_nodes);
-    let dep_graph = kgraph.to_dep_graph(root, file_nodes);
+    let mut dep_graph = kgraph.to_dep_graph(root, file_nodes);
+
+    // First-party filtering: drop vendored paths from the orphan summary
+    // (the graph itself — files and edges — is never filtered; that is
+    // what config `exclude` is for).
+    let excluded_orphans = fp_filter
+        .as_ref()
+        .map(|filter| filter_vendored_orphans(&mut dep_graph.orphans, filter))
+        .unwrap_or(0);
 
     let mut writer: Box<dyn std::io::Write> = if let Some(out_path) = output {
         Box::new(std::fs::File::create(out_path).unwrap_or_else(|e| {
@@ -802,31 +914,53 @@ fn run_graph(
         Box::new(std::io::stdout().lock())
     };
 
-    // When --symbols is passed with JSON format, inject symbols into the output
-    if include_symbols && format == "json" {
-        let Some(data) = symbols_data else { return };
-        let symbols_map: std::collections::HashMap<_, _> = data.into_iter().collect();
+    // JSON output needs post-processing when --symbols injects per-file
+    // symbols, an active first-party filter must be made explicit, and/or
+    // the walk skipped unsupported files that must be reported.
+    if format == "json"
+        && (include_symbols || fp_filter.is_some() || !skipped_unsupported.is_empty())
+    {
         let mut json = render::json::graph_value(&dep_graph).unwrap_or_else(|e| {
             eprintln!("Error rendering output: {}", e);
             process::exit(2);
         });
-        if let Some(files) = json.get_mut("files").and_then(|f| f.as_array_mut()) {
-            for file in files {
-                let path_str = file["path"].as_str().unwrap_or_default();
-                let path = std::path::PathBuf::from(path_str);
-                if let Some(syms) = symbols_map.get(&path) {
-                    file["symbols"] = serde_json::json!(syms
-                        .iter()
-                        .map(|s| serde_json::json!({
-                            "name": s.name,
-                            "kind": s.kind.to_string(),
-                            "line": s.span.start_line,
-                            "exported": s.exported,
-                        }))
-                        .collect::<Vec<_>>());
-                } else {
-                    file["symbols"] = serde_json::json!([]);
+        if include_symbols {
+            let Some(data) = symbols_data else { return };
+            let symbols_map: std::collections::HashMap<_, _> = data.into_iter().collect();
+            if let Some(files) = json.get_mut("files").and_then(|f| f.as_array_mut()) {
+                for file in files {
+                    let path_str = file["path"].as_str().unwrap_or_default();
+                    let path = std::path::PathBuf::from(path_str);
+                    if let Some(syms) = symbols_map.get(&path) {
+                        file["symbols"] = serde_json::json!(syms
+                            .iter()
+                            .map(|s| serde_json::json!({
+                                "name": s.name,
+                                "kind": s.kind.to_string(),
+                                "line": s.span.start_line,
+                                "exported": s.exported,
+                            }))
+                            .collect::<Vec<_>>());
+                    } else {
+                        file["symbols"] = serde_json::json!([]);
+                    }
                 }
+            }
+        }
+        if let Some(filter) = &fp_filter {
+            if let Some(obj) = json.as_object_mut() {
+                obj.insert(
+                    "first_party_filter".to_string(),
+                    first_party_filter_json(filter, "excluded_orphans", excluded_orphans),
+                );
+            }
+        }
+        if !skipped_unsupported.is_empty() {
+            if let Some(obj) = json.as_object_mut() {
+                obj.insert(
+                    "skipped_unsupported".to_string(),
+                    skipped_unsupported_json(&skipped_unsupported),
+                );
             }
         }
         serde_json::to_writer_pretty(&mut writer, &json).unwrap_or_else(|e| {
@@ -854,14 +988,20 @@ fn run_graph(
     });
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "CLI dispatch passes through all flags"
+)]
 fn run_check(
     path: &Path,
     format: Option<&str>,
     lang: &Option<Vec<String>>,
+    first_party: bool,
     no_progress: bool,
     update_baseline: bool,
     baseline_path: Option<&Path>,
     syntax: bool,
+    exit_zero: bool,
 ) {
     let (root, single_file) = resolve_scan_target(path);
 
@@ -870,11 +1010,12 @@ fn run_check(
     validate_format_or_exit(format, &["text", "json"]);
     let lang = config::resolve_langs(lang, &cfg.languages);
     let no_progress = config::resolve_no_progress(no_progress, cfg.no_progress);
+    let fp_filter = build_first_party_filter(first_party, &cfg);
     let registry = ParserRegistry::new();
-    let files = discover_or_exit(&root, single_file.as_deref(), &lang, &cfg);
+    let (files, skipped_unsupported) = discover_or_exit(&root, single_file.as_deref(), &lang, &cfg);
 
     if files.is_empty() {
-        exit_no_supported_files(&root, format);
+        exit_no_supported_files(&root, format, &skipped_unsupported);
     }
 
     let cache_path = root.join(".kgr-cache.json");
@@ -883,11 +1024,18 @@ fn run_check(
         pipeline::parse_all(&root, files, &registry, &mut parse_cache, !no_progress);
     parse_cache.save(&cache_path);
 
-    let resolver = Resolver::new(PathBuf::new(), &file_nodes);
+    let resolver = Resolver::new(&root, &file_nodes);
     resolver.resolve_all(&mut file_nodes);
 
     let kgraph = KGraph::from_files(&file_nodes);
-    let dep_graph = kgraph.to_dep_graph(root.clone(), file_nodes);
+    let mut dep_graph = kgraph.to_dep_graph(root.clone(), file_nodes);
+
+    // First-party filtering applies to the orphan summary only; cycles and
+    // rule violations are always reported in full.
+    let excluded_orphans = fp_filter
+        .as_ref()
+        .map(|filter| filter_vendored_orphans(&mut dep_graph.orphans, filter))
+        .unwrap_or(0);
 
     let all_rule_violations = match rules::check_rules(&dep_graph, &cfg.rules) {
         Ok(violations) => violations,
@@ -993,6 +1141,12 @@ fn run_check(
             })).collect::<Vec<_>>(),
             "suppressed": suppressed,
         });
+        if let Some(filter) = &fp_filter {
+            json.as_object_mut().unwrap().insert(
+                "first_party_filter".to_string(),
+                first_party_filter_json(filter, "excluded_orphans", excluded_orphans),
+            );
+        }
         if syntax {
             json.as_object_mut().unwrap().insert(
                 "syntax_errors".to_string(),
@@ -1009,6 +1163,14 @@ fn run_check(
                         })
                     })
                     .collect::<Vec<_>>()),
+            );
+        }
+        // Reported only when non-empty so existing JSON consumers and
+        // snapshots of fully-supported repos are unaffected.
+        if !skipped_unsupported.is_empty() {
+            json.as_object_mut().unwrap().insert(
+                "skipped_unsupported".to_string(),
+                skipped_unsupported_json(&skipped_unsupported),
             );
         }
         println!("{}", serde_json::to_string_pretty(&json).unwrap());
@@ -1087,6 +1249,13 @@ fn run_check(
             eprintln!("note: {} violation(s) suppressed by baseline", suppressed);
         }
 
+        if fp_filter.is_some() {
+            eprintln!(
+                "note: first-party filter excluded {} vendored file(s) from orphan analysis",
+                excluded_orphans
+            );
+        }
+
         if has_errors {
             // error messages already printed above
         } else {
@@ -1094,7 +1263,12 @@ fn run_check(
         }
     }
 
-    if has_errors {
+    // --exit-zero is report-only for FINDINGS: identical diagnostics and JSON
+    // (including "ok": false), but the process exits 0 so the command can be
+    // batched in shell pipelines without `|| true`. Operational failures
+    // (unreadable target, invalid format, broken config/baseline) bypass this
+    // — they exit nonzero above before reaching here.
+    if has_errors && !exit_zero {
         process::exit(1);
     }
 }
@@ -1206,6 +1380,7 @@ fn run_query(
     heaviest: bool,
     top: Option<usize>,
     largest_cycle: bool,
+    first_party: bool,
     format: Option<&str>,
     lang: &Option<Vec<String>>,
     no_progress: bool,
@@ -1217,11 +1392,12 @@ fn run_query(
     validate_format_or_exit(format, &["table", "json"]);
     let lang = config::resolve_langs(lang, &cfg.languages);
     let no_progress = config::resolve_no_progress(no_progress, cfg.no_progress);
+    let fp_filter = build_first_party_filter(first_party, &cfg);
     let registry = ParserRegistry::new();
-    let files = discover_or_exit(&root, single_file.as_deref(), &lang, &cfg);
+    let (files, skipped_unsupported) = discover_or_exit(&root, single_file.as_deref(), &lang, &cfg);
 
     if files.is_empty() {
-        exit_no_supported_files(&root, format);
+        exit_no_supported_files(&root, format, &skipped_unsupported);
     }
 
     let cache_path = root.join(".kgr-cache.json");
@@ -1230,7 +1406,7 @@ fn run_query(
         pipeline::parse_all(&root, files, &registry, &mut parse_cache, !no_progress);
     parse_cache.save(&cache_path);
 
-    let resolver = Resolver::new(PathBuf::new(), &file_nodes);
+    let resolver = Resolver::new(&root, &file_nodes);
     resolver.resolve_all(&mut file_nodes);
 
     let kgraph = KGraph::from_files(&file_nodes);
@@ -1338,18 +1514,51 @@ fn run_query(
             }
         }
     } else if orphans {
+        let mut orphan_list = dep_graph.orphans.clone();
+        let excluded = fp_filter
+            .as_ref()
+            .map(|filter| filter_vendored_orphans(&mut orphan_list, filter))
+            .unwrap_or(0);
         if format == "json" {
-            write_json_line(&mut stdout, &dep_graph.orphans);
-        } else if dep_graph.orphans.is_empty() {
-            eprintln!("No orphaned files found");
+            // With the filter active the bare array becomes an object so
+            // the applied filtering is explicit; the default (unfiltered)
+            // shape is unchanged.
+            if let Some(filter) = &fp_filter {
+                let payload = serde_json::json!({
+                    "orphans": orphan_list,
+                    "first_party_filter":
+                        first_party_filter_json(filter, "excluded_orphans", excluded),
+                });
+                write_json_line(&mut stdout, &payload);
+            } else {
+                write_json_line(&mut stdout, &orphan_list);
+            }
         } else {
-            writeln!(stdout, "Orphaned files:").ok();
-            for orphan in &dep_graph.orphans {
-                writeln!(stdout, "  {}", orphan.display()).ok();
+            if fp_filter.is_some() {
+                eprintln!(
+                    "note: first-party filter excluded {} vendored file(s)",
+                    excluded
+                );
+            }
+            if orphan_list.is_empty() {
+                eprintln!("No orphaned files found");
+            } else {
+                writeln!(stdout, "Orphaned files:").ok();
+                for orphan in &orphan_list {
+                    writeln!(stdout, "  {}", orphan.display()).ok();
+                }
             }
         }
     } else if heaviest {
-        let ranked = kgraph.heaviest();
+        let mut ranked = kgraph.heaviest();
+        let excluded = fp_filter
+            .as_ref()
+            .map(|filter| {
+                let before = ranked.len();
+                ranked.retain(|(path, _)| !filter.is_vendored(path));
+                before - ranked.len()
+            })
+            .unwrap_or(0);
         let limit = top.unwrap_or(20);
         if format == "json" {
             let items: Vec<serde_json::Value> = ranked
@@ -1362,8 +1571,24 @@ fn run_query(
                     })
                 })
                 .collect();
-            write_json_line(&mut stdout, &items);
+            // Same shape rule as --orphans: object only when filtering.
+            if let Some(filter) = &fp_filter {
+                let payload = serde_json::json!({
+                    "heaviest": items,
+                    "first_party_filter":
+                        first_party_filter_json(filter, "excluded_files", excluded),
+                });
+                write_json_line(&mut stdout, &payload);
+            } else {
+                write_json_line(&mut stdout, &items);
+            }
         } else {
+            if fp_filter.is_some() {
+                eprintln!(
+                    "note: first-party filter excluded {} vendored file(s)",
+                    excluded
+                );
+            }
             writeln!(stdout, "{:<50} {:>10}", "FILE", "DEPENDENTS").ok();
             writeln!(stdout, "{}", "-".repeat(62)).ok();
             for (path, count) in ranked.iter().take(limit) {
@@ -1566,7 +1791,12 @@ fn build_file_nodes(
     valid_formats: &[&str],
     lang: &Option<Vec<String>>,
     no_progress: bool,
-) -> (PathBuf, Vec<kgr_core::types::FileNode>, String) {
+) -> (
+    PathBuf,
+    Vec<kgr_core::types::FileNode>,
+    String,
+    Vec<walk::SkippedGroup>,
+) {
     let (root, single_file) = resolve_scan_target(path);
 
     let cfg = load_config_or_exit(&root);
@@ -1575,10 +1805,10 @@ fn build_file_nodes(
     let lang = config::resolve_langs(lang, &cfg.languages);
     let no_progress = config::resolve_no_progress(no_progress, cfg.no_progress);
     let registry = ParserRegistry::new();
-    let files = discover_or_exit(&root, single_file.as_deref(), &lang, &cfg);
+    let (files, skipped_unsupported) = discover_or_exit(&root, single_file.as_deref(), &lang, &cfg);
 
     if files.is_empty() {
-        exit_no_supported_files(&root, &format);
+        exit_no_supported_files(&root, &format, &skipped_unsupported);
     }
 
     tracing::info!("Discovered {} files", files.len());
@@ -1588,11 +1818,11 @@ fn build_file_nodes(
     let file_nodes = pipeline::parse_all(&root, files, &registry, &mut parse_cache, !no_progress);
     parse_cache.save(&cache_path);
 
-    (root, file_nodes, format)
+    (root, file_nodes, format, skipped_unsupported)
 }
 
 fn run_symbols(path: &Path, format: Option<&str>, lang: &Option<Vec<String>>, no_progress: bool) {
-    let (root, file_nodes, format) =
+    let (root, file_nodes, format, _skipped_unsupported) =
         build_file_nodes(path, format, "table", &["table", "json"], lang, no_progress);
     if file_nodes.is_empty() {
         return;
@@ -1857,11 +2087,11 @@ fn run_refs(
     lang: &Option<Vec<String>>,
     no_progress: bool,
 ) {
-    let (root, mut file_nodes, format) =
+    let (root, mut file_nodes, format, _skipped_unsupported) =
         build_file_nodes(path, format, "table", &["table", "json"], lang, no_progress);
 
     let mut stdout = std::io::stdout().lock();
-    let resolver = Resolver::new(PathBuf::new(), &file_nodes);
+    let resolver = Resolver::new(&root, &file_nodes);
     resolver.resolve_all(&mut file_nodes);
     let kgraph = KGraph::from_files(&file_nodes);
     let defined_in = resolve_defined_in_scope(&format, &root, defined_in, &file_nodes, &mut stdout);
@@ -1954,11 +2184,11 @@ fn run_dead(
     lang: &Option<Vec<String>>,
     no_progress: bool,
 ) {
-    let (root, mut file_nodes, format) =
+    let (root, mut file_nodes, format, _skipped_unsupported) =
         build_file_nodes(path, format, "table", &["table", "json"], lang, no_progress);
 
     let mut stdout = std::io::stdout().lock();
-    let resolver = Resolver::new(PathBuf::new(), &file_nodes);
+    let resolver = Resolver::new(&root, &file_nodes);
     resolver.resolve_all(&mut file_nodes);
     let kgraph = KGraph::from_files(&file_nodes);
     let defined_in = resolve_defined_in_scope(&format, &root, defined_in, &file_nodes, &mut stdout);
@@ -2157,7 +2387,7 @@ fn run_agent_info(format: &str) {
 }
 
 fn run_skeleton(path: &Path, format: Option<&str>, lang: &Option<Vec<String>>, no_progress: bool) {
-    let (root, file_nodes, format) = build_file_nodes(
+    let (root, file_nodes, format, _skipped_unsupported) = build_file_nodes(
         path,
         format,
         "text",
@@ -2300,13 +2530,13 @@ fn run_orient(path: &Path, format: Option<&str>, lang: &Option<Vec<String>>, no_
     use kgr_core::types::ImportKind;
     use std::collections::{HashMap, HashSet};
 
-    let (root, mut file_nodes, format) =
+    let (root, mut file_nodes, format, skipped_unsupported) =
         build_file_nodes(path, format, "text", &["text", "json"], lang, no_progress);
     if file_nodes.is_empty() {
         return;
     }
 
-    let resolver = Resolver::new(PathBuf::new(), &file_nodes);
+    let resolver = Resolver::new(&root, &file_nodes);
     resolver.resolve_all(&mut file_nodes);
     let kgraph = KGraph::from_files(&file_nodes);
     let dep_graph = kgraph.to_dep_graph(root.clone(), file_nodes);
@@ -2378,7 +2608,7 @@ fn run_orient(path: &Path, format: Option<&str>, lang: &Option<Vec<String>>, no_
             .map(|(f, d)| serde_json::json!({"file": f, "dependents": d}))
             .collect();
 
-        let json = serde_json::json!({
+        let mut json = serde_json::json!({
             "files": dep_graph.files.len(),
             "languages": languages,
             "edges": dep_graph.edges.len(),
@@ -2389,6 +2619,15 @@ fn run_orient(path: &Path, format: Option<&str>, lang: &Option<Vec<String>>, no_
             "external_packages": ext_sorted,
             "heaviest": heaviest_json,
         });
+
+        // Reported only when non-empty so existing JSON consumers and
+        // snapshots of fully-supported repos are unaffected.
+        if !skipped_unsupported.is_empty() {
+            json.as_object_mut().unwrap().insert(
+                "skipped_unsupported".to_string(),
+                skipped_unsupported_json(&skipped_unsupported),
+            );
+        }
 
         writeln!(stdout, "{}", serde_json::to_string_pretty(&json).unwrap()).ok();
     } else {
@@ -2438,6 +2677,28 @@ fn run_orient(path: &Path, format: Option<&str>, lang: &Option<Vec<String>>, no_
             )
         };
         writeln!(stdout, "{} | Orphans: {}", ext_str, dep_graph.orphans.len()).ok();
+
+        // Line 5 (only when relevant): unsupported files the walk skipped.
+        // Counts per extension, capped at the 5 largest groups, so even a
+        // large repo full of unparseable assets stays one line.
+        if !skipped_unsupported.is_empty() {
+            let total: usize = skipped_unsupported.iter().map(|g| g.count).sum();
+            let mut parts: Vec<String> = skipped_unsupported
+                .iter()
+                .take(5)
+                .map(|g| format!("{}: {}", g.group, g.count))
+                .collect();
+            if skipped_unsupported.len() > 5 {
+                parts.push(format!("+{} more", skipped_unsupported.len() - 5));
+            }
+            writeln!(
+                stdout,
+                "Skipped unsupported: {} file(s) ({})",
+                total,
+                parts.join(", ")
+            )
+            .ok();
+        }
     }
 }
 
@@ -2449,10 +2710,10 @@ fn run_impact(
     depth: Option<usize>,
     no_progress: bool,
 ) {
-    let (_root, mut file_nodes, format) =
+    let (root, mut file_nodes, format, _skipped_unsupported) =
         build_file_nodes(path, format, "text", &["text", "json"], lang, no_progress);
 
-    let resolver = Resolver::new(PathBuf::new(), &file_nodes);
+    let resolver = Resolver::new(&root, &file_nodes);
     resolver.resolve_all(&mut file_nodes);
 
     let kgraph = KGraph::from_files(&file_nodes);
@@ -2614,7 +2875,7 @@ fn run_hotspots(
 ) {
     use kgr_core::types::SymbolKind;
 
-    let (root, file_nodes, format) = build_file_nodes(
+    let (root, file_nodes, format, _skipped_unsupported) = build_file_nodes(
         path,
         format,
         "table",
@@ -2806,6 +3067,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             Some(&out),
         );
 
@@ -2847,6 +3109,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             Some(&out),
         );
 
@@ -2871,7 +3134,7 @@ mod tests {
         .unwrap();
         std::fs::write(src.join("util.rs"), "pub fn helper() {}\n").unwrap();
 
-        let (_root, file_nodes, _format) =
+        let (_root, file_nodes, _format, _skipped_unsupported) =
             super::build_file_nodes(dir.path(), None, "table", &["table", "json"], &None, true);
 
         // The definition is found...
