@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use kgr_core::types::{CallRef, Import, Symbol};
 
-const CACHE_VERSION: &str = env!("CARGO_PKG_VERSION");
+// The `+def-spans` suffix invalidates caches written before symbol spans
+// covered the full definition node (they held name-node spans only).
+const CACHE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+def-spans");
 
 #[derive(Serialize, Deserialize)]
 struct Entry {

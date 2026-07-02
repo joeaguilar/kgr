@@ -35,7 +35,7 @@ static BASH_SYMBOL_QUERY: LazyLock<Query> = LazyLock::new(|| {
 const BASH_SYMBOL_QUERY_SRC: &str = r#"
 ;; Function definition: function foo { ... } or foo() { ... }
 (function_definition
-  name: (word) @fn.name)
+  name: (word) @fn.name) @def
 "#;
 
 static BASH_CALL_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -85,11 +85,18 @@ impl super::Parser for BashParser {
 
         let query = &*BASH_SYMBOL_QUERY;
         let fn_idx = query.capture_index_for_name("fn.name").unwrap();
+        let def_idx = query.capture_index_for_name("def").unwrap();
 
         let mut cursor = QueryCursor::new();
         let mut symbols = Vec::new();
         let mut matches = cursor.matches(query, tree.root_node(), source);
         while let Some(m) = matches.next() {
+            // Span comes from the enclosing definition node, name from the name node
+            let def_node = m
+                .captures
+                .iter()
+                .find(|c| c.index == def_idx)
+                .map(|c| c.node);
             for capture in m.captures {
                 let node = capture.node;
                 if capture.index != fn_idx {
@@ -100,8 +107,9 @@ impl super::Parser for BashParser {
                     Err(_) => continue,
                 };
 
-                let start = node.start_position();
-                let end = node.end_position();
+                let span_node = def_node.unwrap_or(node);
+                let start = span_node.start_position();
+                let end = span_node.end_position();
 
                 symbols.push(Symbol {
                     exported: true,
@@ -323,6 +331,16 @@ mod tests {
         assert_eq!(syms[0].name, "greet");
         assert_eq!(syms[0].kind, SymbolKind::Function);
         assert!(syms[0].exported);
+    }
+
+    #[test]
+    fn symbols_span_covers_full_definition() {
+        let syms = symbols("greet() {\n  echo hello\n  echo world\n}\n");
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "greet");
+        assert_eq!(syms[0].span.start_line, 1);
+        assert_eq!(syms[0].span.end_line, 4);
+        assert!(syms[0].span.end_line > syms[0].span.start_line);
     }
 
     #[test]

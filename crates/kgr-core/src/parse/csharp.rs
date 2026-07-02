@@ -30,27 +30,27 @@ static CSHARP_SYMBOL_QUERY: LazyLock<Query> = LazyLock::new(|| {
 const CSHARP_SYMBOL_QUERY_SRC: &str = r#"
 ;; Class declaration
 (class_declaration
-  name: (identifier) @class.name)
+  name: (identifier) @class.name) @def
 
 ;; Interface declaration
 (interface_declaration
-  name: (identifier) @class.name)
+  name: (identifier) @class.name) @def
 
 ;; Struct declaration
 (struct_declaration
-  name: (identifier) @class.name)
+  name: (identifier) @class.name) @def
 
 ;; Enum declaration
 (enum_declaration
-  name: (identifier) @class.name)
+  name: (identifier) @class.name) @def
 
 ;; Method declaration
 (method_declaration
-  name: (identifier) @method.name)
+  name: (identifier) @method.name) @def
 
 ;; Constructor declaration
 (constructor_declaration
-  name: (identifier) @method.name)
+  name: (identifier) @method.name) @def
 "#;
 
 static CSHARP_CALL_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -110,12 +110,22 @@ impl super::Parser for CSharpParser {
         let query = &*CSHARP_SYMBOL_QUERY;
         let class_idx = query.capture_index_for_name("class.name").unwrap();
         let method_idx = query.capture_index_for_name("method.name").unwrap();
+        let def_idx = query.capture_index_for_name("def").unwrap();
 
         let mut cursor = QueryCursor::new();
         let mut symbols = Vec::new();
         let mut matches = cursor.matches(query, tree.root_node(), source);
         while let Some(m) = matches.next() {
+            // Span comes from the enclosing definition node, name from the name node
+            let def_node = m
+                .captures
+                .iter()
+                .find(|c| c.index == def_idx)
+                .map(|c| c.node);
             for capture in m.captures {
+                if capture.index == def_idx {
+                    continue;
+                }
                 let node = capture.node;
                 let name = match node.utf8_text(source) {
                     Ok(s) => s.to_string(),
@@ -142,8 +152,9 @@ impl super::Parser for CSharpParser {
                             .unwrap_or(false)
                 });
 
-                let start = node.start_position();
-                let end = node.end_position();
+                let span_node = def_node.unwrap_or(node);
+                let start = span_node.start_position();
+                let end = span_node.end_position();
 
                 symbols.push(Symbol {
                     exported,
@@ -348,6 +359,26 @@ using Newtonsoft.Json;
         assert!(syms
             .iter()
             .any(|s| s.name == "Color" && s.kind == SymbolKind::Class));
+    }
+
+    #[test]
+    fn csharp_symbols_method_span_covers_full_definition() {
+        let src =
+            "class Svc {\n    void Get() {\n        int a = 1;\n        int b = a + 1;\n    }\n}";
+        let syms = symbols(src);
+        let m = syms.iter().find(|s| s.name == "Get").unwrap();
+        assert_eq!(m.span.start_line, 2);
+        assert_eq!(m.span.end_line, 5);
+        assert!(m.span.end_line > m.span.start_line);
+    }
+
+    #[test]
+    fn csharp_symbols_class_span_covers_full_definition() {
+        let src = "public class Wide {\n    void A() {}\n    void B() {}\n}";
+        let syms = symbols(src);
+        let c = syms.iter().find(|s| s.name == "Wide").unwrap();
+        assert_eq!(c.span.start_line, 1);
+        assert_eq!(c.span.end_line, 4);
     }
 
     // -- Call extraction tests --

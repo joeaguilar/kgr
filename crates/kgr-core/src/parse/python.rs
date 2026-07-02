@@ -40,17 +40,17 @@ const PYTHON_SYMBOL_QUERY_SRC: &str = r#"
 ;; Top-level function definition
 (module
   (function_definition
-    name: (identifier) @fn.name))
+    name: (identifier) @fn.name) @def)
 
 ;; Class definition
 (class_definition
-  name: (identifier) @class.name)
+  name: (identifier) @class.name) @def
 
 ;; Method inside class body
 (class_definition
   body: (block
     (function_definition
-      name: (identifier) @method.name)))
+      name: (identifier) @method.name) @def))
 "#;
 
 static PYTHON_CALL_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -114,12 +114,22 @@ impl super::Parser for PythonParser {
         let fn_idx = query.capture_index_for_name("fn.name").unwrap();
         let class_idx = query.capture_index_for_name("class.name").unwrap();
         let method_idx = query.capture_index_for_name("method.name").unwrap();
+        let def_idx = query.capture_index_for_name("def").unwrap();
 
         let mut cursor = QueryCursor::new();
         let mut symbols = Vec::new();
         let mut matches = cursor.matches(query, tree.root_node(), source);
         while let Some(m) = matches.next() {
+            // Span comes from the enclosing definition node, name from the name node
+            let def_node = m
+                .captures
+                .iter()
+                .find(|c| c.index == def_idx)
+                .map(|c| c.node);
             for capture in m.captures {
+                if capture.index == def_idx {
+                    continue;
+                }
                 let node = capture.node;
                 let name = match node.utf8_text(source) {
                     Ok(s) => s.to_string(),
@@ -136,8 +146,9 @@ impl super::Parser for PythonParser {
                     continue;
                 };
 
-                let start = node.start_position();
-                let end = node.end_position();
+                let span_node = def_node.unwrap_or(node);
+                let start = span_node.start_position();
+                let end = span_node.end_position();
 
                 symbols.push(Symbol {
                     exported: !name.starts_with('_'),
@@ -376,6 +387,27 @@ from . import utils
         let private = syms.iter().find(|s| s.name == "_private").unwrap();
         assert!(public.exported);
         assert!(!private.exported);
+    }
+
+    #[test]
+    fn symbols_span_covers_full_definition() {
+        let src = "def multi(a):\n    b = a + 1\n    c = b * 2\n    return c\n";
+        let syms = symbols(src);
+        let f = syms.iter().find(|s| s.name == "multi").unwrap();
+        assert_eq!(f.span.start_line, 1);
+        assert_eq!(f.span.end_line, 4);
+    }
+
+    #[test]
+    fn symbols_method_span_covers_body() {
+        let src = "class Svc:\n    def get(self):\n        x = 1\n        return x\n";
+        let syms = symbols(src);
+        let m = syms.iter().find(|s| s.name == "get").unwrap();
+        assert_eq!(m.span.start_line, 2);
+        assert_eq!(m.span.end_line, 4);
+        let c = syms.iter().find(|s| s.name == "Svc").unwrap();
+        assert_eq!(c.span.start_line, 1);
+        assert_eq!(c.span.end_line, 4);
     }
 
     // ── Call extraction tests ────────────────────────────────────────────

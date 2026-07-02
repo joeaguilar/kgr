@@ -22,23 +22,23 @@ static HASKELL_QUERY: LazyLock<Query> = LazyLock::new(|| {
 const HASKELL_SYMBOL_QUERY_SRC: &str = r#"
 ;; Function binding: foo x = x + 1
 (function
-  name: (variable) @fn.name)
+  name: (variable) @fn.name) @def
 
 ;; Type synonym: type Foo = Bar
 (type_synomym
-  name: (name) @class.name)
+  name: (name) @class.name) @def
 
 ;; Newtype: newtype Foo = MkFoo Bar
 (newtype
-  name: (name) @class.name)
+  name: (name) @class.name) @def
 
 ;; Algebraic data type: data Foo = Bar | Baz
 (data_type
-  name: (name) @class.name)
+  name: (name) @class.name) @def
 
 ;; Type class: class Functor f where ...
 (class
-  name: (name) @class.name)
+  name: (name) @class.name) @def
 "#;
 
 static HASKELL_SYMBOL_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -94,12 +94,22 @@ impl super::Parser for HaskellParser {
         let query = &*HASKELL_SYMBOL_QUERY;
         let fn_idx = query.capture_index_for_name("fn.name").unwrap();
         let class_idx = query.capture_index_for_name("class.name").unwrap();
+        let def_idx = query.capture_index_for_name("def").unwrap();
 
         let mut cursor = QueryCursor::new();
         let mut symbols = Vec::new();
         let mut matches = cursor.matches(query, tree.root_node(), source);
         while let Some(m) = matches.next() {
+            // Span comes from the enclosing definition node, name from the name node
+            let def_node = m
+                .captures
+                .iter()
+                .find(|c| c.index == def_idx)
+                .map(|c| c.node);
             for capture in m.captures {
+                if capture.index == def_idx {
+                    continue;
+                }
                 let node = capture.node;
                 let name = match node.utf8_text(source) {
                     Ok(s) => s.to_string(),
@@ -117,8 +127,9 @@ impl super::Parser for HaskellParser {
                 // In Haskell, all top-level bindings are exported by default
                 let exported = true;
 
-                let start = node.start_position();
-                let end = node.end_position();
+                let span_node = def_node.unwrap_or(node);
+                let start = span_node.start_position();
+                let end = span_node.end_position();
 
                 symbols.push(Symbol {
                     exported,
@@ -295,6 +306,16 @@ import Control.Monad
         assert!(syms
             .iter()
             .any(|s| s.name == "Color" && s.kind == SymbolKind::Class));
+    }
+
+    #[test]
+    fn symbols_span_covers_full_definition() {
+        let src = "addTwo x =\n  let y = x + 1\n  in y + 1\n";
+        let syms = symbols(src);
+        let f = syms.iter().find(|s| s.name == "addTwo").unwrap();
+        assert_eq!(f.span.start_line, 1);
+        assert_eq!(f.span.end_line, 3);
+        assert!(f.span.end_line > f.span.start_line);
     }
 
     #[test]

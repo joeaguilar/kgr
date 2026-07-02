@@ -24,13 +24,13 @@ const ELIXIR_SYMBOL_QUERY_SRC: &str = r#"
 ;; Module definition: defmodule Foo do ... end
 (call
   target: (identifier) @_kw
-  (arguments (alias) @class.name))
+  (arguments (alias) @class.name)) @def
 
 ;; Function definition: def foo(...) do ... end
 (call
   target: (identifier) @_kw2
   (arguments
-    (call target: (identifier) @fn.name)))
+    (call target: (identifier) @fn.name))) @def
 "#;
 
 static ELIXIR_SYMBOL_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -101,11 +101,23 @@ impl super::Parser for ElixirParser {
         let fn_idx = query
             .capture_index_for_name("fn.name")
             .expect("fn.name capture must exist");
+        let def_idx = query
+            .capture_index_for_name("def")
+            .expect("def capture must exist");
 
         let mut cursor = QueryCursor::new();
         let mut symbols = Vec::new();
         let mut matches = cursor.matches(query, tree.root_node(), source);
         while let Some(m) = matches.next() {
+            // Span comes from the enclosing definition node (the outer `call`
+            // covering the full `def ... end` / `defmodule ... end` extent),
+            // name from the name node
+            let def_node = m
+                .captures
+                .iter()
+                .find(|c| c.index == def_idx)
+                .map(|c| c.node);
+
             // Check for module definition (defmodule)
             if let Some(kw_capture) = m.captures.iter().find(|c| c.index == kw_idx) {
                 let kw_name = match kw_capture.node.utf8_text(source) {
@@ -119,8 +131,9 @@ impl super::Parser for ElixirParser {
                             Ok(s) => s.to_string(),
                             Err(_) => continue,
                         };
-                        let start = node.start_position();
-                        let end = node.end_position();
+                        let span_node = def_node.unwrap_or(node);
+                        let start = span_node.start_position();
+                        let end = span_node.end_position();
                         symbols.push(Symbol {
                             exported: true,
                             name,
@@ -153,8 +166,9 @@ impl super::Parser for ElixirParser {
                         Ok(s) => s.to_string(),
                         Err(_) => continue,
                     };
-                    let start = node.start_position();
-                    let end = node.end_position();
+                    let span_node = def_node.unwrap_or(node);
+                    let start = span_node.start_position();
+                    let end = span_node.end_position();
                     symbols.push(Symbol {
                         exported,
                         name,
@@ -407,6 +421,40 @@ end
         assert_eq!(fns.len(), 1);
         assert_eq!(fns[0].name, "hello");
         assert!(fns[0].exported);
+    }
+
+    #[test]
+    fn symbols_function_span_covers_body() {
+        let syms = symbols(
+            r#"
+defmodule MyApp do
+  def multi(a) do
+    b = a + 1
+    b * 2
+  end
+end
+"#,
+        );
+        let f = syms.iter().find(|s| s.name == "multi").unwrap();
+        assert_eq!(f.span.start_line, 3);
+        assert_eq!(f.span.end_line, 6);
+        assert!(f.span.end_line > f.span.start_line);
+    }
+
+    #[test]
+    fn symbols_module_span_covers_body() {
+        let syms = symbols(
+            r#"
+defmodule MyApp.Server do
+  def start(x) do
+    x
+  end
+end
+"#,
+        );
+        let m = syms.iter().find(|s| s.name == "MyApp.Server").unwrap();
+        assert_eq!(m.span.start_line, 2);
+        assert_eq!(m.span.end_line, 6);
     }
 
     #[test]

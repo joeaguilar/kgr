@@ -22,7 +22,7 @@ static LUA_QUERY: LazyLock<Query> = LazyLock::new(|| {
 const LUA_SYMBOL_QUERY_SRC: &str = r#"
 ;; Function declaration (both global and local)
 (function_declaration
-  name: (identifier) @fn.name)
+  name: (identifier) @fn.name) @def
 "#;
 
 static LUA_SYMBOL_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -87,11 +87,18 @@ impl super::Parser for LuaParser {
 
         let query = &*LUA_SYMBOL_QUERY;
         let fn_idx = query.capture_index_for_name("fn.name").unwrap();
+        let def_idx = query.capture_index_for_name("def").unwrap();
 
         let mut cursor = QueryCursor::new();
         let mut symbols = Vec::new();
         let mut matches = cursor.matches(query, tree.root_node(), source);
         while let Some(m) = matches.next() {
+            // Span comes from the enclosing definition node, name from the name node
+            let def_node = m
+                .captures
+                .iter()
+                .find(|c| c.index == def_idx)
+                .map(|c| c.node);
             for capture in m.captures {
                 if capture.index != fn_idx {
                     continue;
@@ -108,8 +115,9 @@ impl super::Parser for LuaParser {
                 let fn_src = fn_node.utf8_text(source).unwrap_or("");
                 let exported = !fn_src.starts_with("local");
 
-                let start = node.start_position();
-                let end = node.end_position();
+                let span_node = def_node.unwrap_or(node);
+                let start = span_node.start_position();
+                let end = span_node.end_position();
 
                 symbols.push(Symbol {
                     exported,
@@ -324,6 +332,25 @@ local m = require("./helpers")
         assert_eq!(fns.len(), 2);
         assert_eq!(fns[0].name, "foo");
         assert_eq!(fns[1].name, "bar");
+    }
+
+    #[test]
+    fn symbols_span_covers_full_definition() {
+        let src = "function multi(a)\n  local b = a + 1\n  return b\nend\n";
+        let syms = symbols(src);
+        let f = syms.iter().find(|s| s.name == "multi").unwrap();
+        assert_eq!(f.span.start_line, 1);
+        assert_eq!(f.span.end_line, 4);
+        assert!(f.span.end_line > f.span.start_line);
+    }
+
+    #[test]
+    fn symbols_local_function_span_covers_body() {
+        let src = "local function helper(x)\n  local y = x * 2\n  return y\nend\n";
+        let syms = symbols(src);
+        let f = syms.iter().find(|s| s.name == "helper").unwrap();
+        assert_eq!(f.span.start_line, 1);
+        assert_eq!(f.span.end_line, 4);
     }
 
     #[test]
