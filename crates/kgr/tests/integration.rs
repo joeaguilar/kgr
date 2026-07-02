@@ -389,3 +389,285 @@ fn agent_info_json() {
     let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
     assert!(json["guide"].as_str().unwrap().contains("SUBCOMMANDS"));
 }
+
+// ── show subcommand ───────────────────────────────────────────────────────────
+
+/// Python fixture with two same-named symbols (function + method) and a
+/// multi-line function body, for exercising show's span printing and
+/// disambiguation.
+fn make_show_fixture(tmp: &tempfile::TempDir) {
+    std::fs::write(
+        tmp.path().join("engine.py"),
+        "def compute(a, b):\n    total = a + b\n    total *= 2\n    return total\n\n\nclass Engine:\n    def compute(self, x):\n        return x\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn show_prints_full_body_with_linenos() {
+    let tmp = tempfile::tempdir().unwrap();
+    make_show_fixture(&tmp);
+
+    // Golden: the numbered window must match the real source lines 1-4
+    let expected = "── engine.py:1-4 (function compute) ──\n   1  def compute(a, b):\n   2      total = a + b\n   3      total *= 2\n   4      return total\n";
+
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args(["show", "compute", "-k", "fn", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(expected));
+}
+
+#[test]
+fn show_ambiguous_lists_pointers_and_all_prints_both() {
+    let tmp = tempfile::tempdir().unwrap();
+    make_show_fixture(&tmp);
+
+    // Default: first match printed, second listed as a pointer
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args(["show", "compute", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("also: engine.py:8 (method)"));
+
+    // --all: both bodies printed
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args(["show", "compute", "--all", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("(function compute)"))
+        .stdout(predicate::str::contains("(method compute)"));
+}
+
+#[test]
+fn show_kind_filters_matches() {
+    let tmp = tempfile::tempdir().unwrap();
+    make_show_fixture(&tmp);
+
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args(["show", "compute", "-k", "method", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("(method compute)"))
+        .stdout(predicate::str::contains("(function compute)").not());
+}
+
+#[test]
+fn show_missing_symbol_exits_1() {
+    let tmp = tempfile::tempdir().unwrap();
+    make_show_fixture(&tmp);
+
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args(["show", "nonexistent_symbol", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn show_json_shape() {
+    let tmp = tempfile::tempdir().unwrap();
+    make_show_fixture(&tmp);
+
+    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args(["show", "compute", "-k", "fn", "-f", "json", "--no-progress"])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    let entry = &json.as_array().unwrap()[0];
+    assert_eq!(entry["name"], "compute");
+    assert_eq!(entry["kind"], "function");
+    assert_eq!(entry["path"], "engine.py");
+    assert_eq!(entry["start_line"], 1);
+    assert_eq!(entry["end_line"], 4);
+    assert!(entry["exported"].is_boolean());
+    assert!(entry["body"].as_str().unwrap().starts_with("def compute"));
+}
+
+#[test]
+fn show_context_expands_window() {
+    let tmp = tempfile::tempdir().unwrap();
+    make_show_fixture(&tmp);
+
+    // Method spans 8-9; -c 1 expands to 7-9 (line 10 doesn't exist)
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .args([
+            "show",
+            "compute",
+            "-k",
+            "method",
+            "-c",
+            "1",
+            "--no-progress",
+        ])
+        .arg(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("engine.py:7-9"))
+        .stdout(predicate::str::contains("class Engine:"));
+}
+
+// ── slice subcommand ──────────────────────────────────────────────────────────
+
+fn make_slice_fixture(tmp: &tempfile::TempDir) -> PathBuf {
+    let path = tmp.path().join("notes.md");
+    let body = (1..=40).fold(String::new(), |mut s, i| {
+        use std::fmt::Write;
+        let _ = writeln!(s, "line {i}");
+        s
+    });
+    std::fs::write(&path, body).unwrap();
+    path
+}
+
+#[test]
+fn slice_range_prints_numbered_window() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = make_slice_fixture(&tmp);
+
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .arg("slice")
+        .arg(format!("{}:3-5", path.display()))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "   3  line 3\n   4  line 4\n   5  line 5\n",
+        ))
+        .stdout(predicate::str::contains("line 2").not())
+        .stdout(predicate::str::contains("line 6").not());
+}
+
+#[test]
+fn slice_single_line_defaults_to_context_10() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = make_slice_fixture(&tmp);
+
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .arg("slice")
+        .arg(format!("{}:20", path.display()))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("line 10"))
+        .stdout(predicate::str::contains("line 30"))
+        .stdout(predicate::str::contains("line 9\n").not())
+        .stdout(predicate::str::contains("line 31").not());
+}
+
+#[test]
+fn slice_positional_form() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = make_slice_fixture(&tmp);
+
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .arg("slice")
+        .arg(path.display().to_string())
+        .args(["3", "5"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("   4  line 4"));
+}
+
+#[test]
+fn slice_clamps_end_to_eof_with_note() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = make_slice_fixture(&tmp);
+
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .arg("slice")
+        .arg(format!("{}:38-999", path.display()))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("  40  line 40"))
+        .stderr(predicate::str::contains("clamped to EOF"));
+}
+
+#[test]
+fn slice_caps_output_at_max() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = make_slice_fixture(&tmp);
+
+    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .arg("slice")
+        .arg(format!("{}:1-40", path.display()))
+        .args(["--max", "5"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("capped at 5 lines"))
+        .get_output()
+        .stdout
+        .clone();
+
+    assert_eq!(String::from_utf8(output).unwrap().lines().count(), 5);
+}
+
+#[test]
+fn slice_no_linenos_roundtrips_byte_identical() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = make_slice_fixture(&tmp);
+
+    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .arg("slice")
+        .arg(format!("{}:3-5", path.display()))
+        .arg("--no-linenos")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    assert_eq!(output, b"line 3\nline 4\nline 5\n");
+}
+
+#[test]
+fn slice_json_shape() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = make_slice_fixture(&tmp);
+
+    let output = assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .arg("slice")
+        .arg(format!("{}:3-5", path.display()))
+        .args(["-f", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["start_line"], 3);
+    assert_eq!(json["end_line"], 5);
+    assert_eq!(
+        json["lines"].as_array().unwrap(),
+        &["line 3", "line 4", "line 5"]
+    );
+}
+
+#[test]
+fn slice_missing_file_exits_2() {
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .arg("slice")
+        .arg("/nonexistent/file.txt:1-5")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("cannot read"));
+}
+
+#[test]
+fn agent_info_documents_show_and_slice() {
+    assert_cmd::cargo::cargo_bin_cmd!("kgr")
+        .arg("agent-info")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("kgr show <NAME>"))
+        .stdout(predicate::str::contains("kgr slice <FILE>"));
+}
