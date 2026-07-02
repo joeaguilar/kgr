@@ -6,3 +6,5 @@
 /target
 
 .kgr-cache.json
+
+.claude/
