@@ -26,19 +26,19 @@ const OBJC_SYMBOL_QUERY_SRC: &str = r#"
 ;; C function definition
 (function_definition
   declarator: (function_declarator
-    declarator: (identifier) @fn.name))
+    declarator: (identifier) @fn.name)) @def
 
 ;; Objective-C class interface — identifier is a direct child, no name: field
 (class_interface
-  (identifier) @class.name)
+  (identifier) @class.name) @def
 
 ;; Objective-C class implementation — identifier is a direct child
 (class_implementation
-  (identifier) @class.name)
+  (identifier) @class.name) @def
 
 ;; Method definition — identifier is a direct child, no selector: field
 (method_definition
-  (identifier) @method.name)
+  (identifier) @method.name) @def
 "#;
 
 static OBJC_SYMBOL_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -100,20 +100,31 @@ impl super::Parser for ObjCParser {
         let fn_idx = query.capture_index_for_name("fn.name").unwrap();
         let class_idx = query.capture_index_for_name("class.name").unwrap();
         let method_idx = query.capture_index_for_name("method.name").unwrap();
+        let def_idx = query.capture_index_for_name("def").unwrap();
 
         let mut cursor = QueryCursor::new();
         let mut symbols = Vec::new();
         let mut seen = std::collections::HashSet::new();
         let mut matches = cursor.matches(query, tree.root_node(), source);
         while let Some(m) = matches.next() {
+            // Span comes from the enclosing definition node, name from the name node
+            let def_node = m
+                .captures
+                .iter()
+                .find(|c| c.index == def_idx)
+                .map(|c| c.node);
             for capture in m.captures {
+                if capture.index == def_idx {
+                    continue;
+                }
                 let node = capture.node;
                 let name = match node.utf8_text(source) {
                     Ok(s) => s.to_string(),
                     Err(_) => continue,
                 };
 
-                let start = node.start_position();
+                let span_node = def_node.unwrap_or(node);
+                let start = span_node.start_position();
 
                 // Deduplicate by (name, start_line)
                 if !seen.insert((name.clone(), start.row)) {
@@ -133,7 +144,7 @@ impl super::Parser for ObjCParser {
                 // All Objective-C symbols are effectively public
                 let exported = true;
 
-                let end = node.end_position();
+                let end = span_node.end_position();
 
                 symbols.push(Symbol {
                     name,
@@ -361,6 +372,27 @@ mod tests {
         for s in &syms {
             assert!(s.exported, "symbol {} should be exported", s.name);
         }
+    }
+
+    #[test]
+    fn symbols_fn_span_covers_full_definition() {
+        let src =
+            "int add(int a, int b) {\n    int c = a + b;\n    int d = c * 2;\n    return d;\n}\n";
+        let syms = symbols(src);
+        let f = syms.iter().find(|s| s.name == "add").unwrap();
+        assert_eq!(f.span.start_line, 1);
+        assert_eq!(f.span.end_line, 5);
+        assert!(f.span.end_line > f.span.start_line);
+    }
+
+    #[test]
+    fn symbols_method_span_covers_full_definition() {
+        let src = "@implementation Foo\n- (void)doWork {\n    int x = 1;\n    x += 1;\n}\n@end\n";
+        let syms = symbols(src);
+        let m = syms.iter().find(|s| s.name == "doWork").unwrap();
+        assert_eq!(m.kind, SymbolKind::Method);
+        assert_eq!(m.span.start_line, 2);
+        assert_eq!(m.span.end_line, 5);
     }
 
     // ── Call extraction tests ────────────────────────────────────────────

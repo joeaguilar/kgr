@@ -32,19 +32,19 @@ static PHP_QUERY: LazyLock<Query> = LazyLock::new(|| {
 const PHP_SYMBOL_QUERY_SRC: &str = r#"
 ;; Class declaration
 (class_declaration
-  name: (name) @class.name)
+  name: (name) @class.name) @def
 
 ;; Interface declaration
 (interface_declaration
-  name: (name) @class.name)
+  name: (name) @class.name) @def
 
 ;; Function definition
 (function_definition
-  name: (name) @fn.name)
+  name: (name) @fn.name) @def
 
 ;; Method declaration
 (method_declaration
-  name: (name) @method.name)
+  name: (name) @method.name) @def
 "#;
 
 static PHP_SYMBOL_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -109,12 +109,22 @@ impl super::Parser for PhpParser {
         let class_idx = query.capture_index_for_name("class.name").unwrap();
         let fn_idx = query.capture_index_for_name("fn.name").unwrap();
         let method_idx = query.capture_index_for_name("method.name").unwrap();
+        let def_idx = query.capture_index_for_name("def").unwrap();
 
         let mut cursor = QueryCursor::new();
         let mut symbols = Vec::new();
         let mut matches = cursor.matches(query, tree.root_node(), source);
         while let Some(m) = matches.next() {
+            // Span comes from the enclosing definition node, name from the name node
+            let def_node = m
+                .captures
+                .iter()
+                .find(|c| c.index == def_idx)
+                .map(|c| c.node);
             for capture in m.captures {
+                if capture.index == def_idx {
+                    continue;
+                }
                 let node = capture.node;
                 let name = match node.utf8_text(source) {
                     Ok(s) => s.to_string(),
@@ -143,8 +153,9 @@ impl super::Parser for PhpParser {
                             .unwrap_or(false)
                 });
 
-                let start = node.start_position();
-                let end = node.end_position();
+                let span_node = def_node.unwrap_or(node);
+                let start = span_node.start_position();
+                let end = span_node.end_position();
 
                 symbols.push(Symbol {
                     exported,
@@ -368,6 +379,27 @@ require './config.php';
         let priv_method = syms.iter().find(|s| s.name == "priv_m").unwrap();
         assert!(pub_method.exported);
         assert!(!priv_method.exported);
+    }
+
+    #[test]
+    fn symbols_span_covers_full_definition() {
+        let src = "<?php\nfunction multi($a) {\n    $b = $a + 1;\n    $c = $b * 2;\n    return $c;\n}\n?>";
+        let syms = symbols(src);
+        let f = syms.iter().find(|s| s.name == "multi").unwrap();
+        assert_eq!(f.span.start_line, 2);
+        assert_eq!(f.span.end_line, 6);
+    }
+
+    #[test]
+    fn symbols_method_span_covers_body() {
+        let src = "<?php\nclass Svc {\n    public function get() {\n        $x = 1;\n        return $x;\n    }\n}\n?>";
+        let syms = symbols(src);
+        let m = syms.iter().find(|s| s.name == "get").unwrap();
+        assert_eq!(m.span.start_line, 3);
+        assert_eq!(m.span.end_line, 6);
+        let c = syms.iter().find(|s| s.name == "Svc").unwrap();
+        assert_eq!(c.span.start_line, 2);
+        assert_eq!(c.span.end_line, 7);
     }
 
     // ── Call extraction tests ────────────────────────────────────────────

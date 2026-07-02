@@ -31,28 +31,28 @@ const JS_SYMBOL_QUERY_SRC: &str = r#"
 ;; Exported function
 (export_statement
   declaration: (function_declaration
-    name: (identifier) @fn.exported))
+    name: (identifier) @fn.exported) @def)
 
 ;; Non-exported function
 (program
   (function_declaration
-    name: (identifier) @fn.name))
+    name: (identifier) @fn.name) @def)
 
 ;; Exported class
 (export_statement
   declaration: (class_declaration
-    name: (identifier) @class.exported))
+    name: (identifier) @class.exported) @def)
 
 ;; Non-exported class
 (program
   (class_declaration
-    name: (identifier) @class.name))
+    name: (identifier) @class.name) @def)
 
 ;; Method inside class
 (class_declaration
   body: (class_body
     (method_definition
-      name: (property_identifier) @method.name)))
+      name: (property_identifier) @method.name) @def))
 "#;
 
 static JS_SYMBOL_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -123,12 +123,22 @@ impl super::Parser for JavaScriptParser {
         let class_exported_idx = query.capture_index_for_name("class.exported").unwrap();
         let class_name_idx = query.capture_index_for_name("class.name").unwrap();
         let method_idx = query.capture_index_for_name("method.name").unwrap();
+        let def_idx = query.capture_index_for_name("def").unwrap();
 
         let mut cursor = QueryCursor::new();
         let mut symbols = Vec::new();
         let mut matches = cursor.matches(query, tree.root_node(), source);
         while let Some(m) = matches.next() {
+            // Span comes from the enclosing definition node, name from the name node
+            let def_node = m
+                .captures
+                .iter()
+                .find(|c| c.index == def_idx)
+                .map(|c| c.node);
             for capture in m.captures {
+                if capture.index == def_idx {
+                    continue;
+                }
                 let node = capture.node;
                 let name = match node.utf8_text(source) {
                     Ok(s) => s.to_string(),
@@ -149,8 +159,9 @@ impl super::Parser for JavaScriptParser {
                     continue;
                 };
 
-                let start = node.start_position();
-                let end = node.end_position();
+                let span_node = def_node.unwrap_or(node);
+                let start = span_node.start_position();
+                let end = span_node.end_position();
 
                 symbols.push(Symbol {
                     name,
@@ -405,6 +416,27 @@ mod tests {
         let helper = syms.iter().find(|s| s.name == "helper").unwrap();
         assert!(main.exported);
         assert!(!helper.exported);
+    }
+
+    #[test]
+    fn symbols_span_covers_full_definition() {
+        let src = "function multi(a) {\n  const b = a + 1;\n  const c = b * 2;\n  return c;\n}\n";
+        let syms = symbols(src);
+        let f = syms.iter().find(|s| s.name == "multi").unwrap();
+        assert_eq!(f.span.start_line, 1);
+        assert_eq!(f.span.end_line, 5);
+    }
+
+    #[test]
+    fn symbols_method_span_covers_body() {
+        let src = "class Svc {\n  get() {\n    const x = 1;\n    return x;\n  }\n}\n";
+        let syms = symbols(src);
+        let m = syms.iter().find(|s| s.name == "get").unwrap();
+        assert_eq!(m.span.start_line, 2);
+        assert_eq!(m.span.end_line, 5);
+        let c = syms.iter().find(|s| s.name == "Svc").unwrap();
+        assert_eq!(c.span.start_line, 1);
+        assert_eq!(c.span.end_line, 6);
     }
 
     // ── Call extraction tests ────────────────────────────────────────────

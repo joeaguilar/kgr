@@ -25,19 +25,19 @@ static SCALA_SYMBOL_QUERY: LazyLock<Query> = LazyLock::new(|| {
 const SCALA_SYMBOL_QUERY_SRC: &str = r#"
 ;; Class definition
 (class_definition
-  name: (identifier) @class.name)
+  name: (identifier) @class.name) @def
 
 ;; Object definition (singleton)
 (object_definition
-  name: (identifier) @class.name)
+  name: (identifier) @class.name) @def
 
 ;; Trait definition
 (trait_definition
-  name: (identifier) @class.name)
+  name: (identifier) @class.name) @def
 
 ;; Function definition (def)
 (function_definition
-  name: (identifier) @fn.name)
+  name: (identifier) @fn.name) @def
 "#;
 
 static SCALA_CALL_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -93,12 +93,22 @@ impl super::Parser for ScalaParser {
         let query = &*SCALA_SYMBOL_QUERY;
         let class_idx = query.capture_index_for_name("class.name").unwrap();
         let fn_idx = query.capture_index_for_name("fn.name").unwrap();
+        let def_idx = query.capture_index_for_name("def").unwrap();
 
         let mut cursor = QueryCursor::new();
         let mut symbols = Vec::new();
         let mut matches = cursor.matches(query, tree.root_node(), source);
         while let Some(m) = matches.next() {
+            // Span comes from the enclosing definition node, name from the name node
+            let def_node = m
+                .captures
+                .iter()
+                .find(|c| c.index == def_idx)
+                .map(|c| c.node);
             for capture in m.captures {
+                if capture.index == def_idx {
+                    continue;
+                }
                 let node = capture.node;
                 let name = match node.utf8_text(source) {
                     Ok(s) => s.to_string(),
@@ -126,8 +136,9 @@ impl super::Parser for ScalaParser {
                             .unwrap_or(false)
                 });
 
-                let start = node.start_position();
-                let end = node.end_position();
+                let span_node = def_node.unwrap_or(node);
+                let start = span_node.start_position();
+                let end = span_node.end_position();
 
                 symbols.push(Symbol {
                     exported,
@@ -305,6 +316,26 @@ import com.example.MyClass
             .collect();
         assert_eq!(fns.len(), 1);
         assert_eq!(fns[0].name, "hello");
+    }
+
+    #[test]
+    fn symbols_function_span_covers_body() {
+        let src =
+            "object Main {\n  def multi(a: Int): Int = {\n    val b = a + 1\n    b * 2\n  }\n}\n";
+        let syms = symbols(src);
+        let f = syms.iter().find(|s| s.name == "multi").unwrap();
+        assert_eq!(f.span.start_line, 2);
+        assert_eq!(f.span.end_line, 5);
+        assert!(f.span.end_line > f.span.start_line);
+    }
+
+    #[test]
+    fn symbols_class_span_covers_body() {
+        let src = "class Wide {\n  def a(): Unit = {}\n  def b(): Unit = {}\n}\n";
+        let syms = symbols(src);
+        let c = syms.iter().find(|s| s.name == "Wide").unwrap();
+        assert_eq!(c.span.start_line, 1);
+        assert_eq!(c.span.end_line, 4);
     }
 
     #[test]
