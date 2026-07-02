@@ -4,7 +4,7 @@
 
 Zero-config, polyglot CLI that reads source files and emits a queryable knowledge graph of import relationships.
 
-**Supported languages:** Python, TypeScript, JavaScript, Java, Rust, Go, C, C++
+**Supported languages:** Python, TypeScript, JavaScript, Java, Rust, Go, C, C++, Zig, C#, Objective-C, Swift, Ruby, PHP, Scala, Lua, Elixir, Haskell, Bash — 19 in total
 
 ---
 
@@ -112,6 +112,43 @@ JSON output:
 | `--orphans` | List orphaned files |
 | `--heaviest` | Files ranked by number of dependents |
 | `-f, --format` | `table` (default), `json` |
+
+### `kgr show <symbol> [PATH]`
+
+Print the definition body of a symbol, straight from source, located via the index — replaces `grep -n` + `sed -n` chains.
+
+```
+$ kgr show render_table
+── crates/kgr/src/render/table.rs:6-41 (function render_table) ──
+   6  pub fn render_table(rows: &[Row], opts: &TableOpts) -> String {
+   7      let widths = column_widths(rows);
+   …
+  41  }
+```
+
+| Flag | Description |
+|---|---|
+| `-c, --context <n>` | Include n lines before/after the definition (default 0) |
+| `--all` | Print every match; default prints the first and lists the rest as one-line pointers |
+| `-k, --kind <fn\|class\|method>` | Disambiguate same-named symbols |
+| `-f, --format` | `text` (default), `json` — `{name, kind, path, start_line, end_line, exported, body}` per match |
+| `--no-linenos` | Raw body, pipe-friendly |
+
+### `kgr slice <file>:<start>[-<end>]`
+
+Print a numbered, bounded line window from any file — no index, works on files kgr doesn't parse (`.toml`, `.md`, logs). Replaces `sed -n 'X,Yp'`.
+
+```
+$ kgr slice crates/kgr/src/main.rs:100-140
+$ kgr slice engine.py:1134 -c 20        # single line ± context
+```
+
+| Flag | Description |
+|---|---|
+| `-c, --context <n>` | Expand a single-line target both ways (default 10 when no end given) |
+| `--no-linenos` | Raw text, byte-identical to the source window |
+| `-f, --format` | `text` (default), `json` — `{path, start_line, end_line, lines[]}` |
+| `--max <n>` | Raise the 500-line output cap |
 
 ### `kgr init [PATH]`
 

@@ -333,6 +333,76 @@ enum Commands {
         verbose: u8,
     },
 
+    /// Print the definition body of a symbol, straight from source
+    Show {
+        /// Symbol name to print
+        name: String,
+
+        /// Root directory to scan
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Include n lines of context before/after the definition
+        #[arg(short, long, default_value_t = 0)]
+        context: usize,
+
+        /// Print every match (default: first match + one-line pointers to others)
+        #[arg(long)]
+        all: bool,
+
+        /// Disambiguate same-named symbols: fn, class, method
+        #[arg(short, long)]
+        kind: Option<String>,
+
+        /// Output format: text, json
+        #[arg(short, long, default_value = "text")]
+        format: String,
+
+        /// Raw body without line numbers (pipe-friendly)
+        #[arg(long)]
+        no_linenos: bool,
+
+        /// Filter by language
+        #[arg(short, long)]
+        lang: Option<Vec<String>>,
+
+        /// Disable progress bar
+        #[arg(long)]
+        no_progress: bool,
+
+        /// Increase verbosity
+        #[arg(short, long, action = clap::ArgAction::Count)]
+        verbose: u8,
+    },
+
+    /// Print a numbered line window from a file (index-free)
+    Slice {
+        /// Target: <file>:<start>, <file>:<start>-<end>, or <file> with positional start/end
+        target: String,
+
+        /// Start line (positional fallback for `kgr slice file start end`)
+        start: Option<usize>,
+
+        /// End line (positional fallback)
+        end: Option<usize>,
+
+        /// Expand a single-line target both ways (default 10 when no end given)
+        #[arg(short, long)]
+        context: Option<usize>,
+
+        /// Raw text without line numbers
+        #[arg(long)]
+        no_linenos: bool,
+
+        /// Output format: text, json
+        #[arg(short, long, default_value = "text")]
+        format: String,
+
+        /// Maximum lines to print
+        #[arg(long, default_value_t = 500)]
+        max: usize,
+    },
+
     /// Generate a .kgr.toml configuration file
     Init {
         /// Directory to initialize
@@ -503,6 +573,43 @@ fn main() {
             setup_tracing(verbose);
             run_hotspots(&path, &format, &lang, top, no_progress);
         }
+        Some(Commands::Show {
+            name,
+            path,
+            context,
+            all,
+            kind,
+            format,
+            no_linenos,
+            lang,
+            no_progress,
+            verbose,
+        }) => {
+            setup_tracing(verbose);
+            run_show(
+                &name,
+                &path,
+                context,
+                all,
+                kind.as_deref(),
+                &format,
+                no_linenos,
+                &lang,
+                no_progress,
+            );
+        }
+        Some(Commands::Slice {
+            target,
+            start,
+            end,
+            context,
+            no_linenos,
+            format,
+            max,
+        }) => {
+            setup_tracing(0);
+            run_slice(&target, start, end, context, no_linenos, &format, max);
+        }
         Some(Commands::Init { path }) => {
             run_init(&path);
         }
@@ -625,6 +732,7 @@ fn run_graph(
                             "name": s.name,
                             "kind": s.kind.to_string(),
                             "line": s.span.start_line,
+                            "end_line": s.span.end_line,
                             "exported": s.exported,
                         }))
                         .collect::<Vec<_>>());
@@ -1191,6 +1299,7 @@ fn run_symbols(path: &PathBuf, format: &str, lang: &Option<Vec<String>>, no_prog
                             "name": s.name,
                             "kind": s.kind.to_string(),
                             "line": s.span.start_line,
+                            "end_line": s.span.end_line,
                             "exported": s.exported,
                         })
                     }).collect::<Vec<_>>(),
@@ -1242,6 +1351,7 @@ fn run_refs(
                 definitions.push(serde_json::json!({
                     "file": f.path.to_string_lossy(),
                     "line": s.span.start_line,
+                    "end_line": s.span.end_line,
                     "kind": s.kind.to_string(),
                 }));
             }
@@ -1976,5 +2086,258 @@ fn run_hotspots(
                 );
             }
         }
+    }
+}
+
+/// Byte range of lines `start_line..=end_line` (1-based, inclusive) in `content`,
+/// including the trailing newline of `end_line` when present. Used so
+/// `--no-linenos` output round-trips byte-identical to the source window.
+fn line_byte_range(content: &str, start_line: usize, end_line: usize) -> (usize, usize) {
+    let mut line_starts = vec![0usize];
+    for (i, b) in content.bytes().enumerate() {
+        if b == b'\n' {
+            line_starts.push(i + 1);
+        }
+    }
+    let start = line_starts
+        .get(start_line - 1)
+        .copied()
+        .unwrap_or(content.len());
+    let end = line_starts.get(end_line).copied().unwrap_or(content.len());
+    (start, end)
+}
+
+fn write_numbered_window(out: &mut impl Write, lines: &[&str], start_line: usize, end_line: usize) {
+    let width = end_line.to_string().len().max(4);
+    for n in start_line..=end_line {
+        if let Some(line) = lines.get(n - 1) {
+            writeln!(out, "{:>width$}  {}", n, line, width = width).ok();
+        }
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "CLI dispatch passes through all flags"
+)]
+fn run_show(
+    name: &str,
+    path: &PathBuf,
+    context: usize,
+    all: bool,
+    kind: Option<&str>,
+    format: &str,
+    no_linenos: bool,
+    lang: &Option<Vec<String>>,
+    no_progress: bool,
+) {
+    use kgr_core::types::SymbolKind;
+
+    let kind_filter = kind.map(|k| match k {
+        "fn" | "function" => SymbolKind::Function,
+        "class" => SymbolKind::Class,
+        "method" => SymbolKind::Method,
+        other => {
+            eprintln!("Error: unknown kind '{other}' (expected fn, class, or method)");
+            process::exit(2);
+        }
+    });
+
+    let (root, file_nodes) = build_file_nodes(path, lang, no_progress);
+
+    let mut matches: Vec<(&PathBuf, &kgr_core::types::Symbol)> = file_nodes
+        .iter()
+        .flat_map(|f| f.symbols.iter().map(move |s| (&f.path, s)))
+        .filter(|(_, s)| s.name == name && kind_filter.map_or(true, |k| s.kind == k))
+        .collect();
+    matches.sort_by(|a, b| (a.0, a.1.span.start_line).cmp(&(b.0, b.1.span.start_line)));
+
+    if matches.is_empty() {
+        eprintln!("Symbol '{name}' not found");
+        let mut suggestions: Vec<&str> = file_nodes
+            .iter()
+            .flat_map(|f| f.symbols.iter())
+            .filter(|s| {
+                s.name.eq_ignore_ascii_case(name)
+                    || s.name.to_lowercase().contains(&name.to_lowercase())
+            })
+            .map(|s| s.name.as_str())
+            .collect();
+        suggestions.sort_unstable();
+        suggestions.dedup();
+        if !suggestions.is_empty() {
+            suggestions.truncate(5);
+            eprintln!("Did you mean: {}?", suggestions.join(", "));
+        }
+        process::exit(1);
+    }
+
+    // Read each matched file once and compute the printed window per match
+    let mut file_cache: std::collections::HashMap<&PathBuf, String> =
+        std::collections::HashMap::new();
+    let mut stdout = std::io::stdout().lock();
+    let printed = if all { matches.len() } else { 1 };
+
+    if format == "json" {
+        let entries: Vec<serde_json::Value> = matches
+            .iter()
+            .enumerate()
+            .map(|(i, (fpath, s))| {
+                let body = (i < printed).then(|| {
+                    let content = file_cache
+                        .entry(fpath)
+                        .or_insert_with(|| {
+                            std::fs::read_to_string(root.join(fpath)).unwrap_or_default()
+                        })
+                        .as_str();
+                    let total = content.lines().count();
+                    let start = s.span.start_line.saturating_sub(context).max(1);
+                    let end = (s.span.end_line + context).min(total.max(1));
+                    let (b0, b1) = line_byte_range(content, start, end);
+                    content[b0..b1].to_string()
+                });
+                serde_json::json!({
+                    "name": s.name,
+                    "kind": s.kind.to_string(),
+                    "path": fpath.to_string_lossy(),
+                    "start_line": s.span.start_line,
+                    "end_line": s.span.end_line,
+                    "exported": s.exported,
+                    "body": body,
+                })
+            })
+            .collect();
+        serde_json::to_writer_pretty(&mut stdout, &entries).ok();
+        writeln!(stdout).ok();
+        return;
+    }
+
+    for (i, (fpath, s)) in matches.iter().enumerate() {
+        if i >= printed {
+            writeln!(
+                stdout,
+                "also: {}:{} ({})",
+                fpath.display(),
+                s.span.start_line,
+                s.kind
+            )
+            .ok();
+            continue;
+        }
+        let content = file_cache
+            .entry(fpath)
+            .or_insert_with(|| std::fs::read_to_string(root.join(fpath)).unwrap_or_default())
+            .as_str();
+        let total = content.lines().count();
+        let start = s.span.start_line.saturating_sub(context).max(1);
+        let end = (s.span.end_line + context).min(total.max(1));
+
+        if no_linenos {
+            let (b0, b1) = line_byte_range(content, start, end);
+            write!(stdout, "{}", &content[b0..b1]).ok();
+        } else {
+            writeln!(
+                stdout,
+                "── {}:{}-{} ({} {}) ──",
+                fpath.display(),
+                start,
+                end,
+                s.kind,
+                s.name
+            )
+            .ok();
+            let lines: Vec<&str> = content.lines().collect();
+            write_numbered_window(&mut stdout, &lines, start, end);
+            if i + 1 < printed {
+                writeln!(stdout).ok();
+            }
+        }
+    }
+}
+
+fn run_slice(
+    target: &str,
+    start_pos: Option<usize>,
+    end_pos: Option<usize>,
+    context: Option<usize>,
+    no_linenos: bool,
+    format: &str,
+    max: usize,
+) {
+    // Accept `file:start`, `file:start-end`, and `file start end` (positional)
+    let (file, start, end) = if let Some(start) = start_pos {
+        (target.to_string(), start, end_pos)
+    } else {
+        let parsed = target.rsplit_once(':').and_then(|(file, loc)| {
+            let (s, e) = match loc.split_once('-') {
+                Some((s, e)) => (s.parse().ok()?, Some(e.parse().ok()?)),
+                None => (loc.parse().ok()?, None),
+            };
+            Some((file.to_string(), s, e))
+        });
+        match parsed {
+            Some(p) => p,
+            None => {
+                eprintln!("Error: expected <file>:<start>[-<end>] or <file> <start> [<end>]");
+                process::exit(2);
+            }
+        }
+    };
+
+    if start == 0 || end.is_some_and(|e| e < start) {
+        eprintln!("Error: lines are 1-based and end must be >= start");
+        process::exit(2);
+    }
+
+    let content = std::fs::read_to_string(&file).unwrap_or_else(|e| {
+        eprintln!("Error: cannot read '{file}': {e}");
+        process::exit(2);
+    });
+    let total = content.lines().count().max(1);
+
+    let (mut start, mut end) = match end {
+        Some(e) => (start, e),
+        None => {
+            let ctx = context.unwrap_or(10);
+            (start.saturating_sub(ctx).max(1), start + ctx)
+        }
+    };
+    if start > total {
+        eprintln!("note: start {start} is beyond EOF (file has {total} lines)");
+        start = total;
+    }
+    if end > total {
+        if format != "json" && !no_linenos {
+            eprintln!("note: end clamped to EOF ({total} lines)");
+        }
+        end = total;
+    }
+    if end - start + 1 > max {
+        end = start + max - 1;
+        eprintln!("note: output capped at {max} lines (use --max to raise)");
+    }
+
+    let mut stdout = std::io::stdout().lock();
+
+    if format == "json" {
+        let lines: Vec<&str> = content
+            .lines()
+            .skip(start - 1)
+            .take(end - start + 1)
+            .collect();
+        let json = serde_json::json!({
+            "path": file,
+            "start_line": start,
+            "end_line": end,
+            "lines": lines,
+        });
+        serde_json::to_writer_pretty(&mut stdout, &json).ok();
+        writeln!(stdout).ok();
+    } else if no_linenos {
+        let (b0, b1) = line_byte_range(&content, start, end);
+        write!(stdout, "{}", &content[b0..b1]).ok();
+    } else {
+        let lines: Vec<&str> = content.lines().collect();
+        write_numbered_window(&mut stdout, &lines, start, end);
     }
 }
