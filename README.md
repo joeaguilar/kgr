@@ -10,24 +10,36 @@ Zero-config, polyglot CLI that reads source files and emits a queryable knowledg
 
 ## Installation
 
+Prebuilt binaries (no toolchain needed):
+
 ```sh
-# Clone and install in one step
-git clone https://github.com/joeaguilar/kgr
-cd kgr
-./install.sh          # builds release binary → ~/.cargo/bin/kgr
+curl -fsSL https://raw.githubusercontent.com/joeaguilar/kgr/main/install.sh | bash
 ```
 
-Or with cargo directly (after cloning):
+Windows (PowerShell):
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/joeaguilar/kgr/main/install.ps1 | iex
+```
+
+From source (after cloning):
 
 ```sh
+KGR_FROM_SOURCE=1 ./install.sh    # cargo build → ~/.cargo/bin/kgr
+# or
 cargo install --path crates/kgr
 ```
 
-Once installed, keep it up to date with:
+Once installed, keep it up to date with either:
 
 ```sh
-kgr upgrade           # git pull + cargo build --release + in-place replace
+curl -fsSL https://raw.githubusercontent.com/joeaguilar/kgr/main/install.sh | bash -s -- --update
+kgr upgrade           # source route: git pull + cargo build --release + in-place replace
 ```
+
+Releases are automated: Conventional Commits on `main` drive auto-tagging
+(`feat:` → minor, `fix:` → patch, `!`/`BREAKING CHANGE` → major), and tags
+trigger a 7-platform release build with SHA256 checksums.
 
 ---
 
