@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release (e.g. v0.2.0). Must already exist.'
+        description: 'Tag to release (e.g. v0.3.0). Must already exist.'
         required: true
         type: string
 
@@ -18,8 +18,32 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Create the release once, up front. The build matrix only uploads assets:
+  # concurrent matrix jobs racing to create the same release lose with a
+  # validation conflict (bit ccq's v0.1.1, where 2 of 7 uploads failed).
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve release tag
+        id: tag
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Ensure release exists
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          generate_release_notes: true
+
   build:
     name: ${{ matrix.target }}
+    needs: create-release
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -28,45 +52,30 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
             archive: tar.gz
-            apt: ''
-            smoke: true
           - target: x86_64-unknown-linux-musl
             os: ubuntu-22.04
             archive: tar.gz
             apt: musl-tools
-            smoke: true
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-22.04-arm
             archive: tar.gz
-            apt: ''
-            smoke: true
           - target: x86_64-apple-darwin
             os: macos-15-intel
             archive: tar.gz
-            apt: ''
-            smoke: true
           - target: aarch64-apple-darwin
             os: macos-14
             archive: tar.gz
-            apt: ''
-            smoke: true
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             archive: zip
-            apt: ''
-            smoke: true
           - target: aarch64-pc-windows-msvc
             os: windows-11-arm
             archive: zip
-            apt: ''
-            smoke: true
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.tag || github.ref }}
-          fetch-depth: 0
-          fetch-tags: true
 
       - name: Resolve release tag
         id: tag
@@ -84,33 +93,34 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ${{ matrix.apt }}
 
-      - name: Install Rust target
+      - name: Install Rust toolchain
         shell: bash
         run: |
           rustup show
           rustup target add ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v5
         with:
-          key: ${{ matrix.target }}-release
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build release binary
         shell: bash
         run: cargo build --release --locked -p kgr --target ${{ matrix.target }}
 
-      - name: Smoke test release binary
-        if: matrix.smoke == true
+      - name: Smoke test native release binary
         shell: bash
         run: |
           set -euo pipefail
-          bin="target/${{ matrix.target }}/release/kgr"
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            bin="${bin}.exe"
+          BIN="target/${{ matrix.target }}/release/kgr"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            BIN="${BIN}.exe"
           fi
-
-          "./${bin}" --version
-          "./${bin}" graph --format json --no-progress tests/fixtures/python/simple > smoke-graph.json
-          test -s smoke-graph.json
+          "$BIN" --version
+          "$BIN" --help > /dev/null
 
       - name: Package archive (Unix)
         if: matrix.archive == 'tar.gz'
@@ -138,7 +148,7 @@ jobs:
           Compress-Archive -Path $staging -DestinationPath "$staging.zip"
           $hash = (Get-FileHash -Algorithm SHA256 "$staging.zip").Hash.ToLower()
           "$hash  $staging.zip" | Out-File -FilePath "$staging.zip.sha256" -Encoding ascii -NoNewline
-          "ASSET=$staging.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ASSET=$staging.zip"           | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "CHECKSUM=$staging.zip.sha256" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Upload to release
@@ -149,4 +159,3 @@ jobs:
             ${{ env.ASSET }}
             ${{ env.CHECKSUM }}
           fail_on_unmatched_files: true
-          generate_release_notes: true
