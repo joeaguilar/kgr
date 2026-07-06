@@ -1,6 +1,6 @@
 ---
 source: crates/kgr/tests/snapshots.rs
-assertion_line: 91
+assertion_line: 104
 expression: stdout
 ---
 {
@@ -72,9 +72,9 @@ expression: stdout
           "kind": "function",
           "name": "greet",
           "span": {
-            "end_col": 14,
-            "end_line": 1,
-            "start_col": 9,
+            "end_col": 1,
+            "end_line": 3,
+            "start_col": 0,
             "start_line": 1
           }
         }

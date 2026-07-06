@@ -27,50 +27,50 @@ const CPP_SYMBOL_QUERY_SRC: &str = r#"
 ;; Function definition
 (function_definition
   declarator: (function_declarator
-    declarator: (identifier) @fn.name))
+    declarator: (identifier) @fn.name)) @def
 
 ;; Pointer function
 (function_definition
   declarator: (pointer_declarator
     declarator: (function_declarator
-      declarator: (identifier) @fn.name)))
+      declarator: (identifier) @fn.name))) @def
 
 ;; Qualified function (e.g., Foo::bar)
 (function_definition
   declarator: (function_declarator
     declarator: (qualified_identifier
-      name: (identifier) @method.name)))
+      name: (identifier) @method.name))) @def
 
 ;; Inline method defined in a class body (declarator is a field_identifier)
 (function_definition
   declarator: (function_declarator
-    declarator: (field_identifier) @method.name))
+    declarator: (field_identifier) @method.name)) @def
 
 ;; Inline method returning a pointer
 (function_definition
   declarator: (pointer_declarator
     declarator: (function_declarator
-      declarator: (field_identifier) @method.name)))
+      declarator: (field_identifier) @method.name))) @def
 
 ;; Class definition — body required so forward declarations and
 ;; usage sites (e.g. `class Fwd;`, `struct Point p;`) don't register symbols
 (class_specifier
   name: (type_identifier) @class.name
-  body: (field_declaration_list))
+  body: (field_declaration_list)) @def
 
 ;; Struct definition — body required, same as class
 (struct_specifier
   name: (type_identifier) @class.name
-  body: (field_declaration_list))
+  body: (field_declaration_list)) @def
 
 ;; Enum definition — body required, same as class
 (enum_specifier
   name: (type_identifier) @class.name
-  body: (enumerator_list))
+  body: (enumerator_list)) @def
 
 ;; Namespace definition
 (namespace_definition
-  name: (namespace_identifier) @class.name)
+  name: (namespace_identifier) @class.name) @def
 "#;
 
 static CPP_SYMBOL_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -204,6 +204,7 @@ impl super::Parser for CppParser {
         let fn_idx = query.capture_index_for_name("fn.name").unwrap();
         let class_idx = query.capture_index_for_name("class.name").unwrap();
         let method_idx = query.capture_index_for_name("method.name").unwrap();
+        let def_idx = query.capture_index_for_name("def").unwrap();
 
         let mut cursor = QueryCursor::new();
         let mut symbols = Vec::new();
@@ -211,7 +212,16 @@ impl super::Parser for CppParser {
         let mut matches = cursor.matches(query, tree.root_node(), source);
 
         while let Some(m) = matches.next() {
+            // Span comes from the enclosing definition node, name from the name node
+            let def_node = m
+                .captures
+                .iter()
+                .find(|c| c.index == def_idx)
+                .map(|c| c.node);
             for capture in m.captures {
+                if capture.index == def_idx {
+                    continue;
+                }
                 let node = capture.node;
                 let name = match node.utf8_text(source) {
                     Ok(s) => s.to_string(),
@@ -228,8 +238,9 @@ impl super::Parser for CppParser {
                     continue;
                 };
 
-                let start = node.start_position();
-                let end = node.end_position();
+                let span_node = def_node.unwrap_or(node);
+                let start = span_node.start_position();
+                let end = span_node.end_position();
 
                 // Deduplicate by (name, start_line)
                 let key = (name.clone(), start.row);
@@ -451,6 +462,37 @@ mod tests {
             .collect();
         assert_eq!(points.len(), 1);
         assert_eq!(points[0].span.start_line, 1);
+    }
+
+    #[test]
+    fn symbols_fn_span_covers_full_definition() {
+        let src =
+            "int add(int a, int b) {\n    int c = a + b;\n    int d = c * 2;\n    return d;\n}\n";
+        let syms = symbols(src);
+        let f = syms.iter().find(|s| s.name == "add").unwrap();
+        assert_eq!(f.span.start_line, 1);
+        assert_eq!(f.span.end_line, 5);
+        assert!(f.span.end_line > f.span.start_line);
+    }
+
+    #[test]
+    fn symbols_method_span_covers_full_definition() {
+        let src = "class Foo {};\nvoid Foo::bar() {\n    int x = 1;\n    x += 1;\n}\n";
+        let syms = symbols(src);
+        let m = syms.iter().find(|s| s.name == "bar").unwrap();
+        assert_eq!(m.kind, SymbolKind::Method);
+        assert_eq!(m.span.start_line, 2);
+        assert_eq!(m.span.end_line, 5);
+    }
+
+    #[test]
+    fn symbols_inline_method_span_covers_body() {
+        let src = "class Foo {\npublic:\n  void work() {\n    int x = 1;\n    x += 1;\n  }\n};\n";
+        let syms = symbols(src);
+        let m = syms.iter().find(|s| s.name == "work").unwrap();
+        assert_eq!(m.kind, SymbolKind::Method);
+        assert_eq!(m.span.start_line, 3);
+        assert_eq!(m.span.end_line, 6);
     }
 
     // ── Call extraction tests ────────────────────────────────────────────

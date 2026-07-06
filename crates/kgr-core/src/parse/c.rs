@@ -26,24 +26,24 @@ const C_SYMBOL_QUERY_SRC: &str = r#"
 ;; Function definition — name inside function_declarator
 (function_definition
   declarator: (function_declarator
-    declarator: (identifier) @fn.name))
+    declarator: (identifier) @fn.name)) @def
 
 ;; Pointer function: int *foo() — name inside pointer_declarator
 (function_definition
   declarator: (pointer_declarator
     declarator: (function_declarator
-      declarator: (identifier) @fn.name)))
+      declarator: (identifier) @fn.name))) @def
 
 ;; Struct definition — body required so forward declarations and
 ;; usage sites (e.g. `struct Point p;`) don't register symbols
 (struct_specifier
   name: (type_identifier) @class.name
-  body: (field_declaration_list))
+  body: (field_declaration_list)) @def
 
 ;; Enum definition — body required, same as struct
 (enum_specifier
   name: (type_identifier) @class.name
-  body: (enumerator_list))
+  body: (enumerator_list)) @def
 
 ;; typedef struct { ... } Name — the dominant C struct-declaration idiom.
 ;; Body required so forward typedefs (`typedef struct Foo Foo;`) don't
@@ -53,19 +53,19 @@ const C_SYMBOL_QUERY_SRC: &str = r#"
 (type_definition
   type: (struct_specifier
     body: (field_declaration_list))
-  declarator: (type_identifier) @class.name)
+  declarator: (type_identifier) @class.name) @def
 
 ;; typedef enum { ... } Name
 (type_definition
   type: (enum_specifier
     body: (enumerator_list))
-  declarator: (type_identifier) @class.name)
+  declarator: (type_identifier) @class.name) @def
 
 ;; typedef union { ... } Name
 (type_definition
   type: (union_specifier
     body: (field_declaration_list))
-  declarator: (type_identifier) @class.name)
+  declarator: (type_identifier) @class.name) @def
 "#;
 
 static C_SYMBOL_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -130,13 +130,23 @@ impl super::Parser for CParser {
         let query = &*C_SYMBOL_QUERY;
         let fn_idx = query.capture_index_for_name("fn.name").unwrap();
         let class_idx = query.capture_index_for_name("class.name").unwrap();
+        let def_idx = query.capture_index_for_name("def").unwrap();
 
         let mut cursor = QueryCursor::new();
         let mut symbols = Vec::new();
         let mut seen = std::collections::HashSet::new();
         let mut matches = cursor.matches(query, tree.root_node(), source);
         while let Some(m) = matches.next() {
+            // Span comes from the enclosing definition node, name from the name node
+            let def_node = m
+                .captures
+                .iter()
+                .find(|c| c.index == def_idx)
+                .map(|c| c.node);
             for capture in m.captures {
+                if capture.index == def_idx {
+                    continue;
+                }
                 let node = capture.node;
                 let name = match node.utf8_text(source) {
                     Ok(s) => s.to_string(),
@@ -160,7 +170,8 @@ impl super::Parser for CParser {
                     }
                 }
 
-                let start = node.start_position();
+                let span_node = def_node.unwrap_or(node);
+                let start = span_node.start_position();
 
                 // Deduplicate by (name, start_line)
                 if !seen.insert((name.clone(), start.row)) {
@@ -201,7 +212,7 @@ impl super::Parser for CParser {
                     true
                 };
 
-                let end = node.end_position();
+                let end = span_node.end_position();
 
                 symbols.push(Symbol {
                     name,
@@ -424,6 +435,33 @@ mod tests {
         assert!(syms
             .iter()
             .any(|s| s.name == "Color" && s.kind == SymbolKind::Class));
+    }
+
+    #[test]
+    fn symbols_span_covers_full_definition() {
+        let src = "int multi(int a) {\n    int b = a + 1;\n    int c = b * 2;\n    return c;\n}\n";
+        let syms = symbols(src);
+        let f = syms.iter().find(|s| s.name == "multi").unwrap();
+        assert_eq!(f.span.start_line, 1);
+        assert_eq!(f.span.end_line, 5);
+    }
+
+    #[test]
+    fn symbols_struct_span_covers_body() {
+        let src = "struct Point {\n    int x;\n    int y;\n};\n";
+        let syms = symbols(src);
+        let s = syms.iter().find(|s| s.name == "Point").unwrap();
+        assert_eq!(s.span.start_line, 1);
+        assert_eq!(s.span.end_line, 4);
+    }
+
+    #[test]
+    fn symbols_typedef_span_covers_body() {
+        let src = "typedef struct {\n    int a;\n    int b;\n} Foo;\n";
+        let syms = symbols(src);
+        let s = syms.iter().find(|s| s.name == "Foo").unwrap();
+        assert_eq!(s.span.start_line, 1);
+        assert_eq!(s.span.end_line, 4);
     }
 
     #[test]

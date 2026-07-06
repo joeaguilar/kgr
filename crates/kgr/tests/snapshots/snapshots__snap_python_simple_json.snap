@@ -97,9 +97,9 @@ expression: stdout
           "kind": "function",
           "name": "main",
           "span": {
-            "end_col": 8,
-            "end_line": 5,
-            "start_col": 4,
+            "end_col": 17,
+            "end_line": 8,
+            "start_col": 0,
             "start_line": 5
           }
         }
@@ -116,9 +116,9 @@ expression: stdout
           "kind": "function",
           "name": "load",
           "span": {
-            "end_col": 8,
-            "end_line": 1,
-            "start_col": 4,
+            "end_col": 29,
+            "end_line": 2,
+            "start_col": 0,
             "start_line": 1
           }
         }
@@ -145,9 +145,9 @@ expression: stdout
           "kind": "function",
           "name": "process",
           "span": {
-            "end_col": 11,
-            "end_line": 1,
-            "start_col": 4,
+            "end_col": 36,
+            "end_line": 2,
+            "start_col": 0,
             "start_line": 1
           }
         }

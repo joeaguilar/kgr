@@ -25,77 +25,77 @@ const RUST_SYMBOL_QUERY_SRC: &str = r#"
 ;; Pub function (must come before non-pub so dedup keeps exported)
 (function_item
   (visibility_modifier)
-  name: (identifier) @fn.exported)
+  name: (identifier) @fn.exported) @def
 
 ;; Top-level function (non-pub)
 (function_item
-  name: (identifier) @fn.name)
+  name: (identifier) @fn.name) @def
 
 ;; Pub struct
 (struct_item
   (visibility_modifier)
-  name: (type_identifier) @class.exported)
+  name: (type_identifier) @class.exported) @def
 
 ;; Struct (non-pub)
 (struct_item
-  name: (type_identifier) @class.name)
+  name: (type_identifier) @class.name) @def
 
 ;; Pub enum
 (enum_item
   (visibility_modifier)
-  name: (type_identifier) @class.exported)
+  name: (type_identifier) @class.exported) @def
 
 ;; Enum (non-pub)
 (enum_item
-  name: (type_identifier) @class.name)
+  name: (type_identifier) @class.name) @def
 
 ;; Enum variants
 (enum_variant
-  name: (identifier) @variant.name)
+  name: (identifier) @variant.name) @def
 
 ;; Pub trait
 (trait_item
   (visibility_modifier)
-  name: (type_identifier) @class.exported)
+  name: (type_identifier) @class.exported) @def
 
 ;; Trait (non-pub)
 (trait_item
-  name: (type_identifier) @class.name)
+  name: (type_identifier) @class.name) @def
 
 ;; Method inside impl block
 (impl_item
   body: (declaration_list
     (function_item
-      name: (identifier) @method.name)))
+      name: (identifier) @method.name) @def))
 
 ;; Required trait method (signature only): trait T { fn required(&self); }
 (trait_item
   body: (declaration_list
     (function_signature_item
-      name: (identifier) @method.name)))
+      name: (identifier) @method.name) @def))
 
 ;; Pub type alias: pub type Alias = u32;
 (type_item
   (visibility_modifier)
-  name: (type_identifier) @class.exported)
+  name: (type_identifier) @class.exported) @def
 
 ;; Type alias (non-pub)
 (type_item
-  name: (type_identifier) @class.name)
+  name: (type_identifier) @class.name) @def
 
 ;; Pub union
 (union_item
   (visibility_modifier)
-  name: (type_identifier) @class.exported)
+  name: (type_identifier) @class.exported) @def
 
 ;; Union (non-pub)
 (union_item
-  name: (type_identifier) @class.name)
+  name: (type_identifier) @class.name) @def
 
 ;; Macro definition: macro_rules! mymac { ... }
 ;; Exported-ness (#[macro_export]) is decided Rust-side from sibling attributes.
 (macro_definition
-  name: (identifier) @macro.name)
+  name: (identifier) @macro.name) @def
 "#;
 
 const RUST_CALL_QUERY_SRC: &str = r#"
@@ -201,12 +201,22 @@ impl super::Parser for RustParser {
         let variant_idx = query.capture_index_for_name("variant.name").unwrap();
         let method_idx = query.capture_index_for_name("method.name").unwrap();
         let macro_idx = query.capture_index_for_name("macro.name").unwrap();
+        let def_idx = query.capture_index_for_name("def").unwrap();
 
         let mut cursor = QueryCursor::new();
         let mut symbols = Vec::new();
         let mut matches = cursor.matches(query, tree.root_node(), source);
         while let Some(m) = matches.next() {
+            // Span comes from the enclosing definition node, name from the name node
+            let def_node = m
+                .captures
+                .iter()
+                .find(|c| c.index == def_idx)
+                .map(|c| c.node);
             for capture in m.captures {
+                if capture.index == def_idx {
+                    continue;
+                }
                 let node = capture.node;
                 let name = match node.utf8_text(source) {
                     Ok(s) => s.to_string(),
@@ -233,8 +243,9 @@ impl super::Parser for RustParser {
                     continue;
                 };
 
-                let start = node.start_position();
-                let end = node.end_position();
+                let span_node = def_node.unwrap_or(node);
+                let start = span_node.start_position();
+                let end = span_node.end_position();
 
                 symbols.push(Symbol {
                     name,
@@ -1067,6 +1078,35 @@ mod outer {
         // Default method bodies are function_items; captured once, no dupes.
         let defaulted: Vec<_> = syms.iter().filter(|s| s.name == "defaulted").collect();
         assert_eq!(defaulted.len(), 1);
+    }
+
+    #[test]
+    fn symbols_span_covers_full_definition() {
+        let src =
+            "pub fn multi(a: i32) -> i32 {\n    let b = a + 1;\n    let c = b * 2;\n    c\n}\n";
+        let syms = symbols(src);
+        let f = syms.iter().find(|s| s.name == "multi").unwrap();
+        assert_eq!(f.span.start_line, 1);
+        assert_eq!(f.span.end_line, 5);
+        assert!(f.exported);
+    }
+
+    #[test]
+    fn symbols_method_span_covers_body() {
+        let src = "struct Foo;\nimpl Foo {\n    fn m(&self) {\n        let x = 1;\n        let _ = x;\n    }\n}\n";
+        let syms = symbols(src);
+        let m = syms.iter().find(|s| s.name == "m").unwrap();
+        assert_eq!(m.span.start_line, 3);
+        assert_eq!(m.span.end_line, 6);
+    }
+
+    #[test]
+    fn symbols_struct_span_covers_fields() {
+        let src = "pub struct Wide {\n    a: i32,\n    b: i32,\n}\n";
+        let syms = symbols(src);
+        let s = syms.iter().find(|s| s.name == "Wide").unwrap();
+        assert_eq!(s.span.start_line, 1);
+        assert_eq!(s.span.end_line, 4);
     }
 
     // ── Call extraction tests ────────────────────────────────────────────

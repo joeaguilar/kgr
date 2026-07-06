@@ -15,6 +15,11 @@ const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// build can never mask changed parser behavior — even when the package
 /// version has not bumped (e.g. a warm `.kgr-cache.json` left in a fixture
 /// directory between dev test runs).
+///
+/// The `+def-spans` marker invalidates caches written before symbol spans
+/// covered the full definition node (they held name-node spans only) — the
+/// binary fingerprint alone can't be trusted for caches copied between
+/// machines or produced by an exe whose metadata was unreadable.
 static CACHE_VERSION: LazyLock<String> = LazyLock::new(|| {
     let fingerprint = std::env::current_exe()
         .ok()
@@ -28,7 +33,7 @@ static CACHE_VERSION: LazyLock<String> = LazyLock::new(|| {
             format!("{mtime}.{}", meta.len())
         })
         .unwrap_or_default();
-    format!("{PKG_VERSION}+{fingerprint}")
+    format!("{PKG_VERSION}+def-spans+{fingerprint}")
 });
 
 #[derive(Serialize, Deserialize)]

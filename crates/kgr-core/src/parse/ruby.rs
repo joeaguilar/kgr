@@ -22,30 +22,30 @@ static RUBY_QUERY: LazyLock<Query> = LazyLock::new(|| {
 const RUBY_SYMBOL_QUERY_SRC: &str = r#"
 ;; Method definition
 (method
-  name: (identifier) @fn.name)
+  name: (identifier) @fn.name) @def
 
 ;; Singleton method definition (def self.x / def Foo.x)
 (singleton_method
-  name: (identifier) @method.name)
+  name: (identifier) @method.name) @def
 
 ;; Class definition
 (class
-  name: (constant) @class.name)
+  name: (constant) @class.name) @def
 
 ;; Scoped class definition (class Foo::Bar) — capture the innermost
 ;; constant (`Bar`), matching the C++ qualified-name convention
 (class
   name: (scope_resolution
-    name: (constant) @class.name))
+    name: (constant) @class.name)) @def
 
 ;; Module definition
 (module
-  name: (constant) @class.name)
+  name: (constant) @class.name) @def
 
 ;; Scoped module definition (module Foo::Bar)
 (module
   name: (scope_resolution
-    name: (constant) @class.name))
+    name: (constant) @class.name)) @def
 "#;
 
 static RUBY_SYMBOL_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -106,12 +106,22 @@ impl super::Parser for RubyParser {
         let fn_idx = query.capture_index_for_name("fn.name").unwrap();
         let method_idx = query.capture_index_for_name("method.name").unwrap();
         let class_idx = query.capture_index_for_name("class.name").unwrap();
+        let def_idx = query.capture_index_for_name("def").unwrap();
 
         let mut cursor = QueryCursor::new();
         let mut symbols = Vec::new();
         let mut matches = cursor.matches(query, tree.root_node(), source);
         while let Some(m) = matches.next() {
+            // Span comes from the enclosing definition node, name from the name node
+            let def_node = m
+                .captures
+                .iter()
+                .find(|c| c.index == def_idx)
+                .map(|c| c.node);
             for capture in m.captures {
+                if capture.index == def_idx {
+                    continue;
+                }
                 let node = capture.node;
                 let name = match node.utf8_text(source) {
                     Ok(s) => s.to_string(),
@@ -128,8 +138,9 @@ impl super::Parser for RubyParser {
                     continue;
                 };
 
-                let start = node.start_position();
-                let end = node.end_position();
+                let span_node = def_node.unwrap_or(node);
+                let start = span_node.start_position();
+                let end = span_node.end_position();
 
                 // Ruby convention: all top-level methods/classes are accessible
                 symbols.push(Symbol {
@@ -482,6 +493,27 @@ require_relative 'config'
     fn symbols_all_exported() {
         let syms = symbols("def _private_method\nend\n\ndef public_method\nend\n");
         assert!(syms.iter().all(|s| s.exported));
+    }
+
+    #[test]
+    fn symbols_span_covers_full_definition() {
+        let src = "def multi(a)\n  b = a + 1\n  c = b * 2\n  c\nend\n";
+        let syms = symbols(src);
+        let f = syms.iter().find(|s| s.name == "multi").unwrap();
+        assert_eq!(f.span.start_line, 1);
+        assert_eq!(f.span.end_line, 5);
+    }
+
+    #[test]
+    fn symbols_method_span_covers_body() {
+        let src = "class Foo\n  def m\n    x = 1\n    puts x\n  end\nend\n";
+        let syms = symbols(src);
+        let m = syms.iter().find(|s| s.name == "m").unwrap();
+        assert_eq!(m.span.start_line, 2);
+        assert_eq!(m.span.end_line, 5);
+        let c = syms.iter().find(|s| s.name == "Foo").unwrap();
+        assert_eq!(c.span.start_line, 1);
+        assert_eq!(c.span.end_line, 6);
     }
 
     // ── Call extraction tests ────────────────────────────────────────────

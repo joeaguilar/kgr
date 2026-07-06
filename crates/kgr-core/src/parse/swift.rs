@@ -21,15 +21,15 @@ static SWIFT_QUERY: LazyLock<Query> = LazyLock::new(|| {
 const SWIFT_SYMBOL_QUERY_SRC: &str = r#"
 ;; Function declaration
 (function_declaration
-  name: (simple_identifier) @fn.name)
+  name: (simple_identifier) @fn.name) @def
 
 ;; Class, struct, and enum declarations (all use class_declaration in tree-sitter-swift)
 (class_declaration
-  name: (type_identifier) @class.name)
+  name: (type_identifier) @class.name) @def
 
 ;; Protocol declaration
 (protocol_declaration
-  name: (type_identifier) @protocol.name)
+  name: (type_identifier) @protocol.name) @def
 "#;
 
 static SWIFT_SYMBOL_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -129,12 +129,22 @@ impl super::Parser for SwiftParser {
         let fn_idx = query.capture_index_for_name("fn.name").unwrap();
         let class_idx = query.capture_index_for_name("class.name").unwrap();
         let protocol_idx = query.capture_index_for_name("protocol.name").unwrap();
+        let def_idx = query.capture_index_for_name("def").unwrap();
 
         let mut cursor = QueryCursor::new();
         let mut symbols = Vec::new();
         let mut matches = cursor.matches(query, tree.root_node(), source);
         while let Some(m) = matches.next() {
+            // Span comes from the enclosing definition node, name from the name node
+            let def_node = m
+                .captures
+                .iter()
+                .find(|c| c.index == def_idx)
+                .map(|c| c.node);
             for capture in m.captures {
+                if capture.index == def_idx {
+                    continue;
+                }
                 let node = capture.node;
                 let name = match node.utf8_text(source) {
                     Ok(s) => s.to_string(),
@@ -153,8 +163,9 @@ impl super::Parser for SwiftParser {
                 let decl_node = node.parent().unwrap_or(node);
                 let exported = Self::is_exported(decl_node, source);
 
-                let start = node.start_position();
-                let end = node.end_position();
+                let span_node = def_node.unwrap_or(node);
+                let start = span_node.start_position();
+                let end = span_node.end_position();
 
                 symbols.push(Symbol {
                     exported,
@@ -335,6 +346,28 @@ mod tests {
         assert!(syms
             .iter()
             .any(|s| s.name == "Point" && s.kind == SymbolKind::Class));
+    }
+
+    #[test]
+    fn swift_symbols_span_covers_full_definition() {
+        let src =
+            "func multi(a: Int) -> Int {\n    let b = a + 1\n    let c = b * 2\n    return c\n}\n";
+        let syms = symbols(src);
+        let f = syms.iter().find(|s| s.name == "multi").unwrap();
+        assert_eq!(f.span.start_line, 1);
+        assert_eq!(f.span.end_line, 5);
+    }
+
+    #[test]
+    fn swift_symbols_method_span_covers_body() {
+        let src = "class Foo {\n    func m() {\n        let x = 1\n        print(x)\n    }\n}\n";
+        let syms = symbols(src);
+        let m = syms.iter().find(|s| s.name == "m").unwrap();
+        assert_eq!(m.span.start_line, 2);
+        assert_eq!(m.span.end_line, 5);
+        let c = syms.iter().find(|s| s.name == "Foo").unwrap();
+        assert_eq!(c.span.start_line, 1);
+        assert_eq!(c.span.end_line, 6);
     }
 
     // ── Call extraction tests ────────────────────────────────────────────

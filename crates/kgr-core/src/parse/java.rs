@@ -25,27 +25,27 @@ static JAVA_SYMBOL_QUERY: LazyLock<Query> = LazyLock::new(|| {
 const JAVA_SYMBOL_QUERY_SRC: &str = r#"
 ;; Class declaration
 (class_declaration
-  name: (identifier) @class.name)
+  name: (identifier) @class.name) @def
 
 ;; Interface declaration
 (interface_declaration
-  name: (identifier) @class.name)
+  name: (identifier) @class.name) @def
 
 ;; Enum declaration
 (enum_declaration
-  name: (identifier) @class.name)
+  name: (identifier) @class.name) @def
 
 ;; Record declaration (Java 16+)
 (record_declaration
-  name: (identifier) @class.name)
+  name: (identifier) @class.name) @def
 
 ;; Method declaration
 (method_declaration
-  name: (identifier) @method.name)
+  name: (identifier) @method.name) @def
 
 ;; Constructor declaration
 (constructor_declaration
-  name: (identifier) @method.name)
+  name: (identifier) @method.name) @def
 "#;
 
 static JAVA_CALL_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -104,12 +104,22 @@ impl super::Parser for JavaParser {
         let query = &*JAVA_SYMBOL_QUERY;
         let class_idx = query.capture_index_for_name("class.name").unwrap();
         let method_idx = query.capture_index_for_name("method.name").unwrap();
+        let def_idx = query.capture_index_for_name("def").unwrap();
 
         let mut cursor = QueryCursor::new();
         let mut symbols = Vec::new();
         let mut matches = cursor.matches(query, tree.root_node(), source);
         while let Some(m) = matches.next() {
+            // Span comes from the enclosing definition node, name from the name node
+            let def_node = m
+                .captures
+                .iter()
+                .find(|c| c.index == def_idx)
+                .map(|c| c.node);
             for capture in m.captures {
+                if capture.index == def_idx {
+                    continue;
+                }
                 let node = capture.node;
                 let name = match node.utf8_text(source) {
                     Ok(s) => s.to_string(),
@@ -150,8 +160,9 @@ impl super::Parser for JavaParser {
                     has_modifier("public")
                 };
 
-                let start = node.start_position();
-                let end = node.end_position();
+                let span_node = def_node.unwrap_or(node);
+                let start = span_node.start_position();
+                let end = span_node.end_position();
 
                 symbols.push(Symbol {
                     exported,
@@ -326,6 +337,24 @@ import com.example.MyClass;
         assert!(syms
             .iter()
             .any(|s| s.name == "Drawable" && s.kind == SymbolKind::Class));
+    }
+
+    #[test]
+    fn symbols_span_covers_full_definition() {
+        let src = "class Calc {\n    int add(int a, int b) {\n        int sum = a + b;\n        return sum;\n    }\n}\n";
+        let syms = symbols(src);
+        let class = syms.iter().find(|s| s.name == "Calc").unwrap();
+        assert_eq!(class.span.start_line, 1);
+        assert_eq!(class.span.end_line, 6);
+    }
+
+    #[test]
+    fn symbols_method_span_covers_body() {
+        let src = "class Calc {\n    int add(int a, int b) {\n        int sum = a + b;\n        return sum;\n    }\n}\n";
+        let syms = symbols(src);
+        let method = syms.iter().find(|s| s.name == "add").unwrap();
+        assert_eq!(method.span.start_line, 2);
+        assert_eq!(method.span.end_line, 5);
     }
 
     #[test]

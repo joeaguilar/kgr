@@ -1,6 +1,6 @@
 ---
 source: crates/kgr/tests/snapshots.rs
-assertion_line: 143
+assertion_line: 156
 expression: stdout
 ---
 {
@@ -104,9 +104,9 @@ expression: stdout
           "kind": "class",
           "name": "Command",
           "span": {
-            "end_col": 18,
+            "end_col": 19,
             "end_line": 4,
-            "start_col": 11,
+            "start_col": 0,
             "start_line": 4
           }
         },
@@ -115,9 +115,9 @@ expression: stdout
           "kind": "class",
           "name": "Flag",
           "span": {
-            "end_col": 15,
+            "end_col": 16,
             "end_line": 5,
-            "start_col": 11,
+            "start_col": 0,
             "start_line": 5
           }
         },
@@ -126,9 +126,9 @@ expression: stdout
           "kind": "function",
           "name": "run",
           "span": {
-            "end_col": 10,
-            "end_line": 7,
-            "start_col": 7,
+            "end_col": 1,
+            "end_line": 10,
+            "start_col": 0,
             "start_line": 7
           }
         }
@@ -280,9 +280,9 @@ expression: stdout
           "kind": "function",
           "name": "main",
           "span": {
-            "end_col": 7,
-            "end_line": 9,
-            "start_col": 3,
+            "end_col": 1,
+            "end_line": 13,
+            "start_col": 0,
             "start_line": 9
           }
         }
@@ -299,9 +299,9 @@ expression: stdout
           "kind": "function",
           "name": "helper",
           "span": {
-            "end_col": 13,
+            "end_col": 18,
             "end_line": 1,
-            "start_col": 7,
+            "start_col": 0,
             "start_line": 1
           }
         }
