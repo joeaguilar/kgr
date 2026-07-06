@@ -59,18 +59,20 @@ const TS_SYMBOL_QUERY_SRC: &str = r#"
     name: (identifier) @fn.name) @def)
 
 ;; Exported const/let arrow or function expression
+;; @def on the matched variable_declarator, not the lexical_declaration:
+;; `const a = () => {}, b = () => {};` must give each name its own span.
 (export_statement
   declaration: (lexical_declaration
     (variable_declarator
       name: (identifier) @fn.exported
-      value: [(arrow_function) (function_expression) (generator_function)])) @def)
+      value: [(arrow_function) (function_expression) (generator_function)]) @def))
 
 ;; Non-exported const/let arrow or function expression
 (program
   (lexical_declaration
     (variable_declarator
       name: (identifier) @fn.name
-      value: [(arrow_function) (function_expression) (generator_function)])) @def)
+      value: [(arrow_function) (function_expression) (generator_function)]) @def))
 
 ;; Exported class
 (export_statement
@@ -741,6 +743,17 @@ export * from './c';
         assert!(f.exported);
         assert_eq!(f.span.start_line, 1);
         assert_eq!(f.span.end_line, 4);
+    }
+
+    #[test]
+    fn symbols_multi_declarator_arrows_get_their_own_spans() {
+        let src =
+            "const a = (): number => {\n  return 1;\n}, b = (): number => {\n  return 2;\n};\n";
+        let syms = symbols(src);
+        let a = syms.iter().find(|s| s.name == "a").unwrap();
+        assert_eq!((a.span.start_line, a.span.end_line), (1, 3));
+        let b = syms.iter().find(|s| s.name == "b").unwrap();
+        assert_eq!((b.span.start_line, b.span.end_line), (3, 5));
     }
 
     // ── Call / type-ref extraction tests ──────────────────────────────────

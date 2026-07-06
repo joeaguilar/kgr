@@ -212,7 +212,22 @@ impl super::Parser for CParser {
                     true
                 };
 
-                let end = span_node.end_position();
+                // Multi-declarator typedef (`typedef struct {...} A, B;`):
+                // the shared type_definition span would make every alias
+                // claim the whole statement, so each alias stops at its own
+                // declarator instead. Single-declarator typedefs keep the
+                // full span (the name sits on the closing line anyway).
+                let end = if span_node.kind() == "type_definition" && {
+                    let mut walk = span_node.walk();
+                    span_node
+                        .children_by_field_name("declarator", &mut walk)
+                        .count()
+                        > 1
+                } {
+                    node.end_position()
+                } else {
+                    span_node.end_position()
+                };
 
                 symbols.push(Symbol {
                     name,
@@ -462,6 +477,18 @@ mod tests {
         let s = syms.iter().find(|s| s.name == "Foo").unwrap();
         assert_eq!(s.span.start_line, 1);
         assert_eq!(s.span.end_line, 4);
+    }
+
+    #[test]
+    fn symbols_multi_declarator_typedef_stops_at_each_alias() {
+        // Both aliases share the struct body, but each span ends at its own
+        // declarator instead of claiming the whole statement.
+        let src = "typedef struct {\n    int a;\n} Foo,\n  Bar;\n";
+        let syms = symbols(src);
+        let foo = syms.iter().find(|s| s.name == "Foo").unwrap();
+        assert_eq!((foo.span.start_line, foo.span.end_line), (1, 3));
+        let bar = syms.iter().find(|s| s.name == "Bar").unwrap();
+        assert_eq!((bar.span.start_line, bar.span.end_line), (1, 4));
     }
 
     #[test]

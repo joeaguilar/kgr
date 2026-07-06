@@ -46,9 +46,11 @@ const GO_SYMBOL_QUERY_SRC: &str = r#"
   name: (field_identifier) @method.name) @def
 
 ;; Type declaration (struct, interface, etc.)
+;; @def on the inner type_spec, not the type_declaration: grouped
+;; `type ( Foo ...; Bar ... )` blocks must give each type its own span.
 (type_declaration
   (type_spec
-    name: (type_identifier) @class.name)) @def
+    name: (type_identifier) @class.name) @def)
 "#;
 
 static GO_CALL_QUERY: LazyLock<Query> = LazyLock::new(|| {
@@ -403,6 +405,18 @@ import (
         let m = syms.iter().find(|s| s.name == "Handle").unwrap();
         assert_eq!(m.span.start_line, 3);
         assert_eq!(m.span.end_line, 6);
+    }
+
+    #[test]
+    fn symbols_grouped_type_block_gives_each_type_its_own_span() {
+        let src = "package main\ntype (\n    Foo struct {\n        A int\n    }\n    Bar struct {\n        B int\n    }\n)\n";
+        let syms = symbols(src);
+        let foo = syms.iter().find(|s| s.name == "Foo").unwrap();
+        assert_eq!(foo.span.start_line, 3);
+        assert_eq!(foo.span.end_line, 5);
+        let bar = syms.iter().find(|s| s.name == "Bar").unwrap();
+        assert_eq!(bar.span.start_line, 6);
+        assert_eq!(bar.span.end_line, 8);
     }
 
     #[test]
