@@ -29,7 +29,7 @@ just graph           # tree view of crates/
 just kgr-check       # check crates/ for issues
 ```
 
-`just verify` is the gate — it must pass clean (zero warnings, zero errors) before committing.
+`just verify` is the gate — it must pass clean (zero warnings, zero errors) before committing. Run it through `gatr` (`just gate`, or `gatr run --tag verify -- just verify`) so the full log lands on disk and the result stays queryable: `gatr last --tag verify` answers "was the gate green?" without rerunning, and `gatr errors` reprints just the failure blocks.
 
 ---
 

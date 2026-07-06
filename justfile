@@ -59,6 +59,10 @@ verify: check lint test fmt-check
 # CI pipeline
 ci: fmt-check lint test
 
+# The verify gate through gatr: full log kept, result queryable via `gatr last`
+gate:
+    gatr run --tag verify -- just verify
+
 # ─── Dogfood — run kgr on itself ────────────────────────────────────
 
 # Show the dependency tree of kgr's own crates
