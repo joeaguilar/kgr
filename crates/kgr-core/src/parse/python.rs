@@ -237,7 +237,14 @@ impl super::Parser for PythonParser {
                     continue;
                 };
 
+                // Decorators are part of the definition: when the captured
+                // def node sits inside a decorated_definition, span from the
+                // first decorator line (covers functions, methods, classes).
                 let span_node = def_node.unwrap_or(node);
+                let span_node = match span_node.parent() {
+                    Some(p) if p.kind() == "decorated_definition" => p,
+                    _ => span_node,
+                };
                 let start = span_node.start_position();
                 let end = span_node.end_position();
 
@@ -597,6 +604,25 @@ from . import utils
         let c = syms.iter().find(|s| s.name == "Svc").unwrap();
         assert_eq!(c.span.start_line, 1);
         assert_eq!(c.span.end_line, 4);
+    }
+
+    #[test]
+    fn symbols_decorated_spans_include_decorators() {
+        let src = "@app.route(\"/x\")\n@cached\ndef handler(req):\n    return req\n\n\n@dataclass\nclass Point:\n    x: int = 0\n";
+        let syms = symbols(src);
+        let f = syms.iter().find(|s| s.name == "handler").unwrap();
+        assert_eq!((f.span.start_line, f.span.end_line), (1, 4));
+        let c = syms.iter().find(|s| s.name == "Point").unwrap();
+        assert_eq!((c.span.start_line, c.span.end_line), (7, 9));
+    }
+
+    #[test]
+    fn symbols_decorated_method_span_includes_decorator() {
+        let src =
+            "class Svc:\n    @staticmethod\n    def get():\n        x = 1\n        return x\n";
+        let syms = symbols(src);
+        let m = syms.iter().find(|s| s.name == "get").unwrap();
+        assert_eq!((m.span.start_line, m.span.end_line), (2, 5));
     }
 
     // ── Call extraction tests ────────────────────────────────────────────

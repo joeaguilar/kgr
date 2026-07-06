@@ -89,7 +89,10 @@ kgr symbols [PATH] [FLAGS]
         {"name": "MyClass", "kind": "class", "line": 22, "end_line": 40, "exported": true}
       ]
     }, ...]
-  "line".."end_line" is the full definition extent (signature through body).
+  "line".."end_line" is the definition extent: signature through body,
+  including Python decorators. Leading attribute/doc-comment lines that sit
+  OUTSIDE the definition node (e.g. Rust #[attr] and ///) are not included —
+  use `kgr show -c <n>` to pull them in.
 
 kgr refs <NAME> [PATH] [FLAGS]
   Find all definitions and call-site references for a symbol by name.
@@ -115,6 +118,10 @@ kgr show <NAME> [PATH] [FLAGS]
     -f, --format <fmt>     Output format: text (default), json
         --no-linenos       Raw body, pipe-friendly
   Exit 1 with near-miss suggestions when the symbol is not found.
+  Printed paths (the header and `also:` pointers) are relative to the
+  scanned PATH, while `kgr slice` resolves its file argument against the
+  current directory — when scanning a subdirectory, prefix pointers with
+  that PATH before slicing them.
   JSON output shape (array, one entry per match; "body" is null for matches
   not printed under the default first-match mode):
     [{"name": "render_table", "kind": "function", "path": "src/render/table.rs",

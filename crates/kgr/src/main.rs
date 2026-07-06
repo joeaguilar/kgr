@@ -3315,7 +3315,9 @@ fn run_slice(
     }
     if end - start + 1 > max {
         end = start + max - 1;
-        eprintln!("note: output capped at {max} lines (use --max to raise)");
+        if format != "json" && !no_linenos {
+            eprintln!("note: output capped at {max} lines (use --max to raise)");
+        }
     }
 
     let mut stdout = std::io::stdout().lock();

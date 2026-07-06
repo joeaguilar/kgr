@@ -157,6 +157,8 @@ $ kgr show render_table
 | `-f, --format` | `text` (default), `json` — `{name, kind, path, start_line, end_line, exported, body}` per match |
 | `--no-linenos` | Raw body, pipe-friendly |
 
+Printed paths are relative to the scanned `PATH`; `kgr slice` resolves against the current directory, so prefix pointers with the scanned `PATH` when slicing them from elsewhere.
+
 ### `kgr slice <file>:<start>[-<end>]`
 
 Print a numbered, bounded line window from any file — no index, works on files kgr doesn't parse (`.toml`, `.md`, logs). Replaces `sed -n 'X,Yp'`.
