@@ -85,10 +85,11 @@ kgr symbols [PATH] [FLAGS]
     [{
       "file": "src/utils.py",
       "symbols": [
-        {"name": "normalize", "kind": "function", "line": 5, "exported": true},
-        {"name": "MyClass", "kind": "class", "line": 12, "exported": true}
+        {"name": "normalize", "kind": "function", "line": 5, "end_line": 18, "exported": true},
+        {"name": "MyClass", "kind": "class", "line": 22, "end_line": 40, "exported": true}
       ]
     }, ...]
+  "line".."end_line" is the full definition extent (signature through body).
 
 kgr refs <NAME> [PATH] [FLAGS]
   Find all definitions and call-site references for a symbol by name.
@@ -99,9 +100,39 @@ kgr refs <NAME> [PATH] [FLAGS]
   JSON output shape:
     {
       "symbol": "normalize",
-      "definitions": [{"file": "utils.py", "line": 5, "kind": "function"}],
+      "definitions": [{"file": "utils.py", "line": 5, "end_line": 18, "kind": "function"}],
       "references": [{"file": "app.py", "line": 3, "context": "  result = normalize(data)", "kind": "call"}]
     }
+
+kgr show <NAME> [PATH] [FLAGS]
+  Print the definition body of a symbol, straight from source, located via
+  the index. Replaces grep -n + sed -n chains.
+  Flags:
+    -c, --context <n>      Include n lines before/after the definition (default 0)
+        --all              Print every match (default: first match + one-line
+                           pointers like `also: src/other.rs:88 (method)`)
+    -k, --kind <kind>      Disambiguate same-named symbols: fn, class, method
+    -f, --format <fmt>     Output format: text (default), json
+        --no-linenos       Raw body, pipe-friendly
+  Exit 1 with near-miss suggestions when the symbol is not found.
+  JSON output shape (array, one entry per match; "body" is null for matches
+  not printed under the default first-match mode):
+    [{"name": "render_table", "kind": "function", "path": "src/render/table.rs",
+      "start_line": 6, "end_line": 41, "exported": true, "body": "pub fn ..."}]
+
+kgr slice <FILE>:<START>[-<END>] [FLAGS]
+  Print a numbered, bounded line window from any file — no index, works on
+  files kgr does not parse (.toml, .md, logs). Replaces sed -n 'X,Yp'.
+  Also accepts `kgr slice <file> <start> [<end>]` positionally.
+  Flags:
+    -c, --context <n>      Expand a single-line target both ways (default 10
+                           when no end given)
+        --no-linenos       Raw text (byte-identical to the source window)
+    -f, --format <fmt>     Output format: text (default), json
+        --max <n>          Raise the output cap (default 500 lines)
+  Out-of-range end clamps to EOF with a note; nonexistent file exits 2.
+  JSON output shape:
+    {"path": "src/lib.rs", "start_line": 10, "end_line": 40, "lines": ["...", ...]}
 
 kgr dead <NAME> [PATH] [FLAGS]
   Check if a symbol is dead code (defined but never referenced).
@@ -282,5 +313,8 @@ RECOMMENDED AGENT WORKFLOW
      (typo or unparsed language) — it does NOT mean the symbol is removable.
   7. Use `kgr symbols --format json --no-progress .` to get a table of
      contents of all definitions — useful for orientation in unfamiliar code.
-  8. Always pass --no-progress when parsing output programmatically.
+  8. Use `kgr show <name>` to print a definition body instead of
+     grep -n + sed -n; use `kgr slice <file>:<start>-<end>` for arbitrary
+     line windows (works on any file, not just parsed languages).
+  9. Always pass --no-progress when parsing output programmatically.
 "#;
