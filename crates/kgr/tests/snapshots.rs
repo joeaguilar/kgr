@@ -1,12 +1,50 @@
 use std::path::{Path, PathBuf};
 
+/// Rewrite a path to use `/` separators on every platform.
+///
+/// kgr echoes the scan root it was handed straight back into its output (the
+/// JSON `root` field, `orient` summaries), and these snapshots pin that
+/// spelling. Windows accepts `/` as a path separator, so handing the binary a
+/// slash-spelled root keeps captured output byte-identical across platforms
+/// instead of forking every snapshot per OS.
+///
+/// This differs from `kgr_core::paths::to_slash`, which deliberately leaves
+/// prefixed paths (`D:\...`) alone: there the concern is the *relative* paths
+/// stored in the graph, whereas here the absolute root itself must normalize.
+/// On Unix both are the identity — `\` is a legal filename character.
+fn to_forward_slashes(path: &Path) -> PathBuf {
+    if cfg!(windows) {
+        PathBuf::from(path.to_string_lossy().replace('\\', "/"))
+    } else {
+        path.to_path_buf()
+    }
+}
+
 fn fixtures_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("tests/fixtures")
+    to_forward_slashes(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("tests/fixtures"),
+    )
+}
+
+/// A fixture directory, spelled with `/` on every platform. `join` uses the
+/// platform separator, so the result is re-normalized after appending.
+fn fixture_path(fixture: &str) -> PathBuf {
+    to_forward_slashes(&fixtures_dir().join(fixture))
+}
+
+/// The fixtures root as an insta filter pattern.
+///
+/// insta compiles a filter's first element as a *regex*, so the path has to be
+/// escaped: an unescaped Windows root like `D:\a\kgr\kgr\tests/fixtures` fails
+/// to compile — `\a` is an unrecognized escape sequence — and panics the test
+/// before it ever compares a snapshot.
+fn fixtures_filter() -> String {
+    regex::escape(&fixtures_dir().to_string_lossy())
 }
 
 fn kgr() -> assert_cmd::Command {
@@ -26,8 +64,7 @@ fn strip_host_kgr_env(cmd: &mut assert_cmd::Command) {
 }
 
 fn kgr_output(fixture: &str, format: &str) -> String {
-    let fixture_path = fixtures_dir().join(fixture);
-    kgr_output_path(&fixture_path, format)
+    kgr_output_path(&fixture_path(fixture), format)
 }
 
 // All helpers set KGR_NO_CACHE=1 so fixture scans are hermetic: every run
@@ -60,10 +97,9 @@ fn kgr_orient_json_path(path: &Path) -> String {
 }
 
 fn kgr_check_stderr(fixture: &str) -> String {
-    let fixture_path = fixtures_dir().join(fixture);
     let output = kgr()
         .args(["check", "--no-progress"])
-        .arg(&fixture_path)
+        .arg(fixture_path(fixture))
         .output()
         .unwrap();
     String::from_utf8(output.stderr).unwrap()
@@ -74,10 +110,9 @@ macro_rules! snapshot_format {
         #[test]
         fn $name() {
             let stdout = kgr_output($fixture, $format);
-            let fixtures = fixtures_dir();
-            let fixtures_str = fixtures.to_str().unwrap();
+            let fixtures = fixtures_filter();
             insta::with_settings!({
-                filters => vec![(fixtures_str, "[FIXTURES]")],
+                filters => vec![(fixtures.as_str(), "[FIXTURES]")],
             }, {
                 insta::assert_snapshot!(stdout);
             });
@@ -121,10 +156,9 @@ snapshot_format!(snap_ts_cycle_mermaid, "typescript/cycle", "mermaid");
 #[test]
 fn snap_python_cycle_check() {
     let stderr = kgr_check_stderr("python/cycle");
-    let fixtures = fixtures_dir();
-    let fixtures_str = fixtures.to_str().unwrap();
+    let fixtures = fixtures_filter();
     insta::with_settings!({
-        filters => vec![(fixtures_str, "[FIXTURES]")],
+        filters => vec![(fixtures.as_str(), "[FIXTURES]")],
     }, {
         insta::assert_snapshot!(stderr);
     });
@@ -133,10 +167,9 @@ fn snap_python_cycle_check() {
 #[test]
 fn snap_ts_cycle_check() {
     let stderr = kgr_check_stderr("typescript/cycle");
-    let fixtures = fixtures_dir();
-    let fixtures_str = fixtures.to_str().unwrap();
+    let fixtures = fixtures_filter();
     insta::with_settings!({
-        filters => vec![(fixtures_str, "[FIXTURES]")],
+        filters => vec![(fixtures.as_str(), "[FIXTURES]")],
     }, {
         insta::assert_snapshot!(stderr);
     });
@@ -157,6 +190,6 @@ snapshot_format!(snap_rust_local_modules_json, "rust/local_modules", "json");
 
 #[test]
 fn snap_rust_local_modules_orient_json() {
-    let stdout = kgr_orient_json_path(&fixtures_dir().join("rust/local_modules"));
+    let stdout = kgr_orient_json_path(&fixture_path("rust/local_modules"));
     insta::assert_snapshot!(stdout);
 }

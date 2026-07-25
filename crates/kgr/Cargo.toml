@@ -40,4 +40,7 @@ workspace = true
 assert_cmd = "2"
 insta = { version = "1.46.3", features = ["filters"] }
 predicates = "3"
+# Escapes the fixtures root before it is used as an insta filter pattern
+# (filters are regexes, and Windows roots like `D:\a\...` are invalid ones).
+regex = "1"
 tempfile = "3"
