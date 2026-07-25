@@ -3149,7 +3149,7 @@ fn run_show(
     let mut matches: Vec<(&PathBuf, &kgr_core::types::Symbol)> = file_nodes
         .iter()
         .flat_map(|f| f.symbols.iter().map(move |s| (&f.path, s)))
-        .filter(|(_, s)| s.name == name && kind_filter.map_or(true, |k| s.kind == k))
+        .filter(|(_, s)| s.name == name && kind_filter.is_none_or(|k| s.kind == k))
         .collect();
     matches.sort_by(|a, b| (a.0, a.1.span.start_line).cmp(&(b.0, b.1.span.start_line)));
 

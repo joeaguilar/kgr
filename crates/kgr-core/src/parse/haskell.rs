@@ -199,7 +199,7 @@ impl super::Parser for HaskellParser {
 
                 // Without an export list every top-level binding is exported;
                 // with one, only the names it lists are.
-                let exported = exports.as_ref().map_or(true, |names| names.contains(&name));
+                let exported = exports.as_ref().is_none_or(|names| names.contains(&name));
 
                 let span_node = def_node.unwrap_or(node);
                 let start = span_node.start_position();
