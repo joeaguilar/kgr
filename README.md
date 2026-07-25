@@ -50,7 +50,7 @@ Grab a release archive for your platform from [GitHub Releases](https://github.c
 
 ### From Source
 
-If you'd rather build locally, or no prebuilt binary exists for your target, install Rust 1.81+ and run:
+If you'd rather build locally, or no prebuilt binary exists for your target, install Rust 1.85+ and run:
 
 ```sh
 cargo install --git https://github.com/joeaguilar/kgr --bin kgr

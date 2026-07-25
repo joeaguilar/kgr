@@ -7,6 +7,7 @@ use std::time::SystemTime;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use ignore::WalkBuilder;
 use kgr_core::detect::{detect_lang, detect_lang_from_shebang};
+use kgr_core::paths::to_slash;
 use kgr_core::types::Lang;
 
 /// Cap on sample paths reported per skipped-unsupported group, mirroring
@@ -104,7 +105,7 @@ pub fn discover(
             // silently look complete. Only source-looking files count —
             // see `is_reportable_unsupported`.
             if is_reportable_unsupported(&path) {
-                skipped_paths.push(path.strip_prefix(root).unwrap_or(&path).to_path_buf());
+                skipped_paths.push(to_slash(path.strip_prefix(root).unwrap_or(&path)));
             }
             continue;
         }
@@ -116,8 +117,9 @@ pub fn discover(
             continue;
         }
 
-        // Make path relative to root.
-        let rel_path = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+        // Make path relative to root, with `/` separators so the graph reads
+        // the same on every platform (see `kgr_core::paths::to_slash`).
+        let rel_path = to_slash(path.strip_prefix(root).unwrap_or(&path));
 
         files.push(DiscoveredFile {
             path: rel_path,
@@ -415,7 +417,7 @@ pub fn discover_single_file(
         }
     }
 
-    let rel_path = file.strip_prefix(root).unwrap_or(file).to_path_buf();
+    let rel_path = to_slash(file.strip_prefix(root).unwrap_or(file));
 
     Ok(DiscoveredFile {
         path: rel_path,

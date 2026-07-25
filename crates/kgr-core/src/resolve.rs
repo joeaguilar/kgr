@@ -54,7 +54,14 @@ impl Resolver {
             let lang = file.lang;
             let file_path = file.path.clone();
             for import in file.imports.iter_mut() {
-                import.resolved = self.resolve(&import.raw, &file_path, lang, import.kind);
+                // Candidates are built with `join`, which uses the platform
+                // separator; normalize so an edge target is spelled exactly
+                // like the `FileNode.path` it points at. Path comparison is
+                // separator-agnostic on Windows, so resolution itself is
+                // unaffected — only the recorded spelling changes.
+                import.resolved = self
+                    .resolve(&import.raw, &file_path, lang, import.kind)
+                    .map(|resolved| crate::paths::to_slash(&resolved));
                 if lang == Lang::Rust && import.resolved.as_deref() == Some(file_path.as_path()) {
                     // Rust same-file reference: `use self::Item;`, a test-module
                     // `use super::*;` (rebased to `self::*` by the parser), or a
