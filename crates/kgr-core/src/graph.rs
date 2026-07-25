@@ -639,6 +639,10 @@ impl KGraph {
     }
 
     pub fn to_dep_graph(&self, root: PathBuf, files: Vec<FileNode>) -> DepGraph {
+        // Callers pass the canonicalized scan root, which on Windows carries
+        // the `\\?\` extended-length prefix. DepGraph is the serialized output
+        // type, so normalize here rather than at each construction site.
+        let root = crate::paths::to_display_path(&root);
         let mut edges = Vec::new();
         for edge in self.inner.edge_indices() {
             let (from_idx, to_idx) = self.inner.edge_endpoints(edge).unwrap();
