@@ -24,6 +24,8 @@ jobs:
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.name }}
     steps:
       - name: Resolve release tag
         id: tag
@@ -35,11 +37,17 @@ jobs:
             echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
           fi
 
+      # Created as a DRAFT. install.sh resolves "latest" by following the
+      # /releases/latest redirect, so a release that is public before its
+      # assets exist hands every `curl … | bash` user a 404 for the length of
+      # the build. GitHub excludes drafts from that redirect, so the previous
+      # complete release keeps serving until this one is whole.
       - name: Ensure release exists
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.name }}
           generate_release_notes: true
+          draft: true
 
   build:
     name: ${{ matrix.target }}
@@ -151,11 +159,53 @@ jobs:
           "ASSET=$staging.zip"           | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "CHECKSUM=$staging.zip.sha256" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      # `draft: true` is REQUIRED here, not redundant. action-gh-release
+      # documents that it carries the existing release's draft flag forward on
+      # update — it does not. Without this, the first matrix target to finish
+      # publishes a 1-of-14-asset release as `latest`.
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.name }}
+          draft: true
           files: |
             ${{ env.ASSET }}
             ${{ env.CHECKSUM }}
           fail_on_unmatched_files: true
+
+  # Flip the draft to published only once every target has uploaded. A failed
+  # target leaves an unpublished draft, so /releases/latest keeps pointing at
+  # the last COMPLETE release rather than a half-populated new one; recovery is
+  # a workflow_dispatch re-run for that tag.
+  publish:
+    name: Publish Release
+    needs: [create-release, build]
+    runs-on: ubuntu-latest
+    steps:
+      # Second, independent safeguard: if an upload step ever misbehaves, this
+      # turns a silent partial release into a red workflow.
+      - name: Verify all assets uploaded
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.create-release.outputs.tag }}
+          # 7 build targets x 2 files each (archive + .sha256).
+          EXPECTED_ASSETS: 14
+        shell: bash
+        run: |
+          set -euo pipefail
+          COUNT=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets | length')
+          echo "Assets uploaded: $COUNT (expected $EXPECTED_ASSETS)"
+          if [ "$COUNT" -ne "$EXPECTED_ASSETS" ]; then
+            echo "::error::Refusing to publish $TAG: $COUNT/$EXPECTED_ASSETS assets present."
+            exit 1
+          fi
+
+      # `gh release edit` touches only the draft flag, so the generated release
+      # notes survive. `--latest` sets the redirect target explicitly instead of
+      # relying on date ordering.
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.create-release.outputs.tag }}
+        run: gh release edit "$TAG" --draft=false --latest --repo "$GITHUB_REPOSITORY"
