@@ -54,6 +54,13 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# Windows PowerShell 5.1 still negotiates TLS 1.0 on some hosts and GitHub
+# requires 1.2+. No-op on PowerShell 7+, which already defaults higher.
+try {
+    [Net.ServicePointManager]::SecurityProtocol =
+        [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+} catch { }
+
 function Write-Info { param([string]$m) Write-Host "i $m" -ForegroundColor Blue }
 function Write-Ok   { param([string]$m) Write-Host "+ $m" -ForegroundColor Green }
 function Write-Warn { param([string]$m) Write-Host "! $m" -ForegroundColor Yellow }
@@ -78,17 +85,44 @@ function Resolve-LatestTag {
     param([string]$Repo)
 
     $url = "https://github.com/$Repo/releases/latest"
-    $resp = Invoke-WebRequest -Uri $url -MaximumRedirection 0 -ErrorAction SilentlyContinue
-    if ($resp.StatusCode -ne 302 -and $resp.StatusCode -ne 301) {
-        if ($resp.BaseResponse.RequestMessage.RequestUri) {
-            $final = $resp.BaseResponse.RequestMessage.RequestUri.AbsoluteUri
-            return ($final -split '/')[-1]
+
+    # HttpWebRequest with redirects disabled behaves identically on Windows
+    # PowerShell 5.1 and PowerShell 7+, and never engages 5.1's IE-based
+    # parser (which fails outright in non-interactive sessions).
+    try {
+        $req = [System.Net.HttpWebRequest]::Create($url)
+        $req.AllowAutoRedirect = $false
+        $req.UserAgent = 'kgr-installer'
+        $resp = $req.GetResponse()
+        try {
+            $location = $resp.Headers['Location']
+            if ($location) { return ($location -split '/')[-1] }
+        } finally {
+            $resp.Close()
         }
-        throw "Could not resolve latest release tag from $url"
+    } catch {
+        # Fall through to the redirect-following path below.
     }
 
-    $location = $resp.Headers.Location
-    return ($location -split '/')[-1]
+    # Fallback: follow the redirect and read the final URI. BaseResponse is an
+    # HttpWebResponse on 5.1 (ResponseUri) but an HttpResponseMessage on 7+
+    # (RequestMessage.RequestUri), so probe for both instead of assuming -- a
+    # bare property access on the wrong one is fatal under Set-StrictMode.
+    $resp = Invoke-WebRequest -Uri $url -UseBasicParsing
+    $baseProp = $resp.PSObject.Properties['BaseResponse']
+    if ($baseProp -and $baseProp.Value) {
+        $baseResp = $baseProp.Value
+        $reqMsg = $baseResp.PSObject.Properties['RequestMessage']
+        $respUri = $baseResp.PSObject.Properties['ResponseUri']
+        if ($reqMsg -and $reqMsg.Value) {
+            return ($reqMsg.Value.RequestUri.AbsoluteUri -split '/')[-1]
+        }
+        if ($respUri -and $respUri.Value) {
+            return ($respUri.Value.AbsoluteUri -split '/')[-1]
+        }
+    }
+
+    throw "Could not resolve latest release tag from $url"
 }
 
 function Add-ToUserPath {
