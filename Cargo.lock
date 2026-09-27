@@ -457,7 +457,7 @@ dependencies = [
 
 [[package]]
 name = "kgr"
-version = "0.2.0"
+version = "0.6.2"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -479,7 +479,7 @@ dependencies = [
 
 [[package]]
 name = "kgr-core"
-version = "0.2.0"
+version = "0.6.2"
 dependencies = [
  "petgraph",
  "serde",
