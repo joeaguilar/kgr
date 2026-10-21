@@ -142,8 +142,9 @@ kgr slice <FILE>:<START>[-<END>] [FLAGS]
     {"path": "src/lib.rs", "start_line": 10, "end_line": 40, "lines": ["...", ...]}
 
 kgr dead <NAME> [PATH] [FLAGS]
-  Check if a symbol is dead code (defined but never referenced).
+  Check whether a symbol has any references (defined but never referenced = dead).
   Flags:
+        --defined-in <path> Check only the definition in this file
     -f, --format <fmt>     Output format: table (default), json
     -l, --lang <lang>      Filter by language
         --no-progress      Disable progress bar
@@ -152,15 +153,40 @@ kgr dead <NAME> [PATH] [FLAGS]
       "symbol": "old_helper",
       "found": true,
       "dead": true,
+      "status": "dead",
+      "ambiguous": false,
       "definitions": [{"file": "utils.py", "line": 42, "kind": "function"}],
-      "references": []
+      "references": [],
+      "self_file_references": [],
+      "cross_file_references": [],
+      "string_mentions": [],
+      "caveat": null
     }
-  "definitions" lists every definition of the name — a symbol defined in
-  several files yields several entries, and "dead"/"references" are computed
-  across all of them.
+  "status" is the verdict; "dead" is its boolean projection:
+    dead        no references outside the definition itself     dead: true
+    file_local  referenced only inside its defining file        dead: false
+    live        referenced from another file                    dead: false
+    ambiguous   several definitions share the name and some     dead: null
+                reference exists; rerun with --defined-in
+    not_found   no definition of the name was parsed            dead: null
+  References are recorded call sites (kind "call", with "via_alias" when
+  called through `name as alias`) plus whole-word mentions in code (kind
+  "mention": values passed around, macro arguments, JSX tags, decorators,
+  import lines). Strings and comments are told apart from code by the
+  language's parse tree; interpolation (f"{x}", `${x}`, "$(x)") counts as
+  code, and anything that does not parse cleanly counts as code too.
+  Mentions inside comments are ignored. "inside_definition" marks references
+  in the symbol's own body (recursion), which do not keep it live.
+  Names found only inside string literals are listed in "string_mentions" and
+  noted in "caveat": they may be dynamic uses (getattr, reflection, routes).
+  With --defined-in, `other.name` in a file that imports only the other
+  definition's module `other` (and never rebinds `other`) is credited to that
+  definition and listed in "attributed_elsewhere".
+  Matching is by name, not by type: "dead": true means no reference by that
+  name was found, so review "caveat" before deleting.
   If the symbol is not defined anywhere, "found" is false and "dead" is null
   (NOT true) — a not-found symbol is never a removable verdict:
-    {"symbol": "no_such", "found": false, "dead": null, "definitions": [], "references": []}
+    {"symbol": "no_such", "found": false, "dead": null, "status": "not_found", ...}
 
 kgr skeleton [PATH] [FLAGS]
   Emit a token-minimal skeleton of each file: signatures only, bodies elided.
@@ -314,10 +340,12 @@ RECOMMENDED AGENT WORKFLOW
      per file.
   5. Use `kgr refs <name> --format json --no-progress .` to find all usages
      of a function/class — replaces multi-step grep+read workflows.
-  6. Use `kgr dead <name> --format json --no-progress .` to check if a
-     symbol is safe to remove before deleting it. Check "found" first:
-     "found": false means the symbol does not exist in the parsed project
-     (typo or unparsed language) — it does NOT mean the symbol is removable.
+  6. Use `kgr dead <name> --format json --no-progress .` to check whether a
+     symbol has references before deleting it. Read "status", not just
+     "dead": only "dead" means no reference was found, and "caveat" names
+     what to double-check. "found": false means the symbol does not exist in
+     the parsed project (typo or unparsed language) — it does NOT mean the
+     symbol is removable.
   7. Use `kgr symbols --format json --no-progress .` to get a table of
      contents of all definitions — useful for orientation in unfamiliar code.
   8. Use `kgr show <name>` to print a definition body instead of

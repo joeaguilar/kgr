@@ -7,6 +7,7 @@ pub mod go;
 pub mod haskell;
 pub mod java;
 pub mod javascript;
+pub mod literals;
 pub mod lua;
 pub mod objc;
 pub mod php;
@@ -41,6 +42,15 @@ pub trait Parser: Send + Sync {
     /// Override this to enable generic syntax error detection via `collect_parse_errors`.
     fn ts_language(&self) -> Option<tree_sitter::Language> {
         None
+    }
+
+    /// Parse `source` into a tree-sitter tree with this parser's grammar.
+    /// Parsers whose grammar depends on the path (TSX) override this.
+    fn syntax_tree(&self, source: &[u8], _path: &Path) -> Option<tree_sitter::Tree> {
+        let language = self.ts_language()?;
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&language).ok()?;
+        parser.parse(source, None)
     }
 
     /// Detect syntax errors (ERROR/MISSING nodes) in a source file.
@@ -127,6 +137,19 @@ impl ParserRegistry {
 
     pub fn get(&self, lang: Lang) -> Option<&dyn Parser> {
         self.parsers.get(&lang).map(|p| p.as_ref())
+    }
+
+    /// Byte ranges of string literals and comments in `source`, classified
+    /// from the language's parse tree. `None` when the language has no
+    /// grammar here; callers should then treat all text as code.
+    pub fn literal_ranges(
+        &self,
+        lang: Lang,
+        source: &[u8],
+        path: &Path,
+    ) -> Option<Vec<literals::LiteralRange>> {
+        let tree = self.get(lang)?.syntax_tree(source, path)?;
+        Some(literals::literal_ranges(&tree))
     }
 }
 

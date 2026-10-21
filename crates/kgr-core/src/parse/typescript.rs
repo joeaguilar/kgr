@@ -212,6 +212,10 @@ impl super::Parser for TypeScriptParser {
     /// Override the default so `.tsx` files are checked with the TSX grammar
     /// instead of the plain TypeScript grammar (valid JSX would otherwise be
     /// flagged as a syntax error).
+    fn syntax_tree(&self, source: &[u8], path: &Path) -> Option<tree_sitter::Tree> {
+        parse_tree(source, path)
+    }
+
     fn parse_errors(&self, source: &[u8], path: &Path) -> Vec<crate::types::ParseError> {
         match parse_tree(source, path) {
             Some(tree) => super::collect_parse_errors(&tree),

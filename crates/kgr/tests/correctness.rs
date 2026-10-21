@@ -544,20 +544,17 @@ fn py16_unknown_symbol_is_not_found_and_dead_is_null() {
 }
 
 #[test]
-#[ignore = "itr-6: calls through `import ... as h` aliases are not matched, so dead says true"]
 fn py17_dead_aliased_import_is_live() {
     let d = dead_json(&case("py"), "helper", Some("pkg/util.py"));
     assert_eq!(d["dead"], false);
 }
 
 #[test]
-#[ignore = "itr-7: dead returns true when the only callers are live same-file code (self_only_references)"]
 fn py18_method_called_by_live_same_file_method_is_not_dead() {
     assert_eq!(dead_json(&case("py"), "step", None)["dead"], false);
 }
 
 #[test]
-#[ignore = "itr-6: impact does not see the aliased call `h()` (calls_symbol false)"]
 fn py19_impact_marks_aliased_caller_as_calling_symbol() {
     let d = impact_json(&case("py"), "helper");
     assert_eq!(impact_entry(&d, "app.py").map(|e| e.1), Some(true));
@@ -661,7 +658,6 @@ fn py3_04_src_layout_importer_is_not_an_orphan() {
 }
 
 #[test]
-#[ignore = "itr-6: a function passed as a value (map(callback, ..)) is not counted as a reference"]
 fn py3_05_function_passed_as_value_is_not_dead() {
     assert_eq!(dead_json(&case("py3"), "callback", None)["dead"], false);
 }
@@ -742,7 +738,6 @@ fn ts09_overloaded_function_extent_starts_at_first_overload() {
 }
 
 #[test]
-#[ignore = "itr-6: aliased call `plus(1, 2)` (import { add as plus }) is not matched to add"]
 fn ts10_refs_defined_in_math_includes_aliased_call() {
     let sites = ref_sites(&case("ts"), "add", Some("src/lib/math.ts"));
     assert!(sites.contains(&"src/main.ts:9".to_string()));
@@ -810,7 +805,6 @@ fn ts2_04_calls_inside_template_literals_are_captured() {
 }
 
 #[test]
-#[ignore = "itr-6: function used only via `import { x as y }` is reported dead"]
 fn ts2_05_function_used_only_through_alias_is_not_dead() {
     assert_eq!(dead_json(&case("ts2"), "onlyAliased", None)["dead"], false);
 }
@@ -907,7 +901,6 @@ fn rs10_trait_default_method_kind_is_method() {
 }
 
 #[test]
-#[ignore = "itr-6: calls inside macro token trees (println!, assert_eq!) are invisible, so total() looks dead"]
 fn rs11_function_used_in_println_and_tests_is_not_dead() {
     assert_eq!(dead_json(&case("rs"), "total", None)["dead"], false);
 }
@@ -929,7 +922,6 @@ fn rs13_struct_definition_line_is_not_its_own_reference() {
 }
 
 #[test]
-#[ignore = "itr-6: a function referenced as a value (`let _ = helper;`) is reported dead"]
 fn rs14_function_referenced_as_value_is_not_dead() {
     assert_eq!(dead_json(&case("rs"), "helper", None)["dead"], false);
 }
@@ -943,7 +935,6 @@ fn rs15_skeleton_does_not_brace_bodiless_trait_fn() {
 }
 
 #[test]
-#[ignore = "itr-6: fn called only inside println!() is reported dead"]
 fn rsm01_function_called_only_inside_macro_is_not_dead() {
     assert_eq!(dead_json(&case("rsmac"), "in_macro", None)["dead"], false);
 }

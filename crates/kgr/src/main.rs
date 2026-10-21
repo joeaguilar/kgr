@@ -3,6 +3,7 @@ mod baseline;
 mod cache;
 mod config;
 mod pipeline;
+mod refscan;
 mod render;
 mod rules;
 mod walk;
@@ -302,7 +303,7 @@ enum Commands {
         verbose: u8,
     },
 
-    /// Check if a symbol is safe to remove (no references found = dead)
+    /// Check whether a symbol is referenced (status: dead, file_local, live, ambiguous, not_found)
     Dead {
         /// Symbol name to check
         name: String,
@@ -1985,14 +1986,7 @@ fn run_symbols(path: &Path, format: Option<&str>, lang: &Option<Vec<String>>, no
     }
 }
 
-/// True when a recorded callee refers to `name`, treating both `.` and `::`
-/// as qualifier separators: matches `name`, `obj.name`, and `path::name`
-/// (e.g. `util::helper`, `Foo::bar`, `tracing::warn`).
-fn callee_matches(callee_raw: &str, name: &str) -> bool {
-    callee_raw == name
-        || callee_raw.ends_with(&format!(".{name}"))
-        || callee_raw.ends_with(&format!("::{name}"))
-}
+use refscan::callee_matches;
 
 #[derive(Clone, Copy)]
 struct SymbolDefinitionMatch<'a> {
@@ -2003,6 +1997,11 @@ struct SymbolDefinitionMatch<'a> {
 #[derive(Clone)]
 struct SymbolReference {
     file: PathBuf,
+    line: usize,
+    /// 0-based byte column, matching tree-sitter spans.
+    col: usize,
+    /// Qualifier segment (`b` in `b.helper`), when the reference has one.
+    qualifier: Option<String>,
     value: serde_json::Value,
 }
 
@@ -2118,27 +2117,70 @@ fn reference_scope_files(
     Some(allowed)
 }
 
+/// Source files read and lexically scanned at most once per command.
+type SourceCache = std::collections::HashMap<PathBuf, Option<refscan::ScannedSource>>;
+
+fn load_source<'c>(
+    root: &Path,
+    file: &kgr_core::types::FileNode,
+    file_cache: &'c mut SourceCache,
+) -> Option<&'c refscan::ScannedSource> {
+    file_cache
+        .entry(file.path.clone())
+        .or_insert_with(|| {
+            std::fs::read_to_string(root.join(&file.path))
+                .ok()
+                .map(|source| refscan::ScannedSource::new(source, file.lang, &file.path))
+        })
+        .as_ref()
+}
+
 fn source_context_line(
     root: &Path,
-    file_path: &Path,
+    file: &kgr_core::types::FileNode,
     line: usize,
-    file_cache: &mut std::collections::HashMap<PathBuf, String>,
+    file_cache: &mut SourceCache,
 ) -> String {
-    if !file_cache.contains_key(file_path) {
-        let full_path = root.join(file_path);
-        if let Ok(content) = std::fs::read_to_string(&full_path) {
-            file_cache.insert(file_path.to_path_buf(), content);
+    load_source(root, file, file_cache)
+        .map(|scanned| scanned.line_text(line).to_string())
+        .unwrap_or_default()
+}
+
+/// Module-name fragments an import of a definition file is expected to
+/// mention: the file stem and its parent directory (`pkg/util.py` gives
+/// `util` and `pkg`). Used to tie `name as alias` imports to the definition.
+fn definition_module_hints(definitions: &[SymbolDefinitionMatch<'_>]) -> Vec<String> {
+    module_hints_for_paths(definitions.iter().map(|d| d.file.path.as_path()))
+}
+
+fn module_hints_for_paths<'p>(paths: impl Iterator<Item = &'p Path>) -> Vec<String> {
+    let mut hints = Vec::new();
+    for path in paths {
+        let stem = path.file_stem().map(|s| s.to_string_lossy().to_string());
+        let parent = path
+            .parent()
+            .and_then(Path::file_name)
+            .map(|s| s.to_string_lossy().to_string());
+        for hint in [stem, parent].into_iter().flatten() {
+            if !hint.is_empty() && !hints.contains(&hint) {
+                hints.push(hint);
+            }
         }
     }
+    hints
+}
 
-    file_cache
-        .get(file_path)
-        .and_then(|content| {
-            content
-                .lines()
-                .nth(line.saturating_sub(1))
-                .map(|l| l.trim().to_string())
-        })
+/// Local aliases `name` is imported under in `file`, restricted to import
+/// statements that mention one of the definition's module hints.
+fn file_aliases(
+    root: &Path,
+    file: &kgr_core::types::FileNode,
+    name: &str,
+    module_hints: &[String],
+    file_cache: &mut SourceCache,
+) -> Vec<String> {
+    load_source(root, file, file_cache)
+        .map(|scanned| scanned.import_aliases(name, module_hints))
         .unwrap_or_default()
 }
 
@@ -2147,11 +2189,12 @@ fn collect_call_references(
     file_nodes: &[kgr_core::types::FileNode],
     name: &str,
     allowed_files: Option<&std::collections::HashSet<PathBuf>>,
+    definitions: &[SymbolDefinitionMatch<'_>],
     definition_ids: &[String],
+    file_cache: &mut SourceCache,
 ) -> Vec<SymbolReference> {
     let mut references = Vec::new();
-    let mut file_cache: std::collections::HashMap<PathBuf, String> =
-        std::collections::HashMap::new();
+    let module_hints = definition_module_hints(definitions);
 
     for file in file_nodes {
         if let Some(allowed) = allowed_files {
@@ -2159,27 +2202,282 @@ fn collect_call_references(
                 continue;
             }
         }
+        if file.calls.is_empty() {
+            continue;
+        }
 
+        let aliases = file_aliases(root, file, name, &module_hints, file_cache);
         for call in &file.calls {
-            if callee_matches(&call.callee_raw, name) {
-                let context =
-                    source_context_line(root, &file.path, call.span.start_line, &mut file_cache);
-                references.push(SymbolReference {
-                    file: file.path.clone(),
-                    value: serde_json::json!({
-                        "file": file.path.to_string_lossy(),
-                        "line": call.span.start_line,
-                        "kind": "call",
-                        "callee": &call.callee_raw,
-                        "context": context,
-                        "definition_ids": definition_ids,
-                    }),
-                });
+            let via_alias = if callee_matches(&call.callee_raw, name) {
+                None
+            } else if let Some(alias) = aliases
+                .iter()
+                .find(|alias| callee_matches(&call.callee_raw, alias))
+            {
+                Some(alias.clone())
+            } else {
+                continue;
+            };
+            let context = source_context_line(root, file, call.span.start_line, file_cache);
+            let mut value = serde_json::json!({
+                "file": file.path.to_string_lossy(),
+                "line": call.span.start_line,
+                "kind": "call",
+                "callee": &call.callee_raw,
+                "context": context,
+                "definition_ids": definition_ids,
+            });
+            if let Some(alias) = via_alias {
+                value["via_alias"] = serde_json::Value::String(alias);
             }
+            references.push(SymbolReference {
+                file: file.path.clone(),
+                line: call.span.start_line,
+                col: call.span.start_col,
+                qualifier: refscan::callee_qualifier(&call.callee_raw),
+                value,
+            });
         }
     }
 
     references
+}
+
+/// Restricts which `X.name` mentions are attributed to a different
+/// same-named definition rather than the one being checked.
+struct ForeignQualifiers {
+    /// Module hints of the other definitions' files (`used` for used.py).
+    qualifiers: Vec<String>,
+    /// Files that import another definition's file and none of ours; only
+    /// there can a qualifier spelling be trusted to name the other module.
+    files: std::collections::HashSet<PathBuf>,
+}
+
+impl ForeignQualifiers {
+    fn new(
+        file_nodes: &[kgr_core::types::FileNode],
+        name: &str,
+        definitions: &[SymbolDefinitionMatch<'_>],
+    ) -> Self {
+        let own_files: std::collections::HashSet<&Path> =
+            definitions.iter().map(|d| d.file.path.as_path()).collect();
+        let foreign_files: std::collections::HashSet<&Path> = file_nodes
+            .iter()
+            .filter(|f| {
+                !own_files.contains(f.path.as_path()) && f.symbols.iter().any(|s| s.name == name)
+            })
+            .map(|f| f.path.as_path())
+            .collect();
+        let own_hints = definition_module_hints(definitions);
+        let qualifiers = module_hints_for_paths(foreign_files.iter().copied())
+            .into_iter()
+            .filter(|hint| !own_hints.contains(hint))
+            .collect();
+        let files = file_nodes
+            .iter()
+            .filter(|f| {
+                let resolved = || f.imports.iter().filter_map(|i| i.resolved.as_deref());
+                resolved().any(|p| foreign_files.contains(p))
+                    && !resolved().any(|p| own_files.contains(p))
+            })
+            .map(|f| f.path.clone())
+            .collect();
+        Self { qualifiers, files }
+    }
+
+    /// True when `qualifier` names another definition's module in `file`:
+    /// the spelling matches, the file imports only the other definition's
+    /// module, an import statement in the file binds the qualifier, and the
+    /// file never rebinds it (as a parameter or variable).
+    fn excludes(
+        &self,
+        file: &Path,
+        scanned: &refscan::ScannedSource,
+        qualifier: Option<&str>,
+    ) -> bool {
+        qualifier.is_some_and(|q| {
+            self.qualifiers.iter().any(|f| f == q)
+                && self.files.contains(file)
+                && scanned.import_binds(q)
+                && scanned.used_only_as_module(q)
+        })
+    }
+}
+
+/// What a project-wide mention scan found besides recorded call sites.
+#[derive(Default)]
+struct Mentions {
+    /// Code occurrences: values passed around, macro arguments, JSX tags,
+    /// decorators, import lines.
+    code: Vec<SymbolReference>,
+    /// Occurrences only inside string literals: possible dynamic uses.
+    strings: Vec<serde_json::Value>,
+    /// Occurrences qualified by another same-named definition's module.
+    attributed_elsewhere: Vec<serde_json::Value>,
+}
+
+/// Whole-identifier occurrences of `name` that are not recorded call sites.
+/// Occurrences in comments, definition-name tokens and the callee tokens of
+/// recorded calls are skipped.
+fn collect_mentions(
+    root: &Path,
+    file_nodes: &[kgr_core::types::FileNode],
+    name: &str,
+    calls: &[SymbolReference],
+    foreign: &ForeignQualifiers,
+    file_cache: &mut SourceCache,
+) -> Mentions {
+    let mut found = Mentions::default();
+    let mut call_positions: std::collections::HashMap<
+        &Path,
+        std::collections::HashSet<(usize, usize)>,
+    > = std::collections::HashMap::new();
+    for call in calls {
+        call_positions
+            .entry(call.file.as_path())
+            .or_default()
+            .insert((call.line, call.col));
+    }
+
+    for file in file_nodes {
+        let Some(scanned) = load_source(root, file, file_cache) else {
+            continue;
+        };
+        let occurrences = scanned.occurrences(name);
+        if occurrences.is_empty() {
+            continue;
+        }
+        let first_code_at = |from: (usize, usize)| {
+            let index = occurrences.partition_point(|o| (o.line, o.col) < from);
+            occurrences[index..]
+                .iter()
+                .find(|o| o.region == refscan::Region::Code)
+        };
+        // Tokens already accounted for: each same-named definition's name
+        // (its first code occurrence) and each recorded call's callee.
+        let mut known_tokens: std::collections::HashSet<usize> = file
+            .symbols
+            .iter()
+            .filter(|s| s.name == name)
+            .filter_map(|s| first_code_at((s.span.start_line, s.span.start_col)))
+            .map(|o| o.offset)
+            .collect();
+        if let Some(positions) = call_positions.get(file.path.as_path()) {
+            for call in &file.calls {
+                let start = (call.span.start_line, call.span.start_col);
+                if !positions.contains(&start) {
+                    continue;
+                }
+                if let Some(o) =
+                    first_code_at(start).filter(|o| span_contains(&call.span, (o.line, o.col)))
+                {
+                    known_tokens.insert(o.offset);
+                }
+            }
+        }
+
+        for occurrence in &occurrences {
+            if occurrence.region == refscan::Region::Comment
+                || known_tokens.contains(&occurrence.offset)
+            {
+                continue;
+            }
+            let qualifier = scanned
+                .qualifier_before(occurrence.offset)
+                .map(str::to_string);
+            let value = serde_json::json!({
+                "file": file.path.to_string_lossy(),
+                "line": occurrence.line,
+                "kind": "mention",
+                "context": scanned.line_text(occurrence.line),
+            });
+            if foreign.excludes(&file.path, scanned, qualifier.as_deref()) {
+                found.attributed_elsewhere.push(value);
+                continue;
+            }
+            if occurrence.region == refscan::Region::Str {
+                if found.strings.last() != Some(&value) {
+                    found.strings.push(value);
+                }
+                continue;
+            }
+            found.code.push(SymbolReference {
+                file: file.path.clone(),
+                line: occurrence.line,
+                col: occurrence.col,
+                qualifier,
+                value,
+            });
+        }
+    }
+
+    found
+}
+
+/// Half-open containment: tree-sitter span ends are exclusive.
+fn span_contains(span: &kgr_core::types::Span, pos: (usize, usize)) -> bool {
+    (span.start_line, span.start_col) <= pos && pos < (span.end_line, span.end_col)
+}
+
+/// Symbols of one file sorted by start, for innermost-containing lookups.
+struct SymbolIndex<'a> {
+    symbols: Vec<&'a kgr_core::types::Symbol>,
+}
+
+impl<'a> SymbolIndex<'a> {
+    fn new(file: &'a kgr_core::types::FileNode) -> Self {
+        let mut symbols: Vec<_> = file.symbols.iter().collect();
+        symbols.sort_by_key(|s| (s.span.start_line, s.span.start_col));
+        Self { symbols }
+    }
+
+    /// Symbols whose span contains `pos`, innermost first. Lazy, so asking
+    /// only for the innermost stops at the nearest containing symbol.
+    fn containing(
+        &self,
+        pos: (usize, usize),
+    ) -> impl Iterator<Item = &'a kgr_core::types::Symbol> + '_ {
+        let upto = self
+            .symbols
+            .partition_point(|s| (s.span.start_line, s.span.start_col) <= pos);
+        self.symbols[..upto]
+            .iter()
+            .rev()
+            .filter(move |s| span_contains(&s.span, pos))
+            .copied()
+    }
+}
+
+/// True when a reference is the definition calling itself: it lies inside
+/// one of the definitions (by innermost containing symbol) and is either
+/// unqualified or qualified by the receiver or an enclosing type
+/// (`self.step`, `Self::f`, `Engine.build`). Anything else, such as
+/// `b.helper` inside a.py's own `helper`, `B().helper` or `super().helper`,
+/// may target another definition and is kept as live evidence.
+fn is_self_reference(
+    index: &SymbolIndex<'_>,
+    file: &Path,
+    reference: &SymbolReference,
+    definitions: &[SymbolDefinitionMatch<'_>],
+) -> bool {
+    let mut containing = index.containing((reference.line, reference.col));
+    let Some(innermost) = containing.next() else {
+        return false;
+    };
+    let is_definition = definitions.iter().any(|d| {
+        d.file.path == file
+            && d.symbol.name == innermost.name
+            && d.symbol.span.start_line == innermost.span.start_line
+            && d.symbol.span.start_col == innermost.span.start_col
+    });
+    if !is_definition {
+        return false;
+    }
+    match reference.qualifier.as_deref() {
+        None => true,
+        Some("self" | "this" | "Self" | "cls" | "static") => true,
+        Some(q) => containing.any(|outer| outer.name == q),
+    }
 }
 
 fn reference_values(references: &[SymbolReference]) -> Vec<serde_json::Value> {
@@ -2236,7 +2534,9 @@ fn run_refs(
         &file_nodes,
         name,
         allowed_files.as_ref(),
+        &definitions,
         &definition_ids,
+        &mut SourceCache::new(),
     );
     let reference_values = reference_values(&references);
 
@@ -2335,49 +2635,114 @@ fn run_dead(
     }
 
     let allowed_files = reference_scope_files(&definitions, &kgraph, defined_in.is_some());
-    let references = collect_call_references(
+    let mut file_cache = SourceCache::new();
+    let mut references = collect_call_references(
         &root,
         &file_nodes,
         name,
         allowed_files.as_ref(),
+        &definitions,
         &definition_ids,
+        &mut file_cache,
     );
-    let mut reference_values = Vec::new();
-    let mut self_file_references = Vec::new();
-    let mut cross_file_references = Vec::new();
+
+    // Mentions are searched project-wide even under --defined-in: a missed
+    // reference must never turn into a removable `dead: true`. Only mentions
+    // qualified by another same-named definition's module are set aside.
+    let foreign = ForeignQualifiers::new(&file_nodes, name, &definitions);
+    let Mentions {
+        code: mentions,
+        strings: string_mentions,
+        attributed_elsewhere,
+    } = collect_mentions(
+        &root,
+        &file_nodes,
+        name,
+        &references,
+        &foreign,
+        &mut file_cache,
+    );
+    references.extend(mentions);
+    references.sort_by(|a, b| {
+        a.file
+            .cmp(&b.file)
+            .then(a.line.cmp(&b.line))
+            .then(a.col.cmp(&b.col))
+    });
 
     let definition_files: std::collections::HashSet<PathBuf> = definitions
         .iter()
         .map(|definition| definition.file.path.clone())
         .collect();
+    let symbol_indexes: std::collections::HashMap<&Path, SymbolIndex<'_>> = file_nodes
+        .iter()
+        .filter(|file| definition_files.contains(&file.path))
+        .map(|file| (file.path.as_path(), SymbolIndex::new(file)))
+        .collect();
 
-    for reference in references {
-        if definition_files.contains(&reference.file) {
+    let mut reference_values = Vec::new();
+    let mut self_file_references = Vec::new();
+    let mut cross_file_references = Vec::new();
+    let mut live_references = Vec::new();
+    let mut live_cross_file = 0usize;
+    for mut reference in references {
+        let in_definition_file = definition_files.contains(&reference.file);
+        let inside_definition = symbol_indexes
+            .get(reference.file.as_path())
+            .is_some_and(|index| {
+                is_self_reference(index, &reference.file, &reference, &definitions)
+            });
+        reference.value["inside_definition"] = serde_json::Value::Bool(inside_definition);
+        if !inside_definition {
+            live_references.push(reference.value.clone());
+            if !in_definition_file {
+                live_cross_file += 1;
+            }
+        }
+        if in_definition_file {
             self_file_references.push(reference.value.clone());
         } else {
             cross_file_references.push(reference.value.clone());
         }
         reference_values.push(reference.value);
     }
-
     let ambiguous = defined_in.is_none() && definitions.len() > 1;
-    let precise_dead = cross_file_references.is_empty();
-    let dead_json = if ambiguous && !cross_file_references.is_empty() {
-        serde_json::Value::Null
-    } else {
-        serde_json::Value::Bool(precise_dead)
-    };
-    let (status, caveat) = if ambiguous && !cross_file_references.is_empty() {
-        ("ambiguous", Some(scope_hint()))
-    } else if reference_values.is_empty() {
-        ("no_references", None)
-    } else if cross_file_references.is_empty() {
+    let (dead_json, status, caveat) = if ambiguous && !live_references.is_empty() {
         (
-            "self_only_references",
-            Some("Only self-file references found; no cross-file references were found."),
+            serde_json::Value::Null,
+            "ambiguous",
+            Some(scope_hint().to_string()),
+        )
+    } else if live_references.is_empty() {
+        let notes: Vec<&str> = [
+            (!string_mentions.is_empty()).then_some(
+                "The name also appears in string literals; check for dynamic use \
+                 (reflection, getattr, routing tables) before removing.",
+            ),
+            (!attributed_elsewhere.is_empty()).then_some(
+                "Some occurrences are qualified by another module that defines the same \
+                 name and were attributed to it (see attributed_elsewhere); check for \
+                 shadowed module names.",
+            ),
+            (!reference_values.is_empty())
+                .then_some("The only references are inside the definition itself (recursion)."),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let caveat = (!notes.is_empty()).then(|| notes.join(" "));
+        (serde_json::Value::Bool(true), "dead", caveat)
+    } else if live_cross_file == 0 {
+        (
+            serde_json::Value::Bool(false),
+            "file_local",
+            Some(
+                "Referenced only inside its defining file; it is live if those callers are."
+                    .to_string(),
+            ),
         )
     } else {
-        ("live_cross_file_references", None)
+        (serde_json::Value::Bool(false), "live", None)
     };
 
     if format == "json" {
@@ -2394,95 +2759,98 @@ fn run_dead(
             "references": reference_values,
             "self_file_references": self_file_references,
             "cross_file_references": cross_file_references,
+            "string_mentions": string_mentions,
+            "attributed_elsewhere": attributed_elsewhere,
             "caveat": caveat,
         });
         serde_json::to_writer_pretty(&mut stdout, &result).ok();
         writeln!(stdout).ok();
-    } else if reference_values.is_empty() {
-        writeln!(stdout, "Dead — no references found.").ok();
-        for def in &definition_jsons {
-            writeln!(
-                stdout,
-                "  Defined at: {}:{} ({}) id={}",
-                def["file"].as_str().unwrap_or_default(),
-                def["line"],
-                def["kind"].as_str().unwrap_or_default(),
-                def["id"].as_str().unwrap_or_default()
-            )
-            .ok();
-        }
-    } else if cross_file_references.is_empty() {
-        writeln!(
-            stdout,
-            "Dead — only self-file reference(s) found; no cross-file references."
-        )
-        .ok();
-        for def in &definition_jsons {
-            writeln!(
-                stdout,
-                "  Defined at: {}:{} ({}) id={}",
-                def["file"].as_str().unwrap_or_default(),
-                def["line"],
-                def["kind"].as_str().unwrap_or_default(),
-                def["id"].as_str().unwrap_or_default()
-            )
-            .ok();
-        }
-        writeln!(stdout, "Self-file references:").ok();
-        for r in &self_file_references {
-            writeln!(
-                stdout,
-                "  {}:{} {}",
-                r["file"].as_str().unwrap_or_default(),
-                r["line"],
-                r["context"].as_str().unwrap_or_default()
-            )
-            .ok();
-        }
-    } else if ambiguous {
-        write_ambiguous_symbol_text(&mut stdout, name, &definition_jsons);
-        writeln!(stdout, "Potential cross-file references:").ok();
-        for r in &cross_file_references {
-            writeln!(
-                stdout,
-                "  {}:{} {}",
-                r["file"].as_str().unwrap_or_default(),
-                r["line"],
-                r["context"].as_str().unwrap_or_default()
-            )
-            .ok();
-        }
-    } else {
-        if definition_jsons.len() > 1 {
-            writeln!(stdout, "Defined in {} locations:", definition_jsons.len()).ok();
-            for def in &definition_jsons {
+        return;
+    }
+
+    match status {
+        "dead" => {
+            if reference_values.is_empty() {
+                writeln!(stdout, "Dead — no references found.").ok();
+            } else {
                 writeln!(
                     stdout,
-                    "  {}:{} ({}) id={}",
-                    def["file"].as_str().unwrap_or_default(),
-                    def["line"],
-                    def["kind"].as_str().unwrap_or_default(),
-                    def["id"].as_str().unwrap_or_default()
+                    "Dead — only self-file reference(s) found, all inside its own definition (recursion)."
                 )
                 .ok();
             }
+            write_definition_lines(&mut stdout, "  Defined at: ", &definition_jsons);
+            write_reference_lines(&mut stdout, "Self-file references:", &self_file_references);
+            write_reference_lines(
+                &mut stdout,
+                "Mentioned in string literals (check for dynamic use):",
+                &string_mentions,
+            );
         }
-        writeln!(
-            stdout,
-            "Not dead — {} cross-file reference(s) found:",
-            cross_file_references.len()
-        )
-        .ok();
-        for r in &cross_file_references {
+        "ambiguous" => {
+            write_ambiguous_symbol_text(&mut stdout, name, &definition_jsons);
+            write_reference_lines(&mut stdout, "Potential references:", &live_references);
+        }
+        "file_local" => {
             writeln!(
                 stdout,
-                "  {}:{} {}",
-                r["file"].as_str().unwrap_or_default(),
-                r["line"],
-                r["context"].as_str().unwrap_or_default()
+                "Not dead — {} reference(s), all inside its defining file:",
+                live_references.len()
             )
             .ok();
+            write_reference_lines(&mut stdout, "", &live_references);
         }
+        _ => {
+            if definition_jsons.len() > 1 {
+                writeln!(stdout, "Defined in {} locations:", definition_jsons.len()).ok();
+                write_definition_lines(&mut stdout, "  ", &definition_jsons);
+            }
+            writeln!(
+                stdout,
+                "Not dead — {live_cross_file} cross-file reference(s) found:"
+            )
+            .ok();
+            write_reference_lines(&mut stdout, "", &cross_file_references);
+        }
+    }
+}
+
+fn write_definition_lines(
+    stdout: &mut impl Write,
+    prefix: &str,
+    definitions: &[serde_json::Value],
+) {
+    for def in definitions {
+        writeln!(
+            stdout,
+            "{prefix}{}:{} ({}) id={}",
+            def["file"].as_str().unwrap_or_default(),
+            def["line"],
+            def["kind"].as_str().unwrap_or_default(),
+            def["id"].as_str().unwrap_or_default()
+        )
+        .ok();
+    }
+}
+
+/// Writes `heading` (when non-empty) followed by one indented line per
+/// reference; writes nothing for an empty list.
+fn write_reference_lines(stdout: &mut impl Write, heading: &str, references: &[serde_json::Value]) {
+    if references.is_empty() {
+        return;
+    }
+    if !heading.is_empty() {
+        writeln!(stdout, "{heading}").ok();
+    }
+    for r in references {
+        writeln!(
+            stdout,
+            "  {}:{} {}",
+            r["file"].as_str().unwrap_or_default(),
+            r["line"],
+            r["context"].as_str().unwrap_or_default()
+        )
+        .ok();
     }
 }
 
@@ -2881,12 +3249,24 @@ fn run_impact(
     let mut dependents: Vec<(PathBuf, usize)> = depth_by_file.into_iter().collect();
     dependents.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
 
-    // Cross-reference: for each dependent, check if it calls the symbol
+    // Cross-reference: for each dependent, check if it calls the symbol,
+    // directly or through an import alias.
+    let module_hints = module_hints_for_paths(defining_files.iter().map(PathBuf::as_path));
+    let mut file_cache = SourceCache::new();
     let calls_symbol: std::collections::HashMap<PathBuf, bool> = dependents
         .iter()
         .map(|(dep_path, _)| {
             let has_call = file_nodes.iter().any(|f| {
-                f.path == *dep_path && f.calls.iter().any(|c| callee_matches(&c.callee_raw, name))
+                if f.path != *dep_path {
+                    return false;
+                }
+                let aliases = file_aliases(&root, f, name, &module_hints, &mut file_cache);
+                f.calls.iter().any(|c| {
+                    callee_matches(&c.callee_raw, name)
+                        || aliases
+                            .iter()
+                            .any(|alias| callee_matches(&c.callee_raw, alias))
+                })
             });
             (dep_path.clone(), has_call)
         })

@@ -647,7 +647,7 @@ fn dead_json_shape() {
     assert_eq!(json["symbol"], "deprecated_helper");
     assert_eq!(json["found"], true);
     assert_eq!(json["dead"], true);
-    assert_eq!(json["status"], "no_references");
+    assert_eq!(json["status"], "dead");
     let definitions = json["definitions"].as_array().unwrap();
     assert_eq!(definitions.len(), 1, "should include where it's defined");
     assert!(
@@ -679,7 +679,7 @@ fn dead_json_alive_includes_references() {
     assert_eq!(json["symbol"], "query");
     assert_eq!(json["found"], true);
     assert_eq!(json["dead"], false);
-    assert_eq!(json["status"], "live_cross_file_references");
+    assert_eq!(json["status"], "live");
     assert!(
         !json["references"].as_array().unwrap().is_empty(),
         "alive symbol should list its references"
@@ -717,11 +717,8 @@ fn dead_json_self_recursive_symbol_is_self_only_not_live() {
     assert_eq!(json["symbol"], "tick");
     assert_eq!(json["found"], true);
     assert_eq!(json["dead"], true);
-    assert_eq!(json["status"], "self_only_references");
-    assert!(json["caveat"]
-        .as_str()
-        .unwrap()
-        .contains("self-file references"));
+    assert_eq!(json["status"], "dead");
+    assert!(json["caveat"].as_str().unwrap().contains("recursion"));
 
     let refs = json["references"].as_array().unwrap();
     let self_refs = json["self_file_references"].as_array().unwrap();
@@ -1279,4 +1276,698 @@ fn hotspots_sorted_descending() {
     for w in scores.windows(2) {
         assert!(w[0] >= w[1], "scores should be in descending order");
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// kgr dead — tri-state verdicts and non-call references (itr #6, #7)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+fn dead_verdict(files: &[(&str, &str)], args: &[&str]) -> serde_json::Value {
+    let dir = tempfile::tempdir().unwrap();
+    for (path, content) in files {
+        let full = dir.path().join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, content).unwrap();
+    }
+    let output = kgr()
+        .arg("dead")
+        .args(args)
+        .args(["--format", "json", "--no-progress"])
+        .arg(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    serde_json::from_slice(&output).unwrap()
+}
+
+#[test]
+fn dead_cpp_arrow_call_keeps_method_live() {
+    let json = dead_verdict(
+        &[
+            ("w.cpp", "struct W { void m(); };\nvoid W::m() {}\n"),
+            (
+                "main.cpp",
+                "#include \"w.cpp\"\nint main() { W* p = new W(); p->m(); }\n",
+            ),
+        ],
+        &["m"],
+    );
+    assert_eq!(json["dead"], false, "{json:#}");
+}
+
+#[test]
+fn dead_lua_colon_call_keeps_method_live() {
+    let json = dead_verdict(
+        &[
+            (
+                "obj.lua",
+                "local Obj = {}\nfunction Obj:greet() return 1 end\nreturn Obj\n",
+            ),
+            ("main.lua", "local Obj = require(\"obj\")\nObj:greet()\n"),
+        ],
+        &["greet"],
+    );
+    assert_eq!(json["dead"], false, "{json:#}");
+}
+
+#[test]
+fn dead_rust_turbofish_call_keeps_function_live() {
+    let json = dead_verdict(
+        &[
+            ("src/lib.rs", "pub mod util;\n"),
+            (
+                "src/util.rs",
+                "pub fn parse_as<T: Default>() -> T { T::default() }\n",
+            ),
+            (
+                "src/main.rs",
+                "fn main() { let _n = demo::util::parse_as::<u32>(); }\n",
+            ),
+        ],
+        &["parse_as"],
+    );
+    assert_eq!(json["dead"], false, "{json:#}");
+}
+
+#[test]
+fn dead_jsx_tag_keeps_component_live() {
+    let json = dead_verdict(
+        &[
+            (
+                "src/Button.tsx",
+                "export function Button() { return <button />; }\n",
+            ),
+            (
+                "src/App.tsx",
+                "import { Button } from \"./Button\";\nexport const App = () => <Button />;\n",
+            ),
+        ],
+        &["Button"],
+    );
+    assert_eq!(json["dead"], false, "{json:#}");
+    assert_eq!(json["status"], "live");
+}
+
+#[test]
+fn dead_python_decorator_keeps_function_live() {
+    let json = dead_verdict(
+        &[
+            ("deco.py", "def traced(fn):\n    return fn\n"),
+            (
+                "app.py",
+                "from deco import traced\n\n@traced\ndef run():\n    pass\n",
+            ),
+        ],
+        &["traced"],
+    );
+    assert_eq!(json["dead"], false, "{json:#}");
+}
+
+#[test]
+fn dead_ambiguous_cross_definition_call_is_not_dead() {
+    // a.py calls b.helper(); both files define helper. The call sits in a
+    // definition file but outside either definition, so it is live evidence.
+    let json = dead_verdict(
+        &[
+            (
+                "a.py",
+                "import b\n\n\ndef helper():\n    pass\n\n\ndef go():\n    b.helper()\n",
+            ),
+            ("b.py", "def helper():\n    pass\n"),
+        ],
+        &["helper"],
+    );
+    assert_eq!(json["ambiguous"], true);
+    assert!(json["dead"].is_null(), "{json:#}");
+    assert_eq!(json["status"], "ambiguous");
+}
+
+#[test]
+fn dead_same_file_caller_is_file_local_not_dead() {
+    let json = dead_verdict(
+        &[(
+            "engine.py",
+            "class Engine:\n    def run(self):\n        return self.step()\n\n    def step(self):\n        return 2\n",
+        )],
+        &["step"],
+    );
+    assert_eq!(json["dead"], false);
+    assert_eq!(json["status"], "file_local");
+}
+
+#[test]
+fn dead_name_only_in_string_literal_is_dead_with_caveat() {
+    let json = dead_verdict(
+        &[
+            ("handlers.py", "def on_save():\n    pass\n"),
+            ("routes.py", "ROUTES = {\"save\": \"on_save\"}\n"),
+        ],
+        &["on_save"],
+    );
+    assert_eq!(json["dead"], true);
+    assert_eq!(json["string_mentions"].as_array().unwrap().len(), 1);
+    assert!(json["caveat"].as_str().unwrap().contains("dynamic use"));
+}
+
+#[test]
+fn dead_name_only_in_comment_is_dead() {
+    let json = dead_verdict(
+        &[
+            ("util.rs", "pub fn legacy() {}\n"),
+            (
+                "main.rs",
+                "// legacy() was removed from the hot path\nfn main() {}\n",
+            ),
+        ],
+        &["legacy"],
+    );
+    assert_eq!(json["dead"], true, "{json:#}");
+}
+
+// Regression cases from the cross-model review of the dead/refs rework.
+
+fn kgr_json(files: &[(&str, &str)], args: &[&str]) -> serde_json::Value {
+    let dir = tempfile::tempdir().unwrap();
+    for (path, content) in files {
+        let full = dir.path().join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, content).unwrap();
+    }
+    let output = kgr()
+        .args(args)
+        .args(["--format", "json", "--no-progress"])
+        .arg(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    serde_json::from_slice(&output).unwrap()
+}
+
+#[test]
+fn dead_call_after_definition_on_same_line_is_live() {
+    let json = dead_verdict(
+        &[("main.js", "function helper() {} helper();\n")],
+        &["helper"],
+    );
+    assert_eq!(json["dead"], false, "{json:#}");
+}
+
+#[test]
+fn dead_value_reference_on_definition_line_is_live() {
+    let json = dead_verdict(
+        &[("main.js", "function helper() {} const cb = helper; cb();\n")],
+        &["helper"],
+    );
+    assert_eq!(json["dead"], false, "{json:#}");
+}
+
+#[test]
+fn dead_qualified_call_inside_same_named_definition_is_not_recursion() {
+    let json = dead_verdict(
+        &[
+            ("a.py", "import b\ndef helper():\n    b.helper()\n"),
+            ("b.py", "def helper():\n    pass\n"),
+        ],
+        &["helper"],
+    );
+    assert!(json["dead"].is_null(), "{json:#}");
+    assert_eq!(json["status"], "ambiguous");
+}
+
+#[test]
+fn dead_code_after_inline_block_comment_is_live() {
+    let json = dead_verdict(
+        &[(
+            "main.rs",
+            "fn helper() {}\nfn main() {\n    /* setup */ let callback = helper;\n    callback();\n}\n",
+        )],
+        &["helper"],
+    );
+    assert_eq!(json["dead"], false, "{json:#}");
+}
+
+#[test]
+fn dead_deref_assignment_is_not_a_comment() {
+    let json = dead_verdict(
+        &[(
+            "main.rs",
+            "fn helper() {}\nfn main() {\n    let mut callback: fn() = || {};\n    let slot = &mut callback;\n    * slot = helper;\n    callback();\n}\n",
+        )],
+        &["helper"],
+    );
+    assert_eq!(json["dead"], false, "{json:#}");
+}
+
+#[test]
+fn dead_multiline_block_comment_prose_is_not_a_reference() {
+    let json = dead_verdict(
+        &[(
+            "main.rs",
+            "fn helper() {}\n/*\nhelper is obsolete\n*/\nfn main() {}\n",
+        )],
+        &["helper"],
+    );
+    assert_eq!(json["dead"], true, "{json:#}");
+}
+
+#[test]
+fn dead_fstring_interpolation_is_code() {
+    let json = dead_verdict(
+        &[(
+            "main.py",
+            "def helper():\n    return 1\n\ncallbacks = []\nprint(f\"{callbacks.append(helper)}\")\ncallbacks[0]()\n",
+        )],
+        &["helper"],
+    );
+    assert_eq!(json["dead"], false, "{json:#}");
+}
+
+#[test]
+fn dead_code_after_rust_char_literal_is_live() {
+    let json = dead_verdict(
+        &[(
+            "main.rs",
+            "fn helper() {}\nfn main() {\n    let quote = '\"'; let cb = helper;\n    cb();\n}\n",
+        )],
+        &["helper"],
+    );
+    assert_eq!(json["dead"], false, "{json:#}");
+}
+
+#[test]
+fn dead_template_literal_text_is_a_string_mention() {
+    let json = dead_verdict(
+        &[(
+            "main.js",
+            "function helper() {}\nconst msg = `helper is obsolete`;\n",
+        )],
+        &["helper"],
+    );
+    assert_eq!(json["dead"], true, "{json:#}");
+    assert_eq!(json["string_mentions"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn dead_qualifier_aliasing_our_module_keeps_definition_live() {
+    let json = dead_verdict(
+        &[
+            ("a.py", "def helper():\n    return 42\n"),
+            ("other.py", "def helper():\n    return 0\n"),
+            (
+                "main.py",
+                "import a as other\ncallbacks = [other.helper]\nprint(callbacks[0]())\n",
+            ),
+        ],
+        &["helper", "--defined-in", "a.py"],
+    );
+    assert_eq!(json["dead"], false, "{json:#}");
+}
+
+#[test]
+fn dead_dict_key_colon_is_not_a_qualifier() {
+    let json = dead_verdict(
+        &[
+            ("a.py", "def helper():\n    return 42\n"),
+            ("other.py", "def helper():\n    return 0\n"),
+            (
+                "main.py",
+                "from a import *\nother = \"x\"\nregistry = {other: helper}\nprint(registry[other]())\n",
+            ),
+        ],
+        &["helper", "--defined-in", "a.py"],
+    );
+    assert_eq!(json["dead"], false, "{json:#}");
+}
+
+#[test]
+fn refs_ignores_as_inside_strings_and_comments() {
+    for noise in [
+        "query = \"SELECT helper as unrelated FROM util\"",
+        "# util.helper as unrelated",
+    ] {
+        let main = format!("import util\n{noise}\ndef unrelated():\n    pass\nunrelated()\n");
+        let files = [
+            ("util.py", "def helper():\n    pass\n"),
+            ("main.py", main.as_str()),
+        ];
+        let refs = kgr_json(&files, &["refs", "helper"]);
+        assert!(
+            refs["references"].as_array().unwrap().is_empty(),
+            "{refs:#}"
+        );
+        let impact = kgr_json(&files, &["impact", "helper"]);
+        assert_eq!(impact["impact"][0]["calls_symbol"], false, "{impact:#}");
+    }
+}
+
+#[test]
+fn refs_and_impact_follow_multiline_aliased_import() {
+    let files = [
+        ("util.py", "def helper():\n    return 1\n"),
+        ("main.py", "from util import (\n    helper as h,\n)\nh()\n"),
+    ];
+    let refs = kgr_json(&files, &["refs", "helper"]);
+    assert_eq!(refs["references"][0]["via_alias"], "h", "{refs:#}");
+    let impact = kgr_json(&files, &["impact", "helper"]);
+    assert_eq!(impact["impact"][0]["calls_symbol"], true, "{impact:#}");
+}
+
+#[test]
+fn refs_keeps_callee_with_comparison_in_index() {
+    let files = [
+        (
+            "util.py",
+            "class Widget:\n    def helper(self):\n        return 42\n",
+        ),
+        (
+            "main.py",
+            "import util\nitems = [util.Widget(), util.Widget()]\ni, j = 0, 1\nitems[i < j].helper()\n",
+        ),
+    ];
+    let refs = kgr_json(&files, &["refs", "helper"]);
+    assert_eq!(refs["references"].as_array().unwrap().len(), 1, "{refs:#}");
+}
+
+// Second-pass review cases: a lexing mistake must never hide a live reference.
+
+fn assert_live(files: &[(&str, &str)], name: &str) {
+    let json = dead_verdict(files, &[name]);
+    assert_eq!(json["dead"], false, "{json:#}");
+}
+
+#[test]
+fn dead_call_adjacent_to_definition_end_is_not_recursion() {
+    assert_live(&[("main.js", "function helper() {}helper();\n")], "helper");
+}
+
+#[test]
+fn dead_call_on_constructed_receiver_is_not_recursion() {
+    let json = dead_verdict(
+        &[(
+            "main.py",
+            "class B:\n    def helper(self): return 1\ndef helper():\n    return B().helper()\n",
+        )],
+        &["helper"],
+    );
+    assert!(json["dead"].is_null(), "{json:#}");
+}
+
+#[test]
+fn dead_super_call_is_not_recursion() {
+    let json = dead_verdict(
+        &[(
+            "main.py",
+            "class A:\n    def helper(self): return 1\nclass B(A):\n    def helper(self): return super().helper()\n",
+        )],
+        &["helper"],
+    );
+    assert!(json["dead"].is_null(), "{json:#}");
+}
+
+#[test]
+fn dead_shadowed_foreign_qualifier_keeps_definition_live() {
+    // `other` is both an imported module and a parameter, so `other.helper`
+    // may be a.py's own helper (it is, at runtime): it must count as live.
+    let json = dead_verdict(
+        &[
+            (
+                "a.py",
+                "import sys
+import other
+def helper(): return 42
+def pick(other):
+    return other.helper
+cb = pick(sys.modules[__name__])
+print(cb())
+",
+            ),
+            (
+                "other.py",
+                "def helper(): return 0
+",
+            ),
+        ],
+        &["helper", "--defined-in", "a.py"],
+    );
+    assert_eq!(json["dead"], false, "{json:#}");
+}
+
+#[test]
+fn dead_jsx_text_punctuation_does_not_hide_components() {
+    assert_live(
+        &[(
+            "main.jsx",
+            "function Helper() { return <span/>; }\nconst view = <div>don't <Helper /></div>;\n",
+        )],
+        "Helper",
+    );
+    assert_live(
+        &[(
+            "main.tsx",
+            "function Helper() { return <span/>; }\r\nconst view = <div>say \"hi <Helper /></div>;\r\n",
+        )],
+        "Helper",
+    );
+    assert_live(
+        &[(
+            "main.jsx",
+            "function Helper() { return <span/>; }\nconst v = <p>it's <Helper/> isn't</p>;\n",
+        )],
+        "Helper",
+    );
+}
+
+#[test]
+fn dead_js_regex_with_quote_does_not_hide_code() {
+    assert_live(
+        &[(
+            "main.js",
+            "function helper() {}\nconst pattern = /\"/; const cb = helper; cb();\n",
+        )],
+        "helper",
+    );
+}
+
+#[test]
+fn dead_rust_byte_char_and_nested_comment_do_not_hide_code() {
+    assert_live(
+        &[(
+            "main.rs",
+            "fn helper() {}\nfn main() { let quote = b'\"'; let cb = helper; cb(); }\n",
+        )],
+        "helper",
+    );
+    assert_live(
+        &[(
+            "main.rs",
+            "fn helper() {}\n/* outer /* inner */ \" */\nfn main() { let cb = helper; cb(); }\n",
+        )],
+        "helper",
+    );
+}
+
+#[test]
+fn dead_python_raw_string_escape_does_not_hide_code() {
+    assert_live(
+        &[(
+            "main.py",
+            "def helper(): pass\ns = r\"\\\"\"; cb = helper\ncb()\n",
+        )],
+        "helper",
+    );
+}
+
+#[test]
+fn dead_cpp_raw_string_does_not_open_a_comment() {
+    assert_live(
+        &[(
+            "main.cpp",
+            "void helper() {}\nint main() { const char* s = R\"tag(\" /*)tag\"; auto cb = helper; cb(); }\n",
+        )],
+        "helper",
+    );
+}
+
+#[test]
+fn dead_ruby_char_and_percent_literals_do_not_hide_code() {
+    assert_live(
+        &[(
+            "main.rb",
+            "def helper; puts :ok; end\nx = ?'; cb = method(:helper); cb.call\n",
+        )],
+        "helper",
+    );
+    assert_live(
+        &[(
+            "main.rb",
+            "def helper; puts :ok; end\nx = %w[\"]\ncb = method(:helper)\ncb.call\n",
+        )],
+        "helper",
+    );
+}
+
+#[test]
+fn dead_bash_ansi_quote_and_heredoc_do_not_hide_code() {
+    assert_live(
+        &[(
+            "main.sh",
+            "helper() { echo ok; }\ns=$'\\''; cb=helper\n$cb\n",
+        )],
+        "helper",
+    );
+    assert_live(
+        &[(
+            "main.sh",
+            "helper() { echo ok; }\ncat <<EOF\n\"\nEOF\ncb=helper\n$cb\n",
+        )],
+        "helper",
+    );
+}
+
+#[test]
+fn dead_php_heredoc_does_not_hide_code() {
+    assert_live(
+        &[(
+            "main.php",
+            "<?php\nclass helper {}\n$s = <<<TXT\n\"\nTXT;\n$cls = helper::class;\nnew $cls();\n",
+        )],
+        "helper",
+    );
+}
+
+#[test]
+fn dead_lua_long_string_does_not_hide_code() {
+    assert_live(
+        &[(
+            "main.lua",
+            "function helper() end\nlocal s = [[ \" ]]; local cb = helper; cb()\n",
+        )],
+        "helper",
+    );
+}
+
+#[test]
+fn dead_swift_interpolation_is_code() {
+    assert_live(
+        &[(
+            "main.swift",
+            "func helper() {}\nlet s = \"\\([helper].count)\"\n",
+        )],
+        "helper",
+    );
+}
+
+// Third-pass review cases: tree-sitter literal ranges.
+
+#[test]
+fn dead_js_regex_with_comment_opener_does_not_hide_code() {
+    assert_live(
+        &[(
+            "main.js",
+            "function helper() {}\nconst punctuation = /[/*]/;\nconst cb = helper;\n/* Invoke the selected callback. */\ncb();\n",
+        )],
+        "helper",
+    );
+    assert_live(
+        &[(
+            "main.js",
+            "function helper() {}\nconst url = /https?:\\/\\//; const cb = helper; cb();\n",
+        )],
+        "helper",
+    );
+}
+
+#[test]
+fn dead_paired_quotes_in_jsx_text_do_not_hide_components() {
+    assert_live(
+        &[(
+            "main.jsx",
+            "function Helper() { return <span/>; }\nconst view = <div>Click \"<Helper />\" to continue</div>;\n",
+        )],
+        "Helper",
+    );
+    assert_live(
+        &[(
+            "main.tsx",
+            "function Helper() { return <span/>; }\nconst view = <div>Use `\n<Helper />\n` here</div>;\n",
+        )],
+        "Helper",
+    );
+}
+
+#[test]
+fn dead_cpp_wide_char_does_not_hide_code() {
+    assert_live(
+        &[(
+            "main.cpp",
+            "void helper() {}\nint main() { wchar_t q = L'\"'; auto cb = helper; puts(\"ready\"); cb(); }\n",
+        )],
+        "helper",
+    );
+}
+
+#[test]
+fn dead_ruby_percent_and_regex_literals_do_not_hide_code() {
+    assert_live(
+        &[(
+            "main.rb",
+            "def helper; puts :ok; end\nwords = %w[\"]; cb = method(:helper); puts \"ready\"; cb.call\n",
+        )],
+        "helper",
+    );
+    assert_live(
+        &[(
+            "main.rb",
+            "def helper; puts :ok; end\nr = /\"/; cb = method(:helper); puts \"ready\"; cb.call\n",
+        )],
+        "helper",
+    );
+}
+
+#[test]
+fn dead_interpolation_forms_are_code() {
+    assert_live(
+        &[(
+            "main.py",
+            "def helper(): pass\ntext = rf\"\\{helper.__name__}\"\n",
+        )],
+        "helper",
+    );
+    assert_live(
+        &[(
+            "main.swift",
+            "func helper() {}\nlet s = \"\"\"\nCount: \\([helper].count)\n\"\"\"\n",
+        )],
+        "helper",
+    );
+    assert_live(
+        &[(
+            "main.cs",
+            "class C {\n    static int helper() => 1;\n    string s = $\"{new System.Func<int>(helper)()}\";\n}\n",
+        )],
+        "helper",
+    );
+    assert_live(
+        &[(
+            "main.sh",
+            "helper() { echo ok; }\noutput=\"$(cb=helper; $cb)\"\n",
+        )],
+        "helper",
+    );
+}
+
+#[test]
+fn dead_bound_method_on_constructed_receiver_is_not_recursion() {
+    let json = dead_verdict(
+        &[(
+            "main.py",
+            "class B:\n    def helper(self): return 42\ndef helper():\n    return B().helper\n",
+        )],
+        &["helper"],
+    );
+    assert!(json["dead"].is_null(), "{json:#}");
 }
