@@ -1,0 +1,9 @@
+{
+  // tsc accepts JSONC: comments and trailing commas (tsc --init emits them)
+  "compilerOptions": {
+    "baseUrl": "./src",
+    "paths": {
+      "~/*": ["*"],   /* block comment */
+    },
+  },
+}

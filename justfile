@@ -30,6 +30,11 @@ test:
 test-integration:
     cargo test --package kgr --test integration
 
+# Known-bug report: correctness checks ignored against open itr issues.
+# Expected to FAIL until those bugs are fixed; not part of `verify`.
+known-bugs:
+    cargo test --package kgr --test correctness -- --ignored
+
 # Run snapshot tests only
 test-snapshots:
     cargo test --package kgr --test snapshots
