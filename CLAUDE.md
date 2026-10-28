@@ -89,7 +89,7 @@ Each language parser is a zero-sized struct. The pattern is:
 
 ## Rust toolchain
 
-- Pinned in `rust-toolchain.toml` (1.97.1); CI and the release builds install it with `rustup toolchain install`
+- Pinned in `rust-toolchain.toml` (1.99.1); CI and the release builds install it with `rustup toolchain install`
 - Bump it deliberately: newer stable clippy adds lints that fail `-D warnings`. Run `just verify` on the new version before changing the pin
 - The MSRV job (1.85.0) overrides the pin with `RUSTUP_TOOLCHAIN`
 - In tests, write `assert_empty!(x)` / `assert_not_empty!(x)` from `kgr-test-support`, never `assert!(x.is_empty())`. Clippy 1.99's `assert_is_empty` flags the raw form, and a lint change to emptiness checks is then a fix in one file
