@@ -16,9 +16,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      # Installs the channel and components pinned in rust-toolchain.toml.
+      - name: Install Rust toolchain
+        run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
 
       - name: Format
@@ -42,7 +42,8 @@ jobs:
           - windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust toolchain
+        run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
 
       - name: Test
@@ -51,6 +52,9 @@ jobs:
   msrv:
     name: MSRV
     runs-on: ubuntu-latest
+    # rust-toolchain.toml outranks `rustup default`; the env var outranks the file.
+    env:
+      RUSTUP_TOOLCHAIN: 1.85.0
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.85.0

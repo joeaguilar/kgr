@@ -103,7 +103,7 @@ jobs:
       - name: Install Rust toolchain
         shell: bash
         run: |
-          rustup show
+          rustup toolchain install
           rustup target add ${{ matrix.target }}
 
       - uses: actions/cache@v5

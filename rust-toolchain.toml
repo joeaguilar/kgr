@@ -1,0 +1,8 @@
+# Pinned so local `just verify` and CI run the same rustc and clippy. A new
+# stable can add lints that fail `-D warnings` (1.99 added
+# clippy::assert_is_empty), so bump this deliberately, after `just verify`
+# passes on the new version. The MSRV job overrides it with RUSTUP_TOOLCHAIN.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

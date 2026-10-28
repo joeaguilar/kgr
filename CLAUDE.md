@@ -86,6 +86,14 @@ Each language parser is a zero-sized struct. The pattern is:
 
 ---
 
+## Rust toolchain
+
+- Pinned in `rust-toolchain.toml` (1.97.1); CI and the release builds install it with `rustup toolchain install`
+- Bump it deliberately: newer stable clippy adds lints that fail `-D warnings` (1.99's `assert_is_empty` fires on ~59 `assert!(x.is_empty())` calls)
+- The MSRV job (1.85.0) overrides the pin with `RUSTUP_TOOLCHAIN`
+
+---
+
 ## tree-sitter version constraints
 
 - tree-sitter **0.25** is pinned in the workspace — `QueryMatches` is a `StreamingIterator`, not `Iterator`
