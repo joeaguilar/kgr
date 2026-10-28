@@ -482,6 +482,7 @@ fn parse_with(
 mod tests {
     use super::*;
     use crate::parse::Parser;
+    use kgr_test_support::{assert_empty, assert_not_empty};
 
     fn parse_ts(src: &str) -> Vec<Import> {
         TypeScriptParser.parse(src.as_bytes(), Path::new("test.ts"))
@@ -494,8 +495,8 @@ mod tests {
     #[test]
     fn parse_errors_flags_malformed_source() {
         let errors = TypeScriptParser.parse_errors(b"function broken(:", Path::new("broken.ts"));
-        assert!(
-            !errors.is_empty(),
+        assert_not_empty!(
+            errors,
             "expected syntax errors for malformed typescript source"
         );
     }
@@ -504,8 +505,8 @@ mod tests {
     fn parse_errors_uses_tsx_grammar_for_tsx_paths() {
         let src = b"const x = <div>hello</div>;\n";
         let errors = TypeScriptParser.parse_errors(src, Path::new("comp.tsx"));
-        assert!(
-            errors.is_empty(),
+        assert_empty!(
+            errors,
             "valid JSX in a .tsx file should not be flagged as a syntax error"
         );
     }
@@ -601,7 +602,7 @@ mod tests {
     fn ignores_non_require_calls() {
         let imports = parse_ts(r#"const x = someFunc('./path');"#);
         // someFunc is not "require", so ./path should not be captured
-        assert!(imports.is_empty());
+        assert_empty!(imports);
     }
 
     #[test]
@@ -670,7 +671,7 @@ export * from './c';
     #[test]
     fn symbols_ignores_data_constants() {
         let syms = symbols("const x = 5;\nconst s = 'hi';\nexport const arr = [1, 2];\n");
-        assert!(syms.is_empty());
+        assert_empty!(syms);
     }
 
     #[test]

@@ -467,6 +467,7 @@ dependencies = [
  "indicatif",
  "insta",
  "kgr-core",
+ "kgr-test-support",
  "predicates",
  "rayon",
  "regex",
@@ -481,6 +482,7 @@ dependencies = [
 name = "kgr-core"
 version = "0.6.2"
 dependencies = [
+ "kgr-test-support",
  "petgraph",
  "serde",
  "serde_json",
@@ -507,6 +509,10 @@ dependencies = [
  "tree-sitter-typescript",
  "tree-sitter-zig",
 ]
+
+[[package]]
+name = "kgr-test-support"
+version = "0.0.0"
 
 [[package]]
 name = "lazy_static"

@@ -358,6 +358,7 @@ fn split_top_level(s: &str) -> Vec<&str> {
 mod tests {
     use super::*;
     use crate::parse::Parser;
+    use kgr_test_support::assert_not_empty;
 
     fn parse(src: &str) -> Vec<Import> {
         ScalaParser.parse(src.as_bytes(), Path::new("Test.scala"))
@@ -471,7 +472,7 @@ import w.x._
 import y.z.*
 "#,
         );
-        assert!(!r.is_empty());
+        assert_not_empty!(r);
         for raw in &r {
             assert!(!raw.contains('{'), "brace leaked: {raw}");
             assert!(!raw.contains('}'), "brace leaked: {raw}");

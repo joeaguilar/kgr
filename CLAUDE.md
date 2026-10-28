@@ -35,9 +35,10 @@ just kgr-check       # check crates/ for issues
 
 ## Architecture
 
-Two-crate workspace:
+Two-crate workspace, plus a dev-only helper:
 - **`crates/kgr-core`** — library: parsing, graph construction, types
 - **`crates/kgr`** — binary: CLI, rendering, config, rules, baseline
+- **`crates/kgr-test-support`** — test assertions (`assert_empty!`, `assert_not_empty!`); a dev-dependency of both, never published
 
 ### Parse pipeline (binary + core)
 
@@ -89,8 +90,10 @@ Each language parser is a zero-sized struct. The pattern is:
 ## Rust toolchain
 
 - Pinned in `rust-toolchain.toml` (1.97.1); CI and the release builds install it with `rustup toolchain install`
-- Bump it deliberately: newer stable clippy adds lints that fail `-D warnings` (1.99's `assert_is_empty` fires on ~59 `assert!(x.is_empty())` calls)
+- Bump it deliberately: newer stable clippy adds lints that fail `-D warnings`. Run `just verify` on the new version before changing the pin
 - The MSRV job (1.85.0) overrides the pin with `RUSTUP_TOOLCHAIN`
+- In tests, write `assert_empty!(x)` / `assert_not_empty!(x)` from `kgr-test-support`, never `assert!(x.is_empty())`. Clippy 1.99's `assert_is_empty` flags the raw form, and a lint change to emptiness checks is then a fix in one file
+- `kgr-test-support` keeps its own `0.0.0` version: auto-version rewrites only the kgr and kgr-core entries in `Cargo.lock`, so an inherited version would break the release's `--locked` build
 
 ---
 

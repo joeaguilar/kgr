@@ -956,6 +956,7 @@ fn anchor_tsconfig_target(base_url: &str, target: &str) -> String {
 mod tests {
     use super::*;
     use crate::types::Import;
+    use kgr_test_support::assert_empty;
 
     fn node(path: &str) -> FileNode {
         FileNode {
@@ -1158,7 +1159,7 @@ mod tests {
             &mut memo,
         );
         assert_eq!(base, PathBuf::from("crates/foo/src"));
-        assert!(memo.is_empty());
+        assert_empty!(memo);
     }
 
     #[test]

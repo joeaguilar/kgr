@@ -20,6 +20,7 @@ const NO_EXTENSION_GROUP: &str = "(no extension)";
 /// Bytes sniffed from extensionless files to decide text vs binary.
 const TEXT_SNIFF_BYTES: usize = 1024;
 
+#[derive(Debug)]
 pub struct DiscoveredFile {
     pub path: PathBuf,
     pub lang: Lang,
@@ -531,6 +532,7 @@ fn build_glob_set(patterns: &[String]) -> CompiledExcludes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kgr_test_support::assert_empty;
 
     #[test]
     fn invalid_exclude_glob_diagnostic_names_bad_pattern() {
@@ -571,7 +573,7 @@ mod tests {
         assert_eq!(discovery.files.len(), 1);
         assert_eq!(discovery.files[0].path, PathBuf::from("deploy"));
         assert_eq!(discovery.files[0].lang, Lang::Python);
-        assert!(discovery.skipped_unsupported.is_empty());
+        assert_empty!(discovery.skipped_unsupported);
     }
 
     #[test]
@@ -586,7 +588,7 @@ mod tests {
 
         let discovery = discover(tmp.path(), &None, &[], None);
 
-        assert!(discovery.files.is_empty());
+        assert_empty!(discovery.files);
         // ...but they are text without a recognized shebang, so the skipped
         // summary reports them instead of silently dropping them.
         assert_eq!(discovery.skipped_unsupported.len(), 1);
@@ -644,7 +646,7 @@ mod tests {
         let discovery = discover(tmp.path(), &None, &[], None);
 
         assert_eq!(discovery.files.len(), 1);
-        assert!(discovery.skipped_unsupported.is_empty());
+        assert_empty!(discovery.skipped_unsupported);
     }
 
     #[test]

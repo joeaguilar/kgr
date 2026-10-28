@@ -150,6 +150,7 @@ fn normalize_cycle(cycle: &[PathBuf]) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::config::Severity;
+    use kgr_test_support::assert_empty;
 
     fn rule_violation(rule: &str, from: &str, to: &str) -> RuleViolation {
         RuleViolation {
@@ -196,7 +197,7 @@ mod tests {
         let cycles = vec![vec![PathBuf::from("src/b.rs"), PathBuf::from("src/a.rs")]];
         let violations = vec![rule_violation("no-legacy", "legacy/repo.ts", "core/db.ts")];
 
-        assert!(baseline.new_cycles(&cycles).is_empty());
-        assert!(baseline.new_rule_violations(&violations).is_empty());
+        assert_empty!(baseline.new_cycles(&cycles));
+        assert_empty!(baseline.new_rule_violations(&violations));
     }
 }

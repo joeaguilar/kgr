@@ -348,6 +348,7 @@ impl super::Parser for RubyParser {
 mod tests {
     use super::*;
     use crate::parse::Parser;
+    use kgr_test_support::assert_empty;
 
     fn parse(src: &str) -> Vec<Import> {
         RubyParser.parse(src.as_bytes(), Path::new("test.rb"))
@@ -400,7 +401,7 @@ require_relative 'config'
     #[test]
     fn ignores_non_require_calls() {
         let imports = parse("puts 'hello'");
-        assert!(imports.is_empty());
+        assert_empty!(imports);
     }
 
     // ── Symbol extraction tests ──────────────────────────────────────────
@@ -597,13 +598,13 @@ require_relative 'config'
     #[test]
     fn interpolated_require_is_skipped() {
         let imports = parse(r##"require "foo/#{bar}""##);
-        assert!(imports.is_empty(), "got {imports:?}");
+        assert_empty!(imports);
     }
 
     #[test]
     fn interpolated_require_leading_fragment_skipped() {
         let imports = parse(r##"require "#{root}/config""##);
-        assert!(imports.is_empty(), "got {imports:?}");
+        assert_empty!(imports);
     }
 
     #[test]

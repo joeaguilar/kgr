@@ -320,6 +320,7 @@ impl super::Parser for HaskellParser {
 mod tests {
     use super::*;
     use crate::parse::Parser;
+    use kgr_test_support::assert_not_empty;
 
     fn parse(src: &str) -> Vec<Import> {
         HaskellParser.parse(src.as_bytes(), Path::new("Main.hs"))
@@ -395,7 +396,7 @@ import Control.Monad
     #[test]
     fn symbols_all_exported() {
         let syms = symbols("foo x = x + 1\n");
-        assert!(!syms.is_empty());
+        assert_not_empty!(syms);
         assert!(syms[0].exported);
     }
 

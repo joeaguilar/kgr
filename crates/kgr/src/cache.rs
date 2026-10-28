@@ -36,7 +36,7 @@ static CACHE_VERSION: LazyLock<String> = LazyLock::new(|| {
     format!("{PKG_VERSION}+def-spans+{fingerprint}")
 });
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Entry {
     mtime_secs: u64,
     #[serde(default)]
@@ -175,6 +175,7 @@ mod tests {
     use kgr_core::types::ImportKind;
 
     use super::*;
+    use kgr_test_support::{assert_empty, assert_not_empty};
 
     fn mtime(secs: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(secs)
@@ -216,8 +217,8 @@ mod tests {
             .expect("expected cache hit");
         assert_eq!(hit.imports.len(), 1);
         assert_eq!(hit.imports[0].raw, "helper");
-        assert!(hit.symbols.is_empty());
-        assert!(hit.calls.is_empty());
+        assert_empty!(hit.symbols);
+        assert_empty!(hit.calls);
     }
 
     #[test]
@@ -355,8 +356,8 @@ mod tests {
             .split_once('+')
             .map(|(_, fp)| fp)
             .unwrap_or_default();
-        assert!(
-            !fingerprint.is_empty(),
+        assert_not_empty!(
+            fingerprint,
             "CACHE_VERSION should carry a build fingerprint, got {:?}",
             *CACHE_VERSION
         );
@@ -370,7 +371,7 @@ mod tests {
         std::fs::write(&cache_path, b"{ not json").unwrap();
 
         let loaded = ParseCache::load(&cache_path);
-        assert!(loaded.entries.is_empty());
+        assert_empty!(loaded.entries);
         assert_eq!(loaded.version, *CACHE_VERSION);
     }
 }

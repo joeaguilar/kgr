@@ -371,6 +371,7 @@ impl super::Parser for JavaScriptParser {
 mod tests {
     use super::*;
     use crate::parse::Parser;
+    use kgr_test_support::assert_empty;
 
     fn parse(src: &str) -> Vec<Import> {
         JavaScriptParser.parse(src.as_bytes(), Path::new("test.js"))
@@ -427,7 +428,7 @@ mod tests {
     fn ignores_non_require_calls() {
         let imports = parse(r#"const x = someFunc('./path');"#);
         // someFunc is not "require", so ./path should not be captured
-        assert!(imports.is_empty());
+        assert_empty!(imports);
     }
 
     // ── Symbol extraction tests ──────────────────────────────────────────
@@ -524,7 +525,7 @@ mod tests {
     #[test]
     fn symbols_ignores_data_constants() {
         let syms = symbols("const x = 5;\nconst s = 'hi';\nexport const arr = [1, 2];\n");
-        assert!(syms.is_empty());
+        assert_empty!(syms);
     }
 
     #[test]

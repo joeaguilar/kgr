@@ -483,6 +483,7 @@ impl super::Parser for ElixirParser {
 mod tests {
     use super::*;
     use crate::parse::Parser;
+    use kgr_test_support::assert_empty;
 
     fn parse(src: &str) -> Vec<Import> {
         ElixirParser.parse(src.as_bytes(), Path::new("test.ex"))
@@ -544,7 +545,7 @@ require Logger
     #[test]
     fn ignores_non_import_calls() {
         let imports = parse("IO.puts(\"hello\")");
-        assert!(imports.is_empty());
+        assert_empty!(imports);
     }
 
     #[test]

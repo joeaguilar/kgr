@@ -274,6 +274,7 @@ impl super::Parser for BashParser {
 mod tests {
     use super::*;
     use crate::parse::Parser;
+    use kgr_test_support::assert_empty;
 
     fn parse(src: &str) -> Vec<Import> {
         BashParser.parse(src.as_bytes(), Path::new("test.sh"))
@@ -340,7 +341,7 @@ mod tests {
     #[test]
     fn source_skips_empty_and_expansion_only_arguments() {
         let imports = parse("source \"\"\nsource \"$@\"\nsource $CONFIG\n");
-        assert!(imports.is_empty(), "got {imports:?}");
+        assert_empty!(imports);
     }
 
     // ── Symbol extraction tests ──────────────────────────────────────────

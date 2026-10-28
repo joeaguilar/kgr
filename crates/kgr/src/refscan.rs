@@ -390,6 +390,7 @@ fn is_import_statement(code: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kgr_test_support::assert_empty;
 
     fn scan(src: &str, lang: Lang) -> ScannedSource {
         let path = match lang {
@@ -462,8 +463,8 @@ mod tests {
     #[test]
     fn word_occurrences_respects_identifier_boundaries() {
         assert_eq!(word_occurrences("map(callback, [1])", "callback"), vec![4]);
-        assert!(word_occurrences("my_callback()", "callback").is_empty());
-        assert!(word_occurrences("callback_fn()", "callback").is_empty());
+        assert_empty!(word_occurrences("my_callback()", "callback"));
+        assert_empty!(word_occurrences("callback_fn()", "callback"));
         assert_eq!(word_occurrences("<Button/>", "Button"), vec![1]);
         assert_eq!(word_occurrences("a(x); a(y)", "a").len(), 2);
     }
@@ -729,24 +730,32 @@ mod tests {
 
     #[test]
     fn import_aliases_ignore_non_imports() {
-        assert!(aliases("let assets = helper;", Lang::Rust, "helper", &[]).is_empty());
-        assert!(aliases("helper.as_ref()", Lang::Rust, "helper", &[]).is_empty());
-        assert!(aliases(
+        assert_empty!(aliases("let assets = helper;", Lang::Rust, "helper", &[]));
+        assert_empty!(aliases("helper.as_ref()", Lang::Rust, "helper", &[]));
+        assert_empty!(aliases(
             "q = \"SELECT helper as unrelated FROM util\"\n",
             Lang::Python,
             "helper",
             &[]
-        )
-        .is_empty());
-        assert!(aliases("# util.helper as unrelated\n", Lang::Python, "helper", &[]).is_empty());
-        assert!(aliases("with helper as h:\n    pass\n", Lang::Python, "helper", &[]).is_empty());
-        assert!(aliases(
+        ));
+        assert_empty!(aliases(
+            "# util.helper as unrelated\n",
+            Lang::Python,
+            "helper",
+            &[]
+        ));
+        assert_empty!(aliases(
+            "with helper as h:\n    pass\n",
+            Lang::Python,
+            "helper",
+            &[]
+        ));
+        assert_empty!(aliases(
             "const x = helper as Foo;\n",
             Lang::TypeScript,
             "helper",
             &[]
-        )
-        .is_empty());
+        ));
     }
 
     #[test]

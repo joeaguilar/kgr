@@ -214,6 +214,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
+    use kgr_test_support::assert_empty;
 
     const ALL_LANGS: &[Lang] = &[
         Lang::Python,
@@ -340,7 +341,7 @@ mod tests {
             }
         }
 
-        assert!(lang_extensions(Lang::Unknown).is_empty());
+        assert_empty!(lang_extensions(Lang::Unknown));
         assert_eq!(detect_lang(Path::new("source.unknown")), Lang::Unknown);
     }
 

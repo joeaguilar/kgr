@@ -15,6 +15,7 @@
 //!   db.ts       — query() [exported], connect() [exported], internalReset() (not exported, never called)
 //!   utils.ts    — normalize() [exported], log() [exported], deprecatedHelper() [exported, never called]
 
+use kgr_test_support::{assert_empty, assert_not_empty};
 use predicates::prelude::*;
 use std::path::PathBuf;
 
@@ -133,10 +134,7 @@ fn symbols_python_json_has_correct_shape() {
 
     let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
     let entries = json.as_array().unwrap();
-    assert!(
-        !entries.is_empty(),
-        "symbols json should have at least one file entry"
-    );
+    assert_not_empty!(entries, "symbols json should have at least one file entry");
 
     // Each entry should have file + symbols
     for entry in entries {
@@ -144,8 +142,8 @@ fn symbols_python_json_has_correct_shape() {
         let symbols = entry["symbols"]
             .as_array()
             .expect("entry missing 'symbols' array");
-        assert!(
-            !symbols.is_empty(),
+        assert_not_empty!(
+            symbols,
             "entry {} should have at least one symbol",
             entry["file"]
         );
@@ -302,8 +300,8 @@ fn refs_includes_context_line() {
 
     let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
     let refs = json["references"].as_array().unwrap();
-    assert!(
-        !refs.is_empty(),
+    assert_not_empty!(
+        refs,
         "query is called in service.py — references must not be empty"
     );
 
@@ -314,7 +312,7 @@ fn refs_includes_context_line() {
             "each reference should have a 'context' field with the source line"
         );
         let ctx = r["context"].as_str().unwrap();
-        assert!(!ctx.is_empty(), "context should not be empty");
+        assert_not_empty!(ctx, "context should not be empty");
     }
 }
 
@@ -338,8 +336,8 @@ fn refs_no_results_exits_cleanly() {
 
     let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(json["symbol"], "nonexistent_symbol");
-    assert!(json["definitions"].as_array().unwrap().is_empty());
-    assert!(json["references"].as_array().unwrap().is_empty());
+    assert_empty!(json["definitions"].as_array().unwrap());
+    assert_empty!(json["references"].as_array().unwrap());
 }
 
 #[test]
@@ -367,7 +365,7 @@ fn refs_typescript_exported_function() {
         .iter()
         .filter(|r| r["file"].as_str().unwrap().contains("app.ts"))
         .collect();
-    assert!(!app_refs.is_empty(), "should find references in app.ts");
+    assert_not_empty!(app_refs, "should find references in app.ts");
 }
 
 #[test]
@@ -422,7 +420,7 @@ fn refs_bare_duplicate_symbol_reports_ambiguity_with_definition_ids() {
         .collect();
     assert_eq!(ids.len(), 2);
     assert_ne!(ids[0], ids[1], "definition ids must identify the file");
-    assert!(json["references"].as_array().unwrap().is_empty());
+    assert_empty!(json["references"].as_array().unwrap());
 }
 
 #[test]
@@ -657,9 +655,9 @@ fn dead_json_shape() {
             .contains("utils.py"),
         "should show the defining file"
     );
-    assert!(json["references"].as_array().unwrap().is_empty());
-    assert!(json["self_file_references"].as_array().unwrap().is_empty());
-    assert!(json["cross_file_references"].as_array().unwrap().is_empty());
+    assert_empty!(json["references"].as_array().unwrap());
+    assert_empty!(json["self_file_references"].as_array().unwrap());
+    assert_empty!(json["cross_file_references"].as_array().unwrap());
 }
 
 #[test]
@@ -680,11 +678,11 @@ fn dead_json_alive_includes_references() {
     assert_eq!(json["found"], true);
     assert_eq!(json["dead"], false);
     assert_eq!(json["status"], "live");
-    assert!(
-        !json["references"].as_array().unwrap().is_empty(),
+    assert_not_empty!(
+        json["references"].as_array().unwrap(),
         "alive symbol should list its references"
     );
-    assert!(json["self_file_references"].as_array().unwrap().is_empty());
+    assert_empty!(json["self_file_references"].as_array().unwrap());
     let cross_refs = json["cross_file_references"].as_array().unwrap();
     assert!(
         cross_refs
@@ -723,8 +721,8 @@ fn dead_json_self_recursive_symbol_is_self_only_not_live() {
     let refs = json["references"].as_array().unwrap();
     let self_refs = json["self_file_references"].as_array().unwrap();
     let cross_refs = json["cross_file_references"].as_array().unwrap();
-    assert!(
-        !self_refs.is_empty(),
+    assert_not_empty!(
+        self_refs,
         "recursive call should be classified as a self-file reference"
     );
     assert_eq!(
@@ -732,8 +730,8 @@ fn dead_json_self_recursive_symbol_is_self_only_not_live() {
         self_refs.len(),
         "all references should be self-file references"
     );
-    assert!(
-        cross_refs.is_empty(),
+    assert_empty!(
+        cross_refs,
         "self-recursive symbol should not have cross-file references"
     );
 }
@@ -900,7 +898,7 @@ fn dead_defined_in_checks_only_the_selected_duplicate_symbol() {
     let unused_json: serde_json::Value = serde_json::from_slice(&unused_output).unwrap();
     assert_eq!(unused_json["ambiguous"], false);
     assert_eq!(unused_json["dead"], true);
-    assert!(unused_json["references"].as_array().unwrap().is_empty());
+    assert_empty!(unused_json["references"].as_array().unwrap());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -921,7 +919,7 @@ fn graph_json_with_symbols_flag_enriches_file_nodes() {
 
     let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
     let files = json["files"].as_array().unwrap();
-    assert!(!files.is_empty(), "graph should have file nodes");
+    assert_not_empty!(files, "graph should have file nodes");
 
     // With --symbols, each file node should have a symbols array
     for file in files {
@@ -974,10 +972,7 @@ fn skeleton_json_output() {
 
     let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
     let entries = json.as_array().expect("top-level should be array");
-    assert!(
-        !entries.is_empty(),
-        "skeleton json should have at least one file entry"
-    );
+    assert_not_empty!(entries, "skeleton json should have at least one file entry");
 
     // Every entry should have file + skeleton
     for entry in entries {
@@ -985,8 +980,8 @@ fn skeleton_json_output() {
         let skeleton = entry["skeleton"]
             .as_array()
             .expect("entry missing 'skeleton' array");
-        assert!(
-            !skeleton.is_empty(),
+        assert_not_empty!(
+            skeleton,
             "entry {} should have at least one skeleton item",
             entry["file"]
         );
@@ -1173,8 +1168,8 @@ fn impact_not_found_json() {
     assert_eq!(json["symbol"], "nonexistent_symbol");
     assert_eq!(json["found"], false);
     assert!(json["error"].is_string(), "should have error field");
-    assert!(json["definitions"].as_array().unwrap().is_empty());
-    assert!(json["impact"].as_array().unwrap().is_empty());
+    assert_empty!(json["definitions"].as_array().unwrap());
+    assert_empty!(json["impact"].as_array().unwrap());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1229,10 +1224,7 @@ fn hotspots_json_shape() {
 
     let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
     let entries = json.as_array().expect("top-level should be an array");
-    assert!(
-        !entries.is_empty(),
-        "hotspots json should have at least one entry"
-    );
+    assert_not_empty!(entries, "hotspots json should have at least one entry");
 
     for entry in entries {
         assert!(entry["file"].is_string(), "entry missing 'file'");
@@ -1615,10 +1607,7 @@ fn refs_ignores_as_inside_strings_and_comments() {
             ("main.py", main.as_str()),
         ];
         let refs = kgr_json(&files, &["refs", "helper"]);
-        assert!(
-            refs["references"].as_array().unwrap().is_empty(),
-            "{refs:#}"
-        );
+        assert_empty!(refs["references"].as_array().unwrap(), "{refs:#}");
         let impact = kgr_json(&files, &["impact", "helper"]);
         assert_eq!(impact["impact"][0]["calls_symbol"], false, "{impact:#}");
     }

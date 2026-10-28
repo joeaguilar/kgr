@@ -1,0 +1,14 @@
+[package]
+name = "kgr-test-support"
+# A fixed version, not `version.workspace`: auto-version rewrites only the kgr
+# and kgr-core entries in Cargo.lock, so an inherited version would leave this
+# entry stale and fail the release workflow's `cargo build --locked`.
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Test-only assertions shared by the kgr crates"
+
+[lints]
+workspace = true

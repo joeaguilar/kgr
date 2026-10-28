@@ -335,6 +335,7 @@ mod tests {
     use super::*;
     use crate::parse::Parser;
     use crate::types::ImportKind;
+    use kgr_test_support::assert_not_empty;
 
     fn parse(src: &str) -> Vec<Import> {
         CppParser.parse(src.as_bytes(), Path::new("test.cpp"))
@@ -564,7 +565,7 @@ mod tests {
         let c = calls(
             "int main() { auto a = std::make_unique<Widget>(); auto b = new Bar<int>(); return 0; }\n",
         );
-        assert!(!c.is_empty());
+        assert_not_empty!(c);
         assert!(c.iter().all(|c| !c.callee_raw.contains('<')));
     }
 }

@@ -718,6 +718,7 @@ fn split_top_level(s: &str) -> Vec<&str> {
 mod tests {
     use super::*;
     use crate::parse::Parser;
+    use kgr_test_support::{assert_empty, assert_not_empty};
 
     fn parse(src: &str) -> Vec<Import> {
         RustParser.parse(src.as_bytes(), Path::new("lib.rs"))
@@ -726,16 +727,13 @@ mod tests {
     #[test]
     fn parse_errors_flags_malformed_source() {
         let errors = RustParser.parse_errors(b"fn broken(:", Path::new("broken.rs"));
-        assert!(
-            !errors.is_empty(),
-            "expected syntax errors for malformed rust source"
-        );
+        assert_not_empty!(errors, "expected syntax errors for malformed rust source");
     }
 
     #[test]
     fn parse_errors_clean_on_valid_source() {
         let errors = RustParser.parse_errors(b"fn main() {}\n", Path::new("ok.rs"));
-        assert!(errors.is_empty());
+        assert_empty!(errors);
     }
 
     #[test]
@@ -785,7 +783,7 @@ mod foo;
     fn inline_mod_ignored() {
         let imports = parse("mod tests { fn foo() {} }");
         // inline mod with body should be skipped
-        assert!(imports.is_empty());
+        assert_empty!(imports);
     }
 
     #[test]

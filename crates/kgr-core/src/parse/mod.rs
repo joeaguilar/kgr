@@ -162,6 +162,7 @@ impl Default for ParserRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kgr_test_support::assert_not_empty;
 
     #[test]
     fn every_registered_parser_exposes_ts_language() {
@@ -185,8 +186,8 @@ mod tests {
         for (lang, source, name) in cases {
             let parser = registry.get(*lang).expect("parser registered");
             let errors = parser.parse_errors(source, Path::new(name));
-            assert!(
-                !errors.is_empty(),
+            assert_not_empty!(
+                errors,
                 "expected parse_errors to flag malformed {lang:?} source"
             );
         }

@@ -297,6 +297,7 @@ mod tests {
     use crate::test_env::{CleanKgrEnv, KGR_ENV_LOCK};
 
     use super::*;
+    use kgr_test_support::assert_empty;
 
     #[test]
     fn resolve_format_cli_beats_config_and_built_in() {
@@ -373,7 +374,7 @@ mod tests {
     #[test]
     fn default_vendor_globs_match_by_path_not_name() {
         let (filter, warnings) = FirstPartyFilter::compile(effective_vendor_globs(&None));
-        assert!(warnings.is_empty());
+        assert_empty!(warnings);
 
         assert!(filter.is_vendored(Path::new("vendor/foo.h")));
         assert!(filter.is_vendored(Path::new("third_party/bar.hpp")));
@@ -446,7 +447,7 @@ mod tests {
         .unwrap();
         let cfg = load_config(dir.path()).unwrap();
         assert_eq!(cfg.languages, None);
-        assert!(cfg.exclude.is_empty());
+        assert_empty!(cfg.exclude);
     }
 
     #[test]

@@ -16,6 +16,7 @@
 //! (CRLF, UTF-8 multibyte, tabs, very long files) are generated at test time so
 //! git line-ending normalisation can never alter them.
 
+use kgr_test_support::assert_empty;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -515,12 +516,12 @@ fn py11_method_call_is_attributed_as_reference() {
 
 #[test]
 fn py12_calls_in_comments_and_strings_are_not_refs() {
-    assert!(ref_sites(&case("py"), "never_called", None).is_empty());
+    assert_empty!(ref_sites(&case("py"), "never_called", None));
 }
 
 #[test]
 fn py13_call_text_inside_a_string_is_not_a_ref() {
-    assert!(ref_sites(&case("py"), "only_in_string", None).is_empty());
+    assert_empty!(ref_sites(&case("py"), "only_in_string", None));
 }
 
 #[test]
@@ -745,7 +746,7 @@ fn ts10_refs_defined_in_math_includes_aliased_call() {
 
 #[test]
 fn ts11_refs_defined_in_strings_has_no_refs_for_other_add() {
-    assert!(ref_sites(&case("ts"), "add", Some("src/util/strings.ts")).is_empty());
+    assert_empty!(ref_sites(&case("ts"), "add", Some("src/util/strings.ts")));
 }
 
 #[test]
@@ -758,7 +759,7 @@ fn ts12_commented_call_is_ignored_and_member_call_counted() {
 
 #[test]
 fn ts13_call_text_inside_a_string_is_not_a_ref() {
-    assert!(ref_sites(&case("ts"), "internal", None).is_empty());
+    assert_empty!(ref_sites(&case("ts"), "internal", None));
 }
 
 #[test]
@@ -849,7 +850,7 @@ fn rs04_cargo_targets_are_structural_not_orphans() {
         paths,
         svec(&["examples/ex.rs", "src/main.rs", "tests/it.rs"])
     );
-    assert!(strs(&d["orphans"]).is_empty());
+    assert_empty!(strs(&d["orphans"]));
 }
 
 #[test]
@@ -1030,7 +1031,7 @@ fn go10_method_with_receiver_is_kind_method() {
 #[ignore = "itr-8: --defined-in credits store.New() and errors.New() to util.New"]
 fn go08_refs_util_new_excludes_store_new_and_errors_new() {
     let fx = go_single_file_pkgs();
-    assert!(ref_sites(&fx, "New", Some("pkg/util/util.go")).is_empty());
+    assert_empty!(ref_sites(&fx, "New", Some("pkg/util/util.go")));
 }
 
 // ---------------------------------------------------------------------------

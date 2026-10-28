@@ -1,3 +1,4 @@
+use kgr_test_support::{assert_empty, assert_not_empty};
 use predicates::prelude::*;
 use std::path::{Path, PathBuf};
 
@@ -541,8 +542,8 @@ fn check_json_ok_no_violations() {
 
     let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(json["ok"], true);
-    assert!(json["cycles"].as_array().unwrap().is_empty());
-    assert!(json["rule_violations"].as_array().unwrap().is_empty());
+    assert_empty!(json["cycles"].as_array().unwrap());
+    assert_empty!(json["rule_violations"].as_array().unwrap());
 }
 
 #[test]
@@ -589,7 +590,7 @@ fn check_json_orphans_reported() {
     let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(json["ok"], true);
     let orphans = json["orphans"].as_array().unwrap();
-    assert!(!orphans.is_empty());
+    assert_not_empty!(orphans);
 }
 
 #[test]
@@ -668,8 +669,8 @@ fn check_exit_zero_reports_cycle_json_and_exits_0() {
 
     let json: serde_json::Value = serde_json::from_slice(&exit_zero_stdout).unwrap();
     assert_eq!(json["ok"], false, "findings still reported as not ok");
-    assert!(
-        !json["cycles"].as_array().unwrap().is_empty(),
+    assert_not_empty!(
+        json["cycles"].as_array().unwrap(),
         "the cycle must still appear in JSON output"
     );
 }
@@ -1773,8 +1774,8 @@ fn check_syntax_flag_reports_parse_errors() {
     let syntax_errors = json["syntax_errors"]
         .as_array()
         .expect("--syntax must add a syntax_errors array to JSON output");
-    assert!(
-        !syntax_errors.is_empty(),
+    assert_not_empty!(
+        syntax_errors,
         "malformed python should yield at least one syntax error"
     );
     assert!(
@@ -1913,8 +1914,8 @@ fn dead_unknown_symbol_json_distinguishes_not_found_from_dead() {
         "dead must be null (not true) for a symbol that was never found, got {}",
         json["dead"]
     );
-    assert!(json["definitions"].as_array().unwrap().is_empty());
-    assert!(json["references"].as_array().unwrap().is_empty());
+    assert_empty!(json["definitions"].as_array().unwrap());
+    assert_empty!(json["references"].as_array().unwrap());
 
     // Text mode agrees with JSON: not found, no dead verdict.
     kgr()

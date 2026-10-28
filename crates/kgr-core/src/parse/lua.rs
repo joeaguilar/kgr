@@ -317,6 +317,7 @@ impl super::Parser for LuaParser {
 mod tests {
     use super::*;
     use crate::parse::Parser;
+    use kgr_test_support::assert_empty;
 
     fn parse(src: &str) -> Vec<Import> {
         LuaParser.parse(src.as_bytes(), Path::new("test.lua"))
@@ -361,7 +362,7 @@ local m = require("./helpers")
     #[test]
     fn ignores_non_require_calls() {
         let imports = parse(r#"print("hello")"#);
-        assert!(imports.is_empty());
+        assert_empty!(imports);
     }
 
     // ── Symbol extraction tests ──────────────────────────────────────────
@@ -445,7 +446,7 @@ local m = require("./helpers")
     #[test]
     fn symbols_non_function_assignment_ignored() {
         let syms = symbols("local M = {}\nlocal x = 1\ny = 'str'\n");
-        assert!(syms.is_empty());
+        assert_empty!(syms);
     }
 
     #[test]

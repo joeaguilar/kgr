@@ -440,6 +440,7 @@ fn php_decl_has_public_modifier(decl_node: tree_sitter::Node, source: &[u8]) -> 
 mod tests {
     use super::*;
     use crate::parse::Parser;
+    use kgr_test_support::assert_empty;
 
     fn parse(src: &str) -> Vec<Import> {
         PhpParser.parse(src.as_bytes(), Path::new("test.php"))
@@ -525,7 +526,7 @@ include_once('./extra.php');
     fn interpolated_require_skipped() {
         // Interpolated paths cannot be resolved statically; emit nothing.
         let imports = parse("<?php require \"$dir/x.php\"; ?>");
-        assert!(imports.is_empty());
+        assert_empty!(imports);
     }
 
     #[test]

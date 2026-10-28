@@ -374,6 +374,7 @@ impl super::Parser for PythonParser {
 mod tests {
     use super::*;
     use crate::parse::Parser;
+    use kgr_test_support::{assert_empty, assert_not_empty};
 
     fn parse(src: &str) -> Vec<Import> {
         PythonParser.parse(src.as_bytes(), Path::new("test.py"))
@@ -382,16 +383,13 @@ mod tests {
     #[test]
     fn parse_errors_flags_malformed_source() {
         let errors = PythonParser.parse_errors(b"def broken(:", Path::new("broken.py"));
-        assert!(
-            !errors.is_empty(),
-            "expected syntax errors for malformed python source"
-        );
+        assert_not_empty!(errors, "expected syntax errors for malformed python source");
     }
 
     #[test]
     fn parse_errors_clean_on_valid_source() {
         let errors = PythonParser.parse_errors(b"import os\n", Path::new("ok.py"));
-        assert!(errors.is_empty());
+        assert_empty!(errors);
     }
 
     #[test]
@@ -466,7 +464,7 @@ importlib.import_module(name)
 importlib.import_module(factory(), "fallback")
 "#,
         );
-        assert!(imports.is_empty());
+        assert_empty!(imports);
     }
 
     #[test]

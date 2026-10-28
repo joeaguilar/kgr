@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/kgr-core", "crates/kgr"]
+members = ["crates/kgr-core", "crates/kgr", "crates/kgr-test-support"]
 resolver = "2"
 
 [workspace.package]

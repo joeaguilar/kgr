@@ -213,6 +213,7 @@ mod tests {
     use super::*;
     use crate::config::Severity;
     use kgr_core::types::DepGraph;
+    use kgr_test_support::assert_empty;
 
     fn rule(name: &str, from: &str, to: &str) -> Rule {
         Rule {
@@ -251,7 +252,7 @@ mod tests {
         let check = evaluate_rules(&graph, &rules).unwrap();
 
         assert_eq!(check.violations.len(), 1);
-        assert!(check.diagnostics.is_empty());
+        assert_empty!(check.diagnostics);
     }
 
     #[test]
@@ -261,7 +262,7 @@ mod tests {
 
         let check = evaluate_rules(&graph, &rules).unwrap();
 
-        assert!(check.violations.is_empty());
+        assert_empty!(check.violations);
         assert_eq!(check.diagnostics.len(), 1);
         let warning = check.diagnostics[0].warning();
         assert!(warning.contains("from glob matched no local edge sources"));
@@ -276,7 +277,7 @@ mod tests {
         let check = evaluate_rules(&graph, &rules).unwrap();
 
         assert_eq!(check.violations.len(), 1);
-        assert!(check.diagnostics.is_empty());
+        assert_empty!(check.diagnostics);
     }
 
     #[test]
@@ -286,7 +287,7 @@ mod tests {
 
         let check = evaluate_rules(&graph, &rules).unwrap();
 
-        assert!(check.violations.is_empty());
+        assert_empty!(check.violations);
         assert_eq!(check.diagnostics.len(), 1);
         let warning = check.diagnostics[0].warning();
         assert!(warning.contains("from glob matched no local edge sources"));
@@ -301,7 +302,7 @@ mod tests {
         let check = evaluate_rules(&graph, &rules).unwrap();
 
         assert_eq!(check.violations.len(), 1);
-        assert!(check.diagnostics.is_empty());
+        assert_empty!(check.diagnostics);
     }
 
     #[test]
